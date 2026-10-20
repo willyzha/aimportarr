@@ -2,7 +2,7 @@ import json
 import logging
 import httpx
 from typing import List, Optional
-from .base import BaseAIProvider, MediaMatchResult, EpisodeMatchResult
+from .base import BaseAIProvider, MediaMatchResult, EpisodeMatchResult, AIProviderError
 
 logger = logging.getLogger("aimportarr.ai.ollama")
 
@@ -11,6 +11,10 @@ class OllamaProvider(BaseAIProvider):
         self.base_url = base_url.rstrip("/")
         self.model = model
         self.chat_url = f"{self.base_url}/api/chat"
+
+    @property
+    def name(self) -> str:
+        return f"Ollama ({self.model})"
 
     async def _call_ollama(self, system_prompt: str, user_prompt: str) -> dict:
         payload = {
@@ -26,14 +30,24 @@ class OllamaProvider(BaseAIProvider):
             }
         }
 
-        async with httpx.AsyncClient(timeout=60.0) as client:
-            resp = await client.post(self.chat_url, json=payload)
-            resp.raise_for_status()
-            data = resp.json()
+        try:
+            async with httpx.AsyncClient(timeout=60.0) as client:
+                resp = await client.post(self.chat_url, json=payload)
+                resp.raise_for_status()
+                data = resp.json()
+        except httpx.HTTPStatusError as e:
+            raise AIProviderError(f"Ollama server returned HTTP {e.response.status_code}: {e.response.text}") from e
+        except (httpx.RequestError, httpx.TimeoutException) as e:
+            raise AIProviderError(f"Cannot connect to Ollama at '{self.chat_url}': {e}") from e
+        except Exception as e:
+            raise AIProviderError(f"Unexpected error calling Ollama: {e}") from e
 
         message = data.get("message", {})
         raw_text = message.get("content", "{}")
-        return json.loads(raw_text)
+        try:
+            return json.loads(raw_text)
+        except json.JSONDecodeError as e:
+            raise AIProviderError(f"Failed to parse Ollama JSON output: {raw_text}") from e
 
     async def verify_series_match(
         self,
@@ -56,16 +70,8 @@ class OllamaProvider(BaseAIProvider):
             "Consider Chinese Pinyin translations, Romaji, and common international media naming conventions."
         )
 
-        try:
-            res = await self._call_ollama(system_prompt, user_prompt)
-            return MediaMatchResult(**res)
-        except Exception as e:
-            logger.error(f"Ollama verify_series_match failed: {e}")
-            return MediaMatchResult(
-                is_match=False,
-                confidence=0.0,
-                reasoning=f"Ollama API error: {str(e)}"
-            )
+        res = await self._call_ollama(system_prompt, user_prompt)
+        return MediaMatchResult(**res)
 
     async def verify_movie_match(
         self,
@@ -88,16 +94,8 @@ class OllamaProvider(BaseAIProvider):
             "Account for foreign release names, Pinyin, translated movie titles, and release year discrepancies (+/- 1 year between festival and theatrical release)."
         )
 
-        try:
-            res = await self._call_ollama(system_prompt, user_prompt)
-            return MediaMatchResult(**res)
-        except Exception as e:
-            logger.error(f"Ollama verify_movie_match failed: {e}")
-            return MediaMatchResult(
-                is_match=False,
-                confidence=0.0,
-                reasoning=f"Ollama API error: {str(e)}"
-            )
+        res = await self._call_ollama(system_prompt, user_prompt)
+        return MediaMatchResult(**res)
 
     async def parse_episode(
         self,
@@ -125,14 +123,5 @@ class OllamaProvider(BaseAIProvider):
             "Look for patterns like 'S01E02', 'EP02', '02.mkv', '第02集', 'Part 1', or episode titles."
         )
 
-        try:
-            res = await self._call_ollama(system_prompt, user_prompt)
-            return EpisodeMatchResult(**res)
-        except Exception as e:
-            logger.error(f"Ollama parse_episode failed: {e}")
-            return EpisodeMatchResult(
-                season_number=None,
-                episode_numbers=[],
-                confidence=0.0,
-                reasoning=f"Ollama API error: {str(e)}"
-            )
+        res = await self._call_ollama(system_prompt, user_prompt)
+        return EpisodeMatchResult(**res)

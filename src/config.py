@@ -20,6 +20,7 @@ class OllamaConfig(BaseModel):
 
 class AIConfig(BaseModel):
     provider: Literal["gemini", "ollama"] = "gemini"
+    fallback_enabled: bool = True
     gemini: GeminiConfig = Field(default_factory=GeminiConfig)
     ollama: OllamaConfig = Field(default_factory=OllamaConfig)
 
@@ -74,6 +75,8 @@ def load_config(config_path: Optional[str] = None) -> AppConfig:
     if env_provider := os.getenv("AI_PROVIDER"):
         if env_provider in ("gemini", "ollama"):
             config.ai.provider = env_provider
+    if env_fallback := os.getenv("AI_FALLBACK_ENABLED"):
+        config.ai.fallback_enabled = env_fallback.lower() in ("true", "1", "yes")
     if env_gemini_key := os.getenv("GEMINI_API_KEY"):
         config.ai.gemini.api_key = env_gemini_key
     if env_gemini_model := os.getenv("GEMINI_MODEL"):

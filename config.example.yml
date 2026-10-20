@@ -20,8 +20,12 @@ general:
 # AI Provider Configuration
 # ==========================================
 ai:
-  # Selected provider: "gemini" or "ollama"
+  # Primary provider: "gemini" or "ollama"
   provider: "gemini"
+
+  # Automatic fallback: if Gemini hits rate limits, invalid key, or token exhaustion,
+  # AImportarr will automatically fall back to local Ollama.
+  fallback_enabled: true
 
   # Google Gemini configuration (Cloud / Free Tier)
   gemini:

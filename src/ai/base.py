@@ -2,6 +2,10 @@ from abc import ABC, abstractmethod
 from typing import List, Optional
 from pydantic import BaseModel, Field
 
+class AIProviderError(Exception):
+    """Raised when an AI provider fails due to API keys, rate limits, network, or server errors."""
+    pass
+
 class MediaMatchResult(BaseModel):
     is_match: bool = Field(description="Whether the release title matches the candidate media")
     confidence: float = Field(ge=0.0, le=1.0, description="Confidence score between 0.0 and 1.0")
@@ -18,6 +22,10 @@ class EpisodeMatchResult(BaseModel):
 
 class BaseAIProvider(ABC):
     """Abstract interface for AI Providers (Gemini, Ollama, etc.)"""
+
+    @property
+    def name(self) -> str:
+        return self.__class__.__name__
 
     @abstractmethod
     async def verify_series_match(

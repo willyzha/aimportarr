@@ -2,7 +2,7 @@ import json
 import logging
 import httpx
 from typing import List, Optional
-from .base import BaseAIProvider, MediaMatchResult, EpisodeMatchResult
+from .base import BaseAIProvider, MediaMatchResult, EpisodeMatchResult, AIProviderError
 
 logger = logging.getLogger("aimportarr.ai.gemini")
 
@@ -11,6 +11,10 @@ class GeminiProvider(BaseAIProvider):
         self.api_key = api_key
         self.model = model
         self.base_url = f"https://generativelanguage.googleapis.com/v1beta/models/{self.model}:generateContent"
+
+    @property
+    def name(self) -> str:
+        return f"Gemini ({self.model})"
 
     async def _call_gemini(self, prompt: str, schema_desc: str) -> dict:
         url = f"{self.base_url}?key={self.api_key}"
@@ -35,21 +39,37 @@ class GeminiProvider(BaseAIProvider):
             }
         }
 
-        async with httpx.AsyncClient(timeout=30.0) as client:
-            resp = await client.post(url, json=payload)
-            resp.raise_for_status()
-            data = resp.json()
+        try:
+            async with httpx.AsyncClient(timeout=30.0) as client:
+                resp = await client.post(url, json=payload)
+                resp.raise_for_status()
+                data = resp.json()
+        except httpx.HTTPStatusError as e:
+            status = e.response.status_code
+            if status in (401, 403):
+                raise AIProviderError(f"Gemini API Key is invalid or unauthorized (HTTP {status})") from e
+            elif status == 429:
+                raise AIProviderError(f"Gemini rate limit or quota exceeded (HTTP 429 / Out of tokens)") from e
+            else:
+                raise AIProviderError(f"Gemini HTTP {status} error: {e.response.text}") from e
+        except (httpx.RequestError, httpx.TimeoutException) as e:
+            raise AIProviderError(f"Gemini connection / timeout error: {e}") from e
+        except Exception as e:
+            raise AIProviderError(f"Unexpected error calling Gemini API: {e}") from e
 
         candidates = data.get("candidates", [])
         if not candidates:
-            raise ValueError(f"No candidates returned from Gemini: {data}")
+            raise AIProviderError(f"No response candidates returned from Gemini: {data}")
 
         parts = candidates[0].get("content", {}).get("parts", [])
         if not parts:
-            raise ValueError("Empty response parts from Gemini")
+            raise AIProviderError("Empty response parts from Gemini")
 
         raw_text = parts[0].get("text", "{}")
-        return json.loads(raw_text)
+        try:
+            return json.loads(raw_text)
+        except json.JSONDecodeError as e:
+            raise AIProviderError(f"Failed to parse Gemini JSON output: {raw_text}") from e
 
     async def verify_series_match(
         self,
@@ -74,16 +94,8 @@ class GeminiProvider(BaseAIProvider):
             "Consider Chinese Pinyin translations, Romaji, and common international media naming conventions."
         )
 
-        try:
-            res = await self._call_gemini(prompt, schema_desc)
-            return MediaMatchResult(**res)
-        except Exception as e:
-            logger.error(f"Gemini verify_series_match failed: {e}")
-            return MediaMatchResult(
-                is_match=False,
-                confidence=0.0,
-                reasoning=f"Gemini API error: {str(e)}"
-            )
+        res = await self._call_gemini(prompt, schema_desc)
+        return MediaMatchResult(**res)
 
     async def verify_movie_match(
         self,
@@ -108,16 +120,8 @@ class GeminiProvider(BaseAIProvider):
             "Account for foreign release names, Pinyin, translated movie titles, and release year discrepancies (+/- 1 year between festival and theatrical release)."
         )
 
-        try:
-            res = await self._call_gemini(prompt, schema_desc)
-            return MediaMatchResult(**res)
-        except Exception as e:
-            logger.error(f"Gemini verify_movie_match failed: {e}")
-            return MediaMatchResult(
-                is_match=False,
-                confidence=0.0,
-                reasoning=f"Gemini API error: {str(e)}"
-            )
+        res = await self._call_gemini(prompt, schema_desc)
+        return MediaMatchResult(**res)
 
     async def parse_episode(
         self,
@@ -147,14 +151,5 @@ class GeminiProvider(BaseAIProvider):
             "Look for patterns like 'S01E02', 'EP02', '02.mkv', '第02集', 'Part 1', or episode titles in the filename."
         )
 
-        try:
-            res = await self._call_gemini(prompt, schema_desc)
-            return EpisodeMatchResult(**res)
-        except Exception as e:
-            logger.error(f"Gemini parse_episode failed: {e}")
-            return EpisodeMatchResult(
-                season_number=None,
-                episode_numbers=[],
-                confidence=0.0,
-                reasoning=f"Gemini API error: {str(e)}"
-            )
+        res = await self._call_gemini(prompt, schema_desc)
+        return EpisodeMatchResult(**res)
