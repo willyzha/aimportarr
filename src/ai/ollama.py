@@ -53,7 +53,7 @@ class OllamaProvider(BaseAIProvider):
             f"Candidate Series: {candidate_series_title} ({year if year else 'Unknown Year'})\n"
             f"Known Alternate Titles/Aliases: {alternate_titles}\n\n"
             "Task: Determine if this release matches the candidate TV series. "
-            "Consider Chinese Pinyin translations, Romaji, and common Asian tracker naming conventions."
+            "Consider Chinese Pinyin translations, Romaji, and common international media naming conventions."
         )
 
         try:

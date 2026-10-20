@@ -2,7 +2,7 @@
 
 **AImportarr** is an AI-powered media matching and automated importer microservice for the `*arr` ecosystem (**Sonarr** & **Radarr**). 
 
-It specifically bridges the gap for releases from **Asian and private trackers** (e.g., Avistaz, PTer, M-Team) where non-standard filenames, Chinese Pinyin, Romaji, and unorthodox directory packaging trip up Sonarr and Radarr's built-in regex parsers.
+It specifically bridges the gap for **international and multilingual media releases** where non-standard filenames, Chinese Pinyin, Romaji, and unorthodox directory packaging trip up Sonarr and Radarr's built-in regex parsers.
 
 ---
 
@@ -87,7 +87,7 @@ To run AImportarr on Unraid:
 
 ```mermaid
 flowchart TD
-    A["Download Completes in qBittorrent"] --> B["Queue Flagged with Warning<br/>('release was matched by ID')"]
+    A["Download Completes in Client"] --> B["Queue Flagged with Warning<br/>('release was matched by ID')"]
     B --> C["AImportarr Scans Queue (Sonarr/Radarr)"]
     C --> D["Query AI Provider<br/>(Gemini Flash or Local Ollama)"]
     D --> E["Extract {is_match, season, episode, confidence}"]

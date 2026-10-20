@@ -63,7 +63,7 @@ class GeminiProvider(BaseAIProvider):
             "Return a JSON object with exactly these keys:\n"
             "- is_match (boolean): true if the release definitely refers to this series, false otherwise\n"
             "- confidence (float between 0.0 and 1.0)\n"
-            "- reasoning (string explaining the decision, citing Pinyin translation, English title, or tracker conventions)"
+            "- reasoning (string explaining the decision, citing Pinyin translation, English title, or naming conventions)"
         )
         prompt = (
             f"Release Title: {release_title}\n"
@@ -71,7 +71,7 @@ class GeminiProvider(BaseAIProvider):
             f"Candidate Series: {candidate_series_title} ({year if year else 'Unknown Year'})\n"
             f"Known Alternate Titles/Aliases: {alternate_titles}\n\n"
             "Task: Determine if this release belongs to the candidate TV series. "
-            "Consider Chinese Pinyin translations, Romaji, and common Asian tracker naming conventions."
+            "Consider Chinese Pinyin translations, Romaji, and common international media naming conventions."
         )
 
         try:
@@ -97,7 +97,7 @@ class GeminiProvider(BaseAIProvider):
             "Return a JSON object with exactly these keys:\n"
             "- is_match (boolean): true if the release definitely refers to this movie, false otherwise\n"
             "- confidence (float between 0.0 and 1.0)\n"
-            "- reasoning (string explaining the decision, citing Pinyin translation, English title, or tracker conventions)"
+            "- reasoning (string explaining the decision, citing Pinyin translation, English title, or naming conventions)"
         )
         prompt = (
             f"Release Title: {release_title}\n"
