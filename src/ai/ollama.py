@@ -2,14 +2,22 @@ import json
 import logging
 import httpx
 from typing import List, Optional
-from .base import BaseAIProvider, MediaMatchResult, EpisodeMatchResult, AIProviderError
+from .base import (
+    BaseAIProvider,
+    MediaMatchResult,
+    EpisodeMatchResult,
+    SampleEvaluationResult,
+    LibraryMatchResult,
+    AIProviderError
+)
 
 logger = logging.getLogger("aimportarr.ai.ollama")
 
 class OllamaProvider(BaseAIProvider):
-    def __init__(self, base_url: str = "http://localhost:11434", model: str = "qwen2.5:3b"):
+    def __init__(self, base_url: str = "http://localhost:11434", model: str = "qwen2.5:1.5b", num_gpu: Optional[int] = None):
         self.base_url = base_url.rstrip("/")
         self.model = model
+        self.num_gpu = num_gpu
         self.chat_url = f"{self.base_url}/api/chat"
 
     @property
@@ -17,6 +25,10 @@ class OllamaProvider(BaseAIProvider):
         return f"Ollama ({self.model})"
 
     async def _call_ollama(self, system_prompt: str, user_prompt: str) -> dict:
+        options = {"temperature": 0.1}
+        if self.num_gpu is not None:
+            options["num_gpu"] = self.num_gpu
+
         payload = {
             "model": self.model,
             "messages": [
@@ -25,9 +37,7 @@ class OllamaProvider(BaseAIProvider):
             ],
             "format": "json",
             "stream": False,
-            "options": {
-                "temperature": 0.1
-            }
+            "options": options
         }
 
         try:
@@ -125,3 +135,53 @@ class OllamaProvider(BaseAIProvider):
 
         res = await self._call_ollama(system_prompt, user_prompt)
         return EpisodeMatchResult(**res)
+
+    async def evaluate_sample_or_extra(
+        self,
+        file_name: str,
+        folder_name: str,
+        media_title: str
+    ) -> SampleEvaluationResult:
+        system_prompt = (
+            "You are an expert media parser assistant for Sonarr and Radarr. "
+            "You must respond ONLY with a valid JSON object with keys: "
+            "'is_valid_media' (boolean), 'confidence' (float 0.0-1.0), and 'reasoning' (string)."
+        )
+        user_prompt = (
+            f"Media Title: {media_title}\n"
+            f"Folder Name: {folder_name}\n"
+            f"File Name: {file_name}\n\n"
+            "Task: Determine if this file is a genuine media release (such as an episode, OVA, special, or main feature) "
+            "or if it is merely a disposable sample clip/trailer that should be ignored."
+        )
+        res = await self._call_ollama(system_prompt, user_prompt)
+        return SampleEvaluationResult(**res)
+
+    async def match_unknown_media(
+        self,
+        release_title: str,
+        folder_name: str,
+        media_type: str,
+        candidates: List[dict]
+    ) -> LibraryMatchResult:
+        system_prompt = (
+            f"You are an expert {media_type} media parser assistant for the *arr suite. "
+            "You must respond ONLY with a valid JSON object with keys: "
+            "'matched_id' (integer or null), 'matched_title' (string or null), 'confidence' (float 0.0-1.0), and 'reasoning' (string)."
+        )
+        candidate_summary = [
+            f"ID {c.get('id')}: '{c.get('title')}' ({c.get('year', 'N/A')}) | Aliases: {c.get('aliases', [])}"
+            for c in candidates[:50]
+        ]
+        candidates_str = "\n".join(candidate_summary)
+
+        user_prompt = (
+            f"Release Title: {release_title}\n"
+            f"Folder Name: {folder_name}\n"
+            f"Media Type: {media_type}\n\n"
+            f"User's Library Candidates:\n{candidates_str}\n\n"
+            "Task: Identify which library candidate this release belongs to. "
+            "Consider Chinese Pinyin translations, Romaji, alternate titles, and year variations."
+        )
+        res = await self._call_ollama(system_prompt, user_prompt)
+        return LibraryMatchResult(**res)

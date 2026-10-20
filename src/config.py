@@ -37,11 +37,36 @@ class RadarrConfig(BaseModel):
     api_key: str = ""
     auto_approve_id_matches: bool = True
 
+class CategoryRule(BaseModel):
+    enabled: bool = True
+    dry_run: Optional[bool] = None  # None inherits general.dry_run, True/False explicitly overrides it
+
+class CategoriesConfig(BaseModel):
+    id_match: CategoryRule = Field(default_factory=CategoryRule)
+    unknown_media: CategoryRule = Field(default_factory=CategoryRule)
+    unknown_episode: CategoryRule = Field(default_factory=CategoryRule)
+    sample_or_extra: CategoryRule = Field(default_factory=CategoryRule)
+    quality_or_language: CategoryRule = Field(default_factory=CategoryRule)
+    other: CategoryRule = Field(default_factory=CategoryRule)  # Fallback / Catch-all category
+
+    def is_dry_run(self, category: str, default_dry_run: bool) -> bool:
+        rule = getattr(self, category, None)
+        if rule and rule.dry_run is not None:
+            return rule.dry_run
+        return default_dry_run
+
+    def is_enabled(self, category: str) -> bool:
+        rule = getattr(self, category, None)
+        if rule is not None:
+            return rule.enabled
+        return True
+
 class AppConfig(BaseModel):
     general: GeneralConfig = Field(default_factory=GeneralConfig)
     ai: AIConfig = Field(default_factory=AIConfig)
     sonarr: SonarrConfig = Field(default_factory=SonarrConfig)
     radarr: RadarrConfig = Field(default_factory=RadarrConfig)
+    categories: CategoriesConfig = Field(default_factory=CategoriesConfig)
 
 def load_config(config_path: Optional[str] = None) -> AppConfig:
     """Load configuration from YAML file and apply environment variable overrides."""
@@ -103,6 +128,18 @@ def load_config(config_path: Optional[str] = None) -> AppConfig:
         config.radarr.url = env_radarr_url
     if env_radarr_key := os.getenv("RADARR_API_KEY"):
         config.radarr.api_key = env_radarr_key
+
+    # Category overrides from environment variables
+    # e.g. CATEGORY_ID_MATCH_DRY_RUN=false, CATEGORY_UNKNOWN_MEDIA_DRY_RUN=true, CATEGORY_OTHER_DRY_RUN=false
+    for cat_name in ["id_match", "unknown_media", "unknown_episode", "sample_or_extra", "quality_or_language", "other"]:
+        rule = getattr(config.categories, cat_name, None)
+        if not rule:
+            continue
+        prefix = f"CATEGORY_{cat_name.upper()}"
+        if env_dry := os.getenv(f"{prefix}_DRY_RUN"):
+            rule.dry_run = env_dry.lower() in ("true", "1", "yes")
+        if env_enabled := os.getenv(f"{prefix}_ENABLED"):
+            rule.enabled = env_enabled.lower() in ("true", "1", "yes")
 
     # Normalize URLs (strip trailing slashes)
     config.sonarr.url = config.sonarr.url.rstrip("/")

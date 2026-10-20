@@ -35,6 +35,11 @@ async def main():
     logging.getLogger().setLevel(log_level)
 
     logger.info(f"Configuration loaded (Dry Run: {config.general.dry_run}, Check Interval: {config.general.check_interval_seconds}s)")
+    logger.info("Configured Category Rules:")
+    for cat_name in ["id_match", "unknown_media", "unknown_episode", "sample_or_extra", "quality_or_language", "other"]:
+        rule = getattr(config.categories, cat_name)
+        cat_dry = rule.dry_run if rule.dry_run is not None else f"{config.general.dry_run} (inherited)"
+        logger.info(f"  - {cat_name}: enabled={rule.enabled}, dry_run={cat_dry}")
 
     ai_provider = get_ai_provider(config.ai)
 
@@ -48,7 +53,8 @@ async def main():
                 base_url=config.sonarr.url,
                 api_key=config.sonarr.api_key,
                 min_confidence=config.general.min_confidence,
-                dry_run=config.general.dry_run
+                dry_run=config.general.dry_run,
+                categories=config.categories
             )
             logger.info(f"Sonarr client configured for: {config.sonarr.url}")
 
@@ -62,7 +68,8 @@ async def main():
                 base_url=config.radarr.url,
                 api_key=config.radarr.api_key,
                 min_confidence=config.general.min_confidence,
-                dry_run=config.general.dry_run
+                dry_run=config.general.dry_run,
+                categories=config.categories
             )
             logger.info(f"Radarr client configured for: {config.radarr.url}")
 

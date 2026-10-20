@@ -3,7 +3,14 @@ import logging
 import re
 import httpx
 from typing import List, Optional
-from .base import BaseAIProvider, MediaMatchResult, EpisodeMatchResult, AIProviderError
+from .base import (
+    BaseAIProvider,
+    MediaMatchResult,
+    EpisodeMatchResult,
+    SampleEvaluationResult,
+    LibraryMatchResult,
+    AIProviderError
+)
 
 logger = logging.getLogger("aimportarr.ai.gemini")
 
@@ -257,3 +264,56 @@ class GeminiProvider(BaseAIProvider):
 
         res = await self._call_gemini(prompt, schema_desc)
         return EpisodeMatchResult(**res)
+
+    async def evaluate_sample_or_extra(
+        self,
+        file_name: str,
+        folder_name: str,
+        media_title: str
+    ) -> SampleEvaluationResult:
+        schema_desc = (
+            "Return a JSON object with exactly these keys:\n"
+            "- is_valid_media (boolean): true if the file is genuine episode or feature content, false if it is merely a preview, sample, or disposable extra\n"
+            "- confidence (float between 0.0 and 1.0)\n"
+            "- reasoning (string explaining your evaluation)"
+        )
+        prompt = (
+            f"Media Title: {media_title}\n"
+            f"Folder Name: {folder_name}\n"
+            f"File Name: {file_name}\n\n"
+            "Task: Determine if this file is a genuine media release (such as an episode, OVA, special, or main feature) "
+            "or if it is merely a disposable sample clip/trailer that should be ignored."
+        )
+        res = await self._call_gemini(prompt, schema_desc)
+        return SampleEvaluationResult(**res)
+
+    async def match_unknown_media(
+        self,
+        release_title: str,
+        folder_name: str,
+        media_type: str,
+        candidates: List[dict]
+    ) -> LibraryMatchResult:
+        schema_desc = (
+            "Return a JSON object with exactly these keys:\n"
+            "- matched_id (integer or null): the ID of the candidate media item that matches, or null if no match\n"
+            "- matched_title (string or null): the title of the matched media item, or null\n"
+            "- confidence (float between 0.0 and 1.0)\n"
+            "- reasoning (string explaining the decision, citing Pinyin translation, aliases, or naming matches)"
+        )
+        candidate_summary = [
+            f"ID {c.get('id')}: '{c.get('title')}' ({c.get('year', 'N/A')}) | Aliases: {c.get('aliases', [])}"
+            for c in candidates[:50]
+        ]
+        candidates_str = "\n".join(candidate_summary)
+
+        prompt = (
+            f"Release Title: {release_title}\n"
+            f"Folder Name: {folder_name}\n"
+            f"Media Type: {media_type}\n\n"
+            f"User's Library Candidates:\n{candidates_str}\n\n"
+            "Task: Identify which library candidate this release belongs to. "
+            "Consider Chinese Pinyin translations, Romaji, alternate titles, and year variations."
+        )
+        res = await self._call_gemini(prompt, schema_desc)
+        return LibraryMatchResult(**res)

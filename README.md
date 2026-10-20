@@ -138,6 +138,21 @@ docker run -d \
 | `radarr.enabled` | `false` | Enable or disable Radarr queue monitoring. |
 | `radarr.url` | `http://localhost:7878` | Base URL of your Radarr instance. |
 | `radarr.api_key` | `""` | Radarr API key (*Settings → General → Security*). |
+| `categories.<name>.enabled` | `true` | Enable or disable processing for specific error categories. |
+| `categories.<name>.dry_run` | `null` | Per-category dry-run override (`true`, `false`, or `null` to inherit `general.dry_run`). |
+
+### 🎯 Error & Import Failure Categories
+
+AImportarr intelligently categorizes download issues into granular categories, allowing individual toggles and independent `dry_run` control:
+
+| Category | Description | AI Action |
+| :--- | :--- | :--- |
+| `id_match` | Release was matched to series/movie by ID (Sonarr/Radarr safety guardrail) | Verifies release name against candidate title/aliases. |
+| `unknown_media` | Unknown series/movie (metadata missing from queue item) | Searches your tracked library items to identify the correct media. |
+| `unknown_episode` | Series is known, but season/episode numbers could not be parsed | Extracts season and episode numbers from irregular file paths. |
+| `sample_or_extra` | File flagged as a sample, preview, or short video | Evaluates whether the file is disposable or a genuine OVA/special. |
+| `quality_or_language` | Rejected by quality cutoff or language profile | Overrides cutoff when enabled to import alternative releases. |
+| `other` | **Fallback / Catch-All** for unclassified queue warnings or errors | Analyzes release and applies configured dry-run/import rules. |
 
 ### Environment Variable Overrides
 
@@ -153,6 +168,12 @@ SONARR_URL=http://localhost:8989
 SONARR_API_KEY=your_sonarr_api_key
 RADARR_URL=http://localhost:7878
 RADARR_API_KEY=your_radarr_api_key
+
+# Category dry-run and enabled overrides
+CATEGORY_ID_MATCH_DRY_RUN=false
+CATEGORY_UNKNOWN_MEDIA_DRY_RUN=true
+CATEGORY_OTHER_DRY_RUN=false
+CATEGORY_SAMPLE_OR_EXTRA_ENABLED=true
 ```
 
 ---

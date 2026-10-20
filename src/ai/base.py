@@ -20,6 +20,17 @@ class EpisodeMatchResult(BaseModel):
     confidence: float = Field(ge=0.0, le=1.0, description="Confidence score between 0.0 and 1.0")
     reasoning: str = Field(description="Brief explanation of how the episode was extracted")
 
+class SampleEvaluationResult(BaseModel):
+    is_valid_media: bool = Field(description="Whether the file is genuine media rather than a disposable sample/trailer")
+    confidence: float = Field(ge=0.0, le=1.0, description="Confidence score between 0.0 and 1.0")
+    reasoning: str = Field(description="Explanation of the sample evaluation")
+
+class LibraryMatchResult(BaseModel):
+    matched_id: Optional[int] = Field(None, description="ID of the matching media in the user's library, or null")
+    matched_title: Optional[str] = Field(None, description="Title of the matching media in the library")
+    confidence: float = Field(ge=0.0, le=1.0, description="Confidence score between 0.0 and 1.0")
+    reasoning: str = Field(description="Brief explanation of how the match was found")
+
 class BaseAIProvider(ABC):
     """Abstract interface for AI Providers (Gemini, Ollama, etc.)"""
 
@@ -61,4 +72,25 @@ class BaseAIProvider(ABC):
         known_episodes_in_season: List[dict]
     ) -> EpisodeMatchResult:
         """Extract Season and Episode numbers from ambiguous filenames."""
+        pass
+
+    @abstractmethod
+    async def evaluate_sample_or_extra(
+        self,
+        file_name: str,
+        folder_name: str,
+        media_title: str
+    ) -> SampleEvaluationResult:
+        """Determine if a file flagged as 'sample' is actually a valid media item (e.g. short anime special, OVA, or standalone release)."""
+        pass
+
+    @abstractmethod
+    async def match_unknown_media(
+        self,
+        release_title: str,
+        folder_name: str,
+        media_type: str,
+        candidates: List[dict]
+    ) -> LibraryMatchResult:
+        """Match an unknown release to one of the tracked media items in the user's library."""
         pass

@@ -58,3 +58,47 @@ radarr:
 
   # Automatically resolve movie releases blocked by "matched to movie by ID"
   auto_approve_id_matches: true
+
+# ==========================================
+# Error & Import Failure Categories
+# ==========================================
+# Granular control over how specific Sonarr/Radarr issues are handled.
+# Each category supports:
+#   enabled: true / false (whether AImportarr attempts to resolve this issue)
+#   dry_run: true / false / null
+#     - null (default): Inherits the global general.dry_run setting
+#     - true: Always run this category in dry-run mode (log decisions, never import)
+#     - false: Force real imports for this category, even if global dry_run is true
+categories:
+  # 1. Release was matched to series/movie by ID (Sonarr/Radarr safety guardrail)
+  id_match:
+    enabled: true
+    dry_run: null
+
+  # 2. Unknown Series or Movie (item missing from queue metadata)
+  # Uses AI to match the release name against all tracked items in your library
+  unknown_media:
+    enabled: true
+    dry_run: null
+
+  # 3. Series is known, but episode could not be parsed ("Unknown Episode")
+  # Uses AI to parse season and episode numbers from irregular filenames
+  unknown_episode:
+    enabled: true
+    dry_run: null
+
+  # 4. File flagged as sample, preview, or short video
+  # AI evaluates whether the file is disposable or a genuine release (e.g. OVA/special)
+  sample_or_extra:
+    enabled: true
+    dry_run: null
+
+  # 5. Quality cutoff or language profile rejections
+  quality_or_language:
+    enabled: true
+    dry_run: null
+
+  # 6. Fallback / Catch-All category for any other unclassified queue error or warning
+  other:
+    enabled: true
+    dry_run: null
