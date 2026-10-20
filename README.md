@@ -1,50 +1,38 @@
 # AImportarr 🤖🎬
 
-**AImportarr** is an AI-powered media matching and automated importer microservice for the `*arr` ecosystem (**Sonarr** & **Radarr**). 
-
-It specifically bridges the gap for **international and multilingual media releases** where non-standard filenames, Chinese Pinyin, Romaji, and unorthodox directory packaging trip up Sonarr and Radarr's built-in regex parsers.
+**AImportarr** is an AI-powered media matching and automated import companion for **Sonarr** and **Radarr**. It automatically resolves ambiguous filenames, missing episode numbers, and ID-blocked releases using Google Gemini or local Ollama.
 
 ---
 
-## 🚀 Features
+## 🚀 Quick Setup
 
-- **Automated Rescue for ID-Matched Blocks**: Automatically clears and approves releases blocked by Sonarr and Radarr's safety warning:
-  > *"Found matching series/movie via grab history, but release was matched to series/movie by ID. Automatic import is not possible."*
-- **Semantic Episode Identification (Sonarr)**: Uses LLM intelligence to deduce season and episode numbers from ambiguous filenames (e.g. `[Group] 05.mkv`, `第01集.mkv`, `EP02-03.mp4`, or nested episode folders).
-- **Movie Matching & Year Reconciliation (Radarr)**: Accurately identifies foreign movie titles, Pinyin releases, and handles ±1 year release discrepancies between film festivals and theatrical debuts.
-- **Dual AI Provider Support**:
-  - **Google Gemini API**: Free tier, blazing fast (~300ms), world-class multilingual parsing for Chinese, Japanese, and Korean releases. Zero server CPU/VRAM footprint.
-  - **Local Ollama**: 100% private and offline inference on your own hardware using models like `qwen2.5:3b`, `qwen2.5:7b`, or `llama3.2`.
-- **Zero-Touch API Integration**: Connects via Sonarr and Radarr's official REST API (`/api/v3/queue` and `/api/v3/command` `ManualImport`).
-- **Safety First**:
-  - `dry_run` mode allows you to simulate and inspect matches before committing imports.
-  - `min_confidence` threshold prevents low-confidence hallucinated imports.
-- **Ultra-Lightweight**: Packaged in Python 3.12 slim (~80MB image, ~35MB RAM footprint).
+### 1. Download or Create Config
+Create a configuration folder and copy the example configuration:
 
----
-
-## 🛠️ Quick Start
-
-### 1. Configure
-Copy the example configuration file:
 ```bash
-cp config.example.yml config.yml
+mkdir -p config
+curl -sSL https://raw.githubusercontent.com/willyzha/aimportarr/main/config.example.yml -o config/config.yml
 ```
 
-Edit `config.yml` with your Sonarr/Radarr details and preferred AI provider:
+### 2. Configure `config/config.yml`
+Edit `config/config.yml` with your connection details:
+
 ```yaml
 general:
-  dry_run: false
-  check_interval_seconds: 120
-  min_confidence: 0.85
+  dry_run: false                 # Set to true to test matches without importing
+  check_interval_seconds: 120   # How often to check queues (in seconds)
+  min_confidence: 0.85          # Confidence threshold (0.0 to 1.0)
+  log_level: "INFO"
 
 ai:
-  provider: "gemini" # or "ollama"
-  
+  provider: "gemini"            # Options: "gemini" or "ollama"
+
+  # Google Gemini (Free API key at https://aistudio.google.com/)
   gemini:
-    api_key: "YOUR_GOOGLE_AI_STUDIO_API_KEY"
+    api_key: "YOUR_GEMINI_API_KEY"
     model: "gemini-2.0-flash"
 
+  # Local Ollama (Self-hosted)
   ollama:
     base_url: "http://localhost:11434"
     model: "qwen2.5:3b"
@@ -53,48 +41,121 @@ sonarr:
   enabled: true
   url: "http://localhost:8989"
   api_key: "YOUR_SONARR_API_KEY"
+  auto_approve_id_matches: true
+  auto_resolve_unknown_episodes: true
 
 radarr:
   enabled: false
   url: "http://localhost:7878"
   api_key: "YOUR_RADARR_API_KEY"
+  auto_approve_id_matches: true
 ```
 
-### 2. Run with Docker Compose
+---
+
+## 🐳 Docker Deployment
+
+### Option A: Docker Compose (Recommended)
+
+Create a `docker-compose.yml`:
+
+```yaml
+version: "3.8"
+
+services:
+  aimportarr:
+    image: ghcr.io/willyzha/aimportarr:beta
+    container_name: aimportarr
+    restart: unless-stopped
+    volumes:
+      - ./config:/config
+    environment:
+      - TZ=UTC
+```
+
+Start the container:
 ```bash
 docker compose up -d
 ```
 
-### 3. Run Locally with Python (Dev mode)
+---
+
+### Option B: Docker CLI (`docker run`)
+
 ```bash
-python3 -m venv venv
-source venv/bin/activate
-pip install -r requirements.txt
-python -m src.main
+docker run -d \
+  --name aimportarr \
+  --restart unless-stopped \
+  -v /path/to/config:/config \
+  -e TZ=UTC \
+  ghcr.io/willyzha/aimportarr:beta
 ```
 
 ---
 
-## 🐳 Unraid Deployment
+### Option C: Unraid
 
-To run AImportarr on Unraid:
-1. Copy or clone the `aimportarr` folder to `/mnt/user/appdata/aimportarr`.
-2. Build or run the container via Docker Compose or add a custom template in the Unraid Docker tab pointing to `/config` mapped to `/mnt/user/appdata/aimportarr/config`.
+1. Open the Unraid WebGUI and navigate to the **Docker** tab.
+2. Click **Add Container** at the bottom.
+3. Configure the container:
+   - **Name**: `aimportarr`
+   - **Repository**: `ghcr.io/willyzha/aimportarr:beta`
+   - **Path /config**: `/mnt/user/appdata/aimportarr`
+4. Place your configured `config.yml` in `/mnt/user/appdata/aimportarr/config.yml`.
+5. Click **Apply**.
 
 ---
 
-## ⚙️ How It Works Under the Hood
+## ⚙️ Configuration Reference
 
-```mermaid
-flowchart TD
-    A["Download Completes in Client"] --> B["Queue Flagged with Warning<br/>('release was matched by ID')"]
-    B --> C["AImportarr Scans Queue (Sonarr/Radarr)"]
-    C --> D["Query AI Provider<br/>(Gemini Flash or Local Ollama)"]
-    D --> E["Extract {is_match, season, episode, confidence}"]
-    E --> F{"Confidence >= 0.85?"}
-    F -- Yes --> G["Submit to /api/v3/command (ManualImport)"]
-    F -- No --> H["Skip & Log Warning for Human Review"]
-    G --> I["Sonarr/Radarr Hardlinks & Renames Media into Library!"]
+| Setting | Default | Description |
+| :--- | :--- | :--- |
+| `general.dry_run` | `false` | When `true`, matches are analyzed and logged without executing imports. |
+| `general.check_interval_seconds` | `120` | Interval between queue inspections. |
+| `general.min_confidence` | `0.85` | AI confidence required (0.0 to 1.0) before executing an import. |
+| `ai.provider` | `gemini` | Selected AI backend: `gemini` or `ollama`. |
+| `ai.gemini.api_key` | `""` | Google Gemini API key (Get a free key at [aistudio.google.com](https://aistudio.google.com/)). |
+| `ai.gemini.model` | `gemini-2.0-flash` | Gemini model to use (`gemini-2.0-flash` or `gemini-1.5-flash`). |
+| `ai.ollama.base_url` | `http://localhost:11434` | Network address of your Ollama instance. |
+| `ai.ollama.model` | `qwen2.5:3b` | Model installed in Ollama (`qwen2.5:3b`, `llama3.2`, etc.). |
+| `sonarr.enabled` | `true` | Enable or disable Sonarr queue monitoring. |
+| `sonarr.url` | `http://localhost:8989` | Base URL of your Sonarr instance. |
+| `sonarr.api_key` | `""` | Sonarr API key (*Settings → General → Security*). |
+| `radarr.enabled` | `false` | Enable or disable Radarr queue monitoring. |
+| `radarr.url` | `http://localhost:7878` | Base URL of your Radarr instance. |
+| `radarr.api_key` | `""` | Radarr API key (*Settings → General → Security*). |
+
+### Environment Variable Overrides
+
+All options can alternatively be passed as container environment variables:
+
+```bash
+DRY_RUN=false
+AI_PROVIDER=gemini
+GEMINI_API_KEY=your_gemini_api_key
+OLLAMA_BASE_URL=http://localhost:11434
+SONARR_URL=http://localhost:8989
+SONARR_API_KEY=your_sonarr_api_key
+RADARR_URL=http://localhost:7878
+RADARR_API_KEY=your_radarr_api_key
+```
+
+---
+
+## 📋 Logs & Verification
+
+To verify that AImportarr is running and watching your queues:
+
+```bash
+docker logs -f aimportarr
+```
+
+Sample output:
+```text
+2026-10-19 23:00:00 [INFO] [aimportarr] Starting AImportarr (Sonarr & Radarr)
+2026-10-19 23:00:00 [INFO] [aimportarr] Configuration loaded (Dry Run: False, Check Interval: 120s)
+2026-10-19 23:00:00 [INFO] [aimportarr] AI Provider: gemini (Model: gemini-2.0-flash)
+2026-10-19 23:00:00 [INFO] [aimportarr.sonarr] Sonarr client configured for: http://localhost:8989
 ```
 
 ---
