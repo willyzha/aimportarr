@@ -1,6 +1,8 @@
+import asyncio
 import logging
-import httpx
+from pathlib import Path
 from typing import List, Dict, Any, Optional
+import httpx
 from .ai.base import BaseAIProvider
 from .classifier import classify_issue, ErrorCategory
 from .config import CategoriesConfig
@@ -70,8 +72,23 @@ class SonarrClient:
     async def get_manual_import_items(
         self, folder: str, download_id: Optional[str] = None, series_id: Optional[int] = None
     ) -> List[Dict[str, Any]]:
-        """Query Sonarr for media files detected in the download directory."""
-        params: Dict[str, Any] = {"folder": folder, "filterExistingFiles": False}
+        """
+        Query Sonarr for media files detected in the download directory or queue item.
+        Prioritizes querying by downloadId if available to accurately link to the queue download.
+        """
+        # 1. If download_id is provided, try querying Sonarr by downloadId first
+        if download_id:
+            try:
+                items = await self._get("manualimport", params={"downloadId": download_id})
+                if items:
+                    return items
+            except Exception as e:
+                logger.debug(f"Query /manualimport by downloadId '{download_id}' failed: {e}")
+
+        # 2. Fall back to querying by folder path (resolving parent folder if folder is a file path)
+        p = Path(folder)
+        folder_dir = str(p.parent) if p.suffix.lower() in (".mkv", ".mp4", ".avi", ".ts", ".m4v", ".mov", ".wmv") else str(p)
+        params: Dict[str, Any] = {"folder": folder_dir, "filterExistingFiles": True}
         if download_id:
             params["downloadId"] = download_id
         if series_id:
@@ -80,7 +97,7 @@ class SonarrClient:
         try:
             return await self._get("manualimport", params=params)
         except Exception as e:
-            logger.error(f"Failed to query /manualimport for folder '{folder}': {e}")
+            logger.error(f"Failed to query /manualimport for folder '{folder_dir}': {e}")
             return []
 
     async def trigger_manual_import(
@@ -89,7 +106,7 @@ class SonarrClient:
         dry_run: Optional[bool] = None,
         category: ErrorCategory = ErrorCategory.OTHER
     ) -> bool:
-        """Submit the resolved files to Sonarr for execution."""
+        """Submit the resolved files to Sonarr for execution and track command status."""
         if not files_to_import:
             return False
 
@@ -98,7 +115,7 @@ class SonarrClient:
         if is_dry:
             logger.info(f"[DRY RUN - Category: {category.value}] Would submit {len(files_to_import)} file(s) for ManualImport to Sonarr")
             for f in files_to_import:
-                logger.info(f"[DRY RUN - Category: {category.value}]   -> File: {f.get('path')} | SeriesId: {f.get('seriesId')} | Episodes: {f.get('episodeIds')}")
+                logger.info(f"[DRY RUN - Category: {category.value}]   -> File: {f.get('path')} | SeriesId: {f.get('seriesId')} | Episodes: {f.get('episodeIds')} | DownloadId: {f.get('downloadId')}")
             return True
 
         payload = {
@@ -108,7 +125,26 @@ class SonarrClient:
         }
         try:
             res = await self._post("command", payload)
-            logger.info(f"Triggered Sonarr ManualImport command successfully! Command ID: {res.get('id')}")
+            cmd_id = res.get("id")
+            logger.info(f"Triggered Sonarr ManualImport command successfully! Command ID: {cmd_id}")
+
+            if cmd_id:
+                # Poll command status up to 10 seconds to confirm execution
+                for _ in range(5):
+                    await asyncio.sleep(2)
+                    try:
+                        cmd_status = await self._get(f"command/{cmd_id}")
+                        state = cmd_status.get("status") or cmd_status.get("state")
+                        if state == "completed":
+                            logger.info(f"Sonarr ManualImport command {cmd_id} completed successfully: {cmd_status.get('message', 'Import finished')}")
+                            return True
+                        elif state == "failed":
+                            logger.error(f"Sonarr ManualImport command {cmd_id} failed: {cmd_status.get('message', 'Unknown failure')}")
+                            return False
+                    except Exception as pe:
+                        logger.debug(f"Failed to poll command {cmd_id} status: {pe}")
+                        break
+
             return True
         except Exception as e:
             logger.error(f"Failed to trigger Sonarr ManualImport command: {e}")
@@ -147,11 +183,12 @@ class SonarrClient:
         logger.info(f"Found blocked/warning download in Sonarr queue: '{title}' (Category: {category.value}{dry_run_tag}, Status: {status})")
         logger.info(f"  Messages: {all_messages}")
 
-        if not output_path:
-            logger.warning(f"  Cannot process item '{title}': outputPath is empty.")
+        if not output_path and not download_id:
+            logger.warning(f"  Cannot process item '{title}': outputPath and downloadId are both empty.")
             return False
 
-        folder_name = output_path.split("/")[-1]
+        p = Path(output_path) if output_path else Path("")
+        folder_name = p.parent.name if p.suffix.lower() in (".mkv", ".mp4", ".avi", ".ts", ".m4v", ".mov", ".wmv") else (p.name or title)
         matched_from_library = False
 
         # If series is unknown, attempt to match release to Sonarr library using AI
@@ -217,7 +254,7 @@ class SonarrClient:
         )
 
         if not manual_items:
-            logger.warning(f"  Sonarr /manualimport returned 0 media files for folder '{output_path}'.")
+            logger.warning(f"  Sonarr /manualimport returned 0 media files for download '{download_id or output_path}'.")
             return False
 
         # Refine issue category if manual import rejections offer more specific classification
@@ -238,7 +275,7 @@ class SonarrClient:
 
         for m_file in manual_items:
             file_path = m_file.get("path", "")
-            file_name = m_file.get("name", "")
+            file_name = m_file.get("name") or m_file.get("relativePath") or Path(file_path).name
             file_folder = m_file.get("folderName", "") or folder_name
             rejections = [r.get("reason", "") for r in m_file.get("rejections", [])]
             curr_episodes = m_file.get("episodes", [])
@@ -269,14 +306,17 @@ class SonarrClient:
             if curr_episodes and not non_blocking_rejections:
                 ep_ids = [ep.get("id") for ep in curr_episodes]
                 logger.info(f"  Pre-mapped file approved: '{file_name}' -> Episodes: {[ep.get('episodeNumber') for ep in curr_episodes]}")
-                files_to_import.append({
+                file_payload = {
                     "path": file_path,
                     "seriesId": target_series_id,
                     "episodeIds": ep_ids,
                     "quality": m_file.get("quality"),
                     "languages": m_file.get("languages", []),
                     "releaseGroup": m_file.get("releaseGroup"),
-                })
+                }
+                if download_id:
+                    file_payload["downloadId"] = download_id
+                files_to_import.append(file_payload)
             else:
                 # Need AI to parse episode number
                 logger.info(f"  Parsing unmapped file with AI: '{file_name}'")
@@ -296,14 +336,17 @@ class SonarrClient:
                         if e.get("seasonNumber") == ep_match.season_number and e.get("episodeNumber") in ep_match.episode_numbers
                     ]
                     if matched_ep_ids:
-                        files_to_import.append({
+                        file_payload = {
                             "path": file_path,
                             "seriesId": target_series_id,
                             "episodeIds": matched_ep_ids,
                             "quality": m_file.get("quality"),
                             "languages": m_file.get("languages", []),
                             "releaseGroup": m_file.get("releaseGroup"),
-                        })
+                        }
+                        if download_id:
+                            file_payload["downloadId"] = download_id
+                        files_to_import.append(file_payload)
                     else:
                         logger.warning(f"  Episode numbers {ep_match.episode_numbers} for Season {ep_match.season_number} not found in Sonarr's database.")
                 else:
