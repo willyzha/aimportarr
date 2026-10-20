@@ -2,7 +2,7 @@
 
 **AImportarr** is an AI-powered media matching and automated importer microservice for the `*arr` ecosystem (**Sonarr** & **Radarr**). 
 
-It specifically bridges the gap for releases from **Asian and private trackers** (e.g., Avistaz, BaoziPT, PTer, M-Team) where non-standard filenames, Chinese Pinyin, Romaji, and unorthodox directory packaging trip up Sonarr and Radarr's built-in regex parsers.
+It specifically bridges the gap for releases from **Asian and private trackers** (e.g., Avistaz, PTer, M-Team) where non-standard filenames, Chinese Pinyin, Romaji, and unorthodox directory packaging trip up Sonarr and Radarr's built-in regex parsers.
 
 ---
 
@@ -10,7 +10,7 @@ It specifically bridges the gap for releases from **Asian and private trackers**
 
 - **Automated Rescue for ID-Matched Blocks**: Automatically clears and approves releases blocked by Sonarr and Radarr's safety warning:
   > *"Found matching series/movie via grab history, but release was matched to series/movie by ID. Automatic import is not possible."*
-- **Semantic Episode Identification (Sonarr)**: Uses LLM intelligence to deduce season and episode numbers from ambiguous filenames (e.g. `[BaoziPT] 05.mkv`, `第01集.mkv`, `EP02-03.mp4`, or nested episode folders).
+- **Semantic Episode Identification (Sonarr)**: Uses LLM intelligence to deduce season and episode numbers from ambiguous filenames (e.g. `[Group] 05.mkv`, `第01集.mkv`, `EP02-03.mp4`, or nested episode folders).
 - **Movie Matching & Year Reconciliation (Radarr)**: Accurately identifies foreign movie titles, Pinyin releases, and handles ±1 year release discrepancies between film festivals and theatrical debuts.
 - **Dual AI Provider Support**:
   - **Google Gemini API**: Free tier, blazing fast (~300ms), world-class multilingual parsing for Chinese, Japanese, and Korean releases. Zero server CPU/VRAM footprint.

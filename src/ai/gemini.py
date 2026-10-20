@@ -71,7 +71,7 @@ class GeminiProvider(BaseAIProvider):
             f"Candidate Series: {candidate_series_title} ({year if year else 'Unknown Year'})\n"
             f"Known Alternate Titles/Aliases: {alternate_titles}\n\n"
             "Task: Determine if this release belongs to the candidate TV series. "
-            "Consider Chinese Pinyin translations, Romaji, and common Asian tracker naming conventions (e.g., Avistaz, BaoziPT)."
+            "Consider Chinese Pinyin translations, Romaji, and common Asian tracker naming conventions."
         )
 
         try:
