@@ -65,11 +65,12 @@ class RadarrClient:
             return []
 
     async def get_manual_import_items(
-        self, folder: str, download_id: Optional[str] = None, movie_id: Optional[int] = None
+        self, folder: str, download_id: Optional[str] = None
     ) -> List[Dict[str, Any]]:
         """
         Query Radarr for media files detected in the download directory or queue item.
         Prioritizes querying by downloadId if available.
+        Never passes movieId to prevent Radarr from scanning the library folder.
         """
         if download_id:
             try:
@@ -79,13 +80,14 @@ class RadarrClient:
             except Exception as e:
                 logger.debug(f"Query Radarr /manualimport by downloadId '{download_id}' failed: {e}")
 
+        if not folder or folder.strip() in (".", "/"):
+            return []
+
         p = Path(folder)
         folder_dir = str(p.parent) if p.suffix.lower() in (".mkv", ".mp4", ".avi", ".ts", ".m4v", ".mov", ".wmv") else str(p)
         params: Dict[str, Any] = {"folder": folder_dir, "filterExistingFiles": True}
         if download_id:
             params["downloadId"] = download_id
-        if movie_id:
-            params["movieId"] = movie_id
 
         try:
             return await self._get("manualimport", params=params)
@@ -150,11 +152,20 @@ class RadarrClient:
         and use AI to verify and import.
         """
         title = item.get("title", "")
-        status = item.get("trackedDownloadStatus", "")
+        status = (item.get("trackedDownloadStatus") or "").lower()
+        tracked_state = (item.get("trackedDownloadState") or "").lower()
         status_messages = item.get("statusMessages", [])
         output_path = item.get("outputPath", "")
         download_id = item.get("downloadId", "")
         movie_info = item.get("movie")
+
+        # Never attempt to import an in-progress download
+        if tracked_state in ("downloading", "importing", "imported"):
+            return False
+
+        # Output path is required for importing completed media files
+        if not output_path or not output_path.strip() or output_path.strip() in (".", "/"):
+            return False
 
         all_messages: List[str] = []
         for sm in status_messages:
@@ -172,13 +183,9 @@ class RadarrClient:
         is_cat_dry_run = self.categories.is_dry_run(category.value, self.dry_run)
         dry_run_tag = " [DRY RUN]" if is_cat_dry_run else ""
         logger.info(f"Processing blocked movie: '{title}' [{category.value}{dry_run_tag}]")
-        logger.debug(f"  Queue status: {status} | Messages: {all_messages}")
+        logger.debug(f"  Queue status: {status} (state: {tracked_state}) | Messages: {all_messages}")
 
-        if not output_path and not download_id:
-            logger.warning(f"  Cannot process movie '{title}': outputPath and downloadId are both empty.")
-            return False
-
-        p = Path(output_path) if output_path else Path("")
+        p = Path(output_path)
         folder_name = p.parent.name if p.suffix.lower() in (".mkv", ".mp4", ".avi", ".ts", ".m4v", ".mov", ".wmv") else (p.name or title)
         matched_from_library = False
 
@@ -243,7 +250,7 @@ class RadarrClient:
 
         # Query Radarr manual import to inspect media files
         manual_items = await self.get_manual_import_items(
-            folder=output_path, download_id=download_id, movie_id=movie_id
+            folder=output_path, download_id=download_id
         )
 
         if not manual_items:
@@ -263,8 +270,16 @@ class RadarrClient:
                 is_cat_dry_run = self.categories.is_dry_run(category.value, self.dry_run)
 
         files_to_import: List[Dict[str, Any]] = []
+        movie_path = (movie_info.get("path") or "").rstrip("/") if movie_info else ""
+
         for m_file in manual_items:
             file_path = m_file.get("path", "")
+
+            # Safeguard: never import files that are already inside the destination library folder
+            if movie_path and file_path.startswith(movie_path):
+                logger.debug(f"Ignoring file '{file_path}' because it is inside destination library directory '{movie_path}'")
+                continue
+
             file_name = m_file.get("name") or m_file.get("relativePath") or Path(file_path).name
             file_folder = m_file.get("folderName", "") or folder_name
             rejections = [r.get("reason", "") for r in m_file.get("rejections", [])]
