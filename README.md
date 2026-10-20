@@ -54,14 +54,11 @@ sonarr:
   enabled: true
   url: "http://localhost:8989"
   api_key: "YOUR_SONARR_API_KEY"
-  auto_approve_id_matches: true
-  auto_resolve_unknown_episodes: true
 
 radarr:
   enabled: false
   url: "http://localhost:7878"
   api_key: "YOUR_RADARR_API_KEY"
-  auto_approve_id_matches: true
 ```
 
 ---

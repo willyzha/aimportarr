@@ -25,17 +25,16 @@ class AIConfig(BaseModel):
     ollama: OllamaConfig = Field(default_factory=OllamaConfig)
 
 class SonarrConfig(BaseModel):
+    model_config = {"extra": "ignore"}
     enabled: bool = True
     url: str = "http://localhost:8989"
     api_key: str = ""
-    auto_approve_id_matches: bool = True
-    auto_resolve_unknown_episodes: bool = True
 
 class RadarrConfig(BaseModel):
+    model_config = {"extra": "ignore"}
     enabled: bool = False
     url: str = "http://localhost:7878"
     api_key: str = ""
-    auto_approve_id_matches: bool = True
 
 class CategoryRule(BaseModel):
     enabled: bool = True
@@ -91,6 +90,19 @@ def load_config(config_path: Optional[str] = None) -> AppConfig:
             data = yaml.safe_load(f) or {}
 
     config = AppConfig(**data)
+
+    # Backward compatibility: migrate legacy auto_approve / auto_resolve flags if categories not explicitly defined
+    sonarr_data = data.get("sonarr", {}) if isinstance(data, dict) else {}
+    radarr_data = data.get("radarr", {}) if isinstance(data, dict) else {}
+    cats_data = data.get("categories", {}) if isinstance(data, dict) else {}
+
+    if "auto_approve_id_matches" in sonarr_data and "id_match" not in cats_data:
+        config.categories.id_match.enabled = bool(sonarr_data["auto_approve_id_matches"])
+    elif "auto_approve_id_matches" in radarr_data and "id_match" not in cats_data:
+        config.categories.id_match.enabled = bool(radarr_data["auto_approve_id_matches"])
+
+    if "auto_resolve_unknown_episodes" in sonarr_data and "unknown_episode" not in cats_data:
+        config.categories.unknown_episode.enabled = bool(sonarr_data["auto_resolve_unknown_episodes"])
 
     # General overrides
     if env_dry_run := os.getenv("DRY_RUN"):
