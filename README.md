@@ -1,6 +1,18 @@
-# AImportarr 🤖🎬
+<p align="center">
+  <img src="assets/logo.png" width="180" alt="AImportarr Logo" />
+</p>
 
-**AImportarr** is an AI-powered media matching and automated import companion for **Sonarr** and **Radarr**. It automatically resolves ambiguous filenames, missing episode numbers, and ID-blocked releases using Google Gemini with automatic local Ollama fallback.
+<h1 align="center">AImportarr</h1>
+
+<p align="center">
+  <strong>AI-powered media matching and automated import companion for Sonarr & Radarr</strong>
+</p>
+
+<p align="center">
+  <img src="https://img.shields.io/badge/License-MIT-blue.svg" alt="License" />
+  <img src="https://img.shields.io/badge/Python-3.12-3776AB.svg?logo=python" alt="Python" />
+  <img src="https://img.shields.io/badge/Docker-Multi--Arch-2496ED.svg?logo=docker" alt="Docker" />
+</p>
 
 ---
 
