@@ -2,6 +2,7 @@ import asyncio
 import logging
 import signal
 import sys
+import httpx
 from .config import load_config
 from .ai import get_ai_provider
 from .sonarr import SonarrClient
@@ -34,7 +35,6 @@ async def main():
     logging.getLogger().setLevel(log_level)
 
     logger.info(f"Configuration loaded (Dry Run: {config.general.dry_run}, Check Interval: {config.general.check_interval_seconds}s)")
-    logger.info(f"AI Provider: {config.ai.provider} (Model: {config.ai.gemini.model if config.ai.provider == 'gemini' else config.ai.ollama.model})")
 
     ai_provider = get_ai_provider(config.ai)
 
@@ -76,8 +76,10 @@ async def main():
                         if not running:
                             break
                         await sonarr_client.process_queue_item(item, ai_provider)
+            except (httpx.ConnectError, httpx.ConnectTimeout) as e:
+                logger.warning(f"Could not connect to Sonarr at '{config.sonarr.url}': connection refused or timed out. Please verify host and port.")
             except Exception as e:
-                logger.error(f"Error during Sonarr scan: {e}", exc_info=True)
+                logger.error(f"Error during Sonarr scan: {e}")
 
         # 2. Scan Radarr queue
         if radarr_client and running:
@@ -88,8 +90,10 @@ async def main():
                         if not running:
                             break
                         await radarr_client.process_queue_item(item, ai_provider)
+            except (httpx.ConnectError, httpx.ConnectTimeout) as e:
+                logger.warning(f"Could not connect to Radarr at '{config.radarr.url}': connection refused or timed out. Please verify host and port.")
             except Exception as e:
-                logger.error(f"Error during Radarr scan: {e}", exc_info=True)
+                logger.error(f"Error during Radarr scan: {e}")
 
         # Sleep in small increments to allow responsive shutdown
         for _ in range(config.general.check_interval_seconds):

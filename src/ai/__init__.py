@@ -7,15 +7,29 @@ from ..config import AIConfig
 
 logger = logging.getLogger("aimportarr.ai")
 
+def _is_valid_key(key: str) -> bool:
+    return bool(key) and not key.startswith("YOUR_")
+
 def get_ai_provider(config: AIConfig) -> BaseAIProvider:
     """
     Instantiate AI provider based on configuration.
     If fallback_enabled is True, wraps the primary provider with an automatic fallback.
     """
     if config.provider == "gemini":
-        if not config.gemini.api_key:
-            raise ValueError("Gemini API key is required when ai.provider is set to 'gemini'")
-        
+        has_gemini_key = _is_valid_key(config.gemini.api_key)
+
+        if not has_gemini_key:
+            if config.fallback_enabled:
+                logger.warning(
+                    "Gemini API key is missing or not configured. Automatically starting with Ollama (%s) as primary provider.",
+                    config.ollama.model
+                )
+                return OllamaProvider(
+                    base_url=config.ollama.base_url,
+                    model=config.ollama.model
+                )
+            raise ValueError("Gemini API key is required when ai.provider is set to 'gemini' and fallback is disabled.")
+
         primary = GeminiProvider(
             api_key=config.gemini.api_key,
             model=config.gemini.model
@@ -28,7 +42,7 @@ def get_ai_provider(config: AIConfig) -> BaseAIProvider:
             )
             logger.info(f"AI Provider initialized: Gemini ({config.gemini.model}) with automatic fallback to Ollama ({config.ollama.model})")
             return FallbackProvider(primary=primary, fallback=fallback)
-        
+
         return primary
 
     elif config.provider == "ollama":
@@ -37,7 +51,8 @@ def get_ai_provider(config: AIConfig) -> BaseAIProvider:
             model=config.ollama.model
         )
 
-        if config.fallback_enabled and config.gemini.api_key:
+        has_gemini_key = _is_valid_key(config.gemini.api_key)
+        if config.fallback_enabled and has_gemini_key:
             fallback = GeminiProvider(
                 api_key=config.gemini.api_key,
                 model=config.gemini.model
@@ -45,6 +60,7 @@ def get_ai_provider(config: AIConfig) -> BaseAIProvider:
             logger.info(f"AI Provider initialized: Ollama ({config.ollama.model}) with automatic fallback to Gemini ({config.gemini.model})")
             return FallbackProvider(primary=primary, fallback=fallback)
 
+        logger.info(f"AI Provider initialized: Ollama ({config.ollama.model})")
         return primary
 
     else:
