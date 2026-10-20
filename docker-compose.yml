@@ -1,0 +1,22 @@
+version: "3.8"
+
+services:
+  aimportarr:
+    build: .
+    container_name: aimportarr
+    restart: unless-stopped
+    volumes:
+      - ./config:/config
+    environment:
+      - PUID=1000
+      - PGID=1000
+      - TZ=UTC
+      # Optional: Override via environment variables
+      # - AI_PROVIDER=gemini
+      # - GEMINI_API_KEY=your_key_here
+      # - SONARR_URL=http://localhost:8989
+      # - SONARR_API_KEY=your_sonarr_key_here
+      # - RADARR_URL=http://localhost:7878
+      # - RADARR_API_KEY=your_radarr_key_here
+      # - DRY_RUN=false
+    network_mode: bridge

@@ -1,0 +1,56 @@
+# ==========================================
+# AImportarr Configuration
+# ==========================================
+
+general:
+  # When dry_run is true, AImportarr will analyze and log decisions,
+  # but will NOT trigger actual imports in Sonarr/Radarr.
+  dry_run: false
+
+  # Queue check interval in seconds (default: 120s = 2 minutes)
+  check_interval_seconds: 120
+
+  # Minimum AI confidence required to auto-import (0.0 to 1.0)
+  min_confidence: 0.85
+
+  # Logging level: DEBUG, INFO, WARNING, ERROR
+  log_level: "INFO"
+
+# ==========================================
+# AI Provider Configuration
+# ==========================================
+ai:
+  # Selected provider: "gemini" or "ollama"
+  provider: "gemini"
+
+  # Google Gemini configuration (Cloud / Free Tier)
+  gemini:
+    api_key: "YOUR_GEMINI_API_KEY"
+    model: "gemini-2.0-flash"
+
+  # Ollama configuration (Local / Self-hosted)
+  ollama:
+    base_url: "http://localhost:11434"
+    model: "qwen2.5:3b"
+
+# ==========================================
+# *arr Services
+# ==========================================
+sonarr:
+  enabled: true
+  url: "http://localhost:8989"
+  api_key: "YOUR_SONARR_API_KEY"
+
+  # Automatically resolve releases blocked by "matched to series by ID"
+  auto_approve_id_matches: true
+
+  # Automatically identify episode numbers for unmapped files using AI
+  auto_resolve_unknown_episodes: true
+
+radarr:
+  enabled: false
+  url: "http://localhost:7878"
+  api_key: "YOUR_RADARR_API_KEY"
+
+  # Automatically resolve movie releases blocked by "matched to movie by ID"
+  auto_approve_id_matches: true
