@@ -1,5 +1,6 @@
 import json
 import logging
+import re
 import httpx
 from typing import List, Optional
 from .base import BaseAIProvider, MediaMatchResult, EpisodeMatchResult, AIProviderError
@@ -7,17 +8,104 @@ from .base import BaseAIProvider, MediaMatchResult, EpisodeMatchResult, AIProvid
 logger = logging.getLogger("aimportarr.ai.gemini")
 
 class GeminiProvider(BaseAIProvider):
-    def __init__(self, api_key: str, model: str = "gemini-2.0-flash"):
+    def __init__(self, api_key: str, model: str = "auto"):
         self.api_key = api_key
-        self.model = model
-        self.base_url = f"https://generativelanguage.googleapis.com/v1beta/models/{self.model}:generateContent"
+        self.model = model.strip() if model else "auto"
+        self._resolved_model: Optional[str] = None
+        self._failed_models: set = set()
 
     @property
     def name(self) -> str:
-        return f"Gemini ({self.model})"
+        active = self._resolved_model or self.model
+        return f"Gemini ({active})"
+
+    async def resolve_smallest_model(self, force_refresh: bool = False) -> str:
+        """
+        Dynamically query Google Generative Language API to discover and verify the smallest
+        and fastest working text generation model for the current API key.
+        Prioritizes:
+          1. Standard flash models (e.g. gemini-3.5-flash, gemini-3-flash-preview)
+          2. flash-lite models
+          3. Higher version numbers over older versions
+        Probes candidate models to ensure they respond with HTTP 200 rather than timing out.
+        """
+        if not force_refresh and self._resolved_model and self._resolved_model not in self._failed_models:
+            return self._resolved_model
+
+        url = f"https://generativelanguage.googleapis.com/v1beta/models?key={self.api_key}"
+        try:
+            async with httpx.AsyncClient(timeout=8.0) as client:
+                resp = await client.get(url)
+                resp.raise_for_status()
+                data = resp.json()
+        except Exception as e:
+            logger.warning(
+                "Failed to auto-discover Gemini models catalog: %s. Falling back to default 'gemini-3.5-flash'.",
+                e
+            )
+            fallback = "gemini-3.5-flash" if "gemini-3.5-flash" not in self._failed_models else "gemini-3-flash-preview"
+            self._resolved_model = fallback
+            return fallback
+
+        candidates = []
+        for m in data.get("models", []):
+            methods = m.get("supportedGenerationMethods", [])
+            name = m.get("name", "").replace("models/", "")
+            if "generateContent" not in methods:
+                continue
+            # Exclude specialized modalities (image generation, tts, robotics, audio, transcription)
+            if any(x in name for x in ["image", "tts", "robotics", "clip", "banana", "transcribe", "argon", "computer-use"]):
+                continue
+            if name in self._failed_models:
+                continue
+            candidates.append(name)
+
+        def model_score(name: str):
+            # Tier 1: standard flash (fastest and most reliable on API)
+            # Tier 2: flash-lite
+            # Tier 3: other (pro, etc.)
+            tier = 3
+            if "flash" in name and "flash-lite" not in name:
+                tier = 1
+            elif "flash-lite" in name:
+                tier = 2
+
+            v_match = re.search(r"gemini-(\d+(?:\.\d+)?)", name)
+            version = float(v_match.group(1)) if v_match else 0.0
+            is_preview = 1 if "preview" in name else 0
+            is_generic_latest = 1 if "latest" in name else 0
+            return (tier, is_generic_latest, -version, is_preview, name)
+
+        candidates.sort(key=model_score)
+
+        # Probe candidate models with a lightweight ping to verify responsiveness
+        async with httpx.AsyncClient(timeout=5.0) as probe_client:
+            for candidate in candidates[:8]:
+                probe_url = f"https://generativelanguage.googleapis.com/v1beta/models/{candidate}:generateContent?key={self.api_key}"
+                probe_payload = {"contents": [{"parts": [{"text": "ping"}]}]}
+                try:
+                    r = await probe_client.post(probe_url, json=probe_payload)
+                    if r.status_code == 200:
+                        logger.info("Auto-resolved active Gemini model: '%s' (verified responsive)", candidate)
+                        self._resolved_model = candidate
+                        return candidate
+                    else:
+                        logger.debug("Candidate model '%s' returned HTTP %s during probe. Trying next...", candidate, r.status_code)
+                        self._failed_models.add(candidate)
+                except Exception as probe_err:
+                    logger.debug("Candidate model '%s' timed out or failed probe: %s. Trying next...", candidate, probe_err)
+                    self._failed_models.add(candidate)
+
+        logger.warning("No probed Gemini models responded successfully. Defaulting to 'gemini-3.5-flash'.")
+        self._resolved_model = "gemini-3.5-flash"
+        return "gemini-3.5-flash"
 
     async def _call_gemini(self, prompt: str, schema_desc: str) -> dict:
-        url = f"{self.base_url}?key={self.api_key}"
+        if self.model in ("auto", "smallest", ""):
+            current_model = await self.resolve_smallest_model()
+        else:
+            current_model = self._resolved_model or self.model
+
         payload = {
             "contents": [
                 {
@@ -39,9 +127,25 @@ class GeminiProvider(BaseAIProvider):
             }
         }
 
+        url = f"https://generativelanguage.googleapis.com/v1beta/models/{current_model}:generateContent?key={self.api_key}"
+
         try:
             async with httpx.AsyncClient(timeout=30.0) as client:
                 resp = await client.post(url, json=payload)
+                if resp.status_code == 404:
+                    # Model deprecated or sunset by Google! Mark as failed and self-heal
+                    self._failed_models.add(current_model)
+                    logger.warning(
+                        "Gemini model '%s' returned HTTP 404 (model retired or unavailable). Auto-discovering replacement...",
+                        current_model
+                    )
+                    new_model = await self.resolve_smallest_model(force_refresh=True)
+                    if new_model != current_model:
+                        logger.info("Retrying request with newly resolved model: '%s'...", new_model)
+                        current_model = new_model
+                        url = f"https://generativelanguage.googleapis.com/v1beta/models/{current_model}:generateContent?key={self.api_key}"
+                        resp = await client.post(url, json=payload)
+
                 resp.raise_for_status()
                 data = resp.json()
         except httpx.HTTPStatusError as e:

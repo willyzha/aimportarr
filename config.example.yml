@@ -30,12 +30,12 @@ ai:
   # Google Gemini configuration (Cloud / Free Tier)
   gemini:
     api_key: "YOUR_GEMINI_API_KEY"
-    model: "gemini-2.0-flash"
+    model: "auto" # Default: "auto" dynamically resolves the smallest/fastest active model (e.g. flash-lite / flash) and auto-heals on 404s
 
   # Ollama configuration (Local / Self-hosted)
   ollama:
     base_url: "http://localhost:11434"
-    model: "qwen2.5:3b"
+    model: "qwen2.5:1.5b"
 
 # ==========================================
 # *arr Services

@@ -12,11 +12,11 @@ class GeneralConfig(BaseModel):
 
 class GeminiConfig(BaseModel):
     api_key: str = ""
-    model: str = "gemini-2.0-flash"
+    model: str = "auto"
 
 class OllamaConfig(BaseModel):
     base_url: str = "http://localhost:11434"
-    model: str = "qwen2.5:3b"
+    model: str = "qwen2.5:1.5b"
 
 class AIConfig(BaseModel):
     provider: Literal["gemini", "ollama"] = "gemini"
@@ -80,7 +80,9 @@ def load_config(config_path: Optional[str] = None) -> AppConfig:
     if env_gemini_key := os.getenv("GEMINI_API_KEY"):
         config.ai.gemini.api_key = env_gemini_key
     if env_gemini_model := os.getenv("GEMINI_MODEL"):
-        config.ai.gemini.model = env_gemini_model
+        config.ai.gemini.model = env_gemini_model.strip()
+    if not config.ai.gemini.model:
+        config.ai.gemini.model = "auto"
     if env_ollama_url := os.getenv("OLLAMA_BASE_URL"):
         config.ai.ollama.base_url = env_ollama_url
     if env_ollama_model := os.getenv("OLLAMA_MODEL"):

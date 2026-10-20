@@ -43,12 +43,12 @@ ai:
   # Google Gemini (Free API key at https://aistudio.google.com/)
   gemini:
     api_key: "YOUR_GEMINI_API_KEY"
-    model: "gemini-2.0-flash"
+    model: "auto"                 # Default: "auto" picks smallest/fastest active model
 
   # Local Ollama (Self-hosted fallback or primary)
   ollama:
     base_url: "http://localhost:11434"
-    model: "qwen2.5:3b"
+    model: "qwen2.5:1.5b"
 
 sonarr:
   enabled: true
@@ -129,7 +129,7 @@ docker run -d \
 | `ai.provider` | `gemini` | Selected primary AI backend: `gemini` or `ollama`. |
 | `ai.fallback_enabled` | `true` | When `true`, automatically delegates to the secondary provider if the primary encounters invalid keys, rate limits (HTTP 429), token exhaustion, or network errors. |
 | `ai.gemini.api_key` | `""` | Google Gemini API key (Get a free key at [aistudio.google.com](https://aistudio.google.com/)). |
-| `ai.gemini.model` | `gemini-2.0-flash` | Gemini model to use (`gemini-2.0-flash` or `gemini-1.5-flash`). |
+| `ai.gemini.model` | `auto` | Gemini model to use (`auto` dynamically selects the smallest/fastest active model, e.g. `flash-lite` / `flash`, and auto-heals on 404s). |
 | `ai.ollama.base_url` | `http://localhost:11434` | Network address of your Ollama instance. |
 | `ai.ollama.model` | `qwen2.5:3b` | Model installed in Ollama (`qwen2.5:3b`, `llama3.2`, etc.). |
 | `sonarr.enabled` | `true` | Enable or disable Sonarr queue monitoring. |
