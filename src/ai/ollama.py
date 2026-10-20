@@ -1,7 +1,8 @@
 import json
 import logging
-import httpx
+from datetime import datetime
 from typing import List, Optional
+import httpx
 from .base import (
     BaseAIProvider,
     MediaMatchResult,
@@ -67,17 +68,21 @@ class OllamaProvider(BaseAIProvider):
         alternate_titles: List[str],
         year: Optional[int] = None
     ) -> MediaMatchResult:
+        today_str = datetime.now().strftime("%Y-%m-%d")
+        current_year = datetime.now().year
         system_prompt = (
-            "You are an expert TV media parser assistant for Sonarr. "
+            f"You are an expert TV media parser assistant for Sonarr. Current date: {today_str}. "
             "You must respond ONLY with a valid JSON object with keys: 'is_match' (boolean), 'confidence' (float 0.0-1.0), and 'reasoning' (string)."
         )
         user_prompt = (
+            f"Current Date: {today_str}\n"
             f"Release Title: {release_title}\n"
             f"Folder Name: {folder_name}\n"
             f"Candidate Series: {candidate_series_title} ({year if year else 'Unknown Year'})\n"
             f"Known Alternate Titles/Aliases: {alternate_titles}\n\n"
             "Task: Determine if this release matches the candidate TV series. "
-            "Consider Chinese Pinyin translations, Romaji, and common international media naming conventions."
+            "Consider Chinese Pinyin translations, Romaji, and common international media naming conventions.\n\n"
+            f"Important Context: Today is {today_str}. Series with release year {current_year} (or recent years) are currently active and being broadcast/streamed now. Do NOT assume that releases from year {current_year} are unreleased or in the future."
         )
 
         res = await self._call_ollama(system_prompt, user_prompt)
@@ -91,17 +96,21 @@ class OllamaProvider(BaseAIProvider):
         alternate_titles: List[str],
         year: Optional[int] = None
     ) -> MediaMatchResult:
+        today_str = datetime.now().strftime("%Y-%m-%d")
+        current_year = datetime.now().year
         system_prompt = (
-            "You are an expert Movie media parser assistant for Radarr. "
+            f"You are an expert Movie media parser assistant for Radarr. Current date: {today_str}. "
             "You must respond ONLY with a valid JSON object with keys: 'is_match' (boolean), 'confidence' (float 0.0-1.0), and 'reasoning' (string)."
         )
         user_prompt = (
+            f"Current Date: {today_str}\n"
             f"Release Title: {release_title}\n"
             f"Folder Name: {folder_name}\n"
             f"Candidate Movie: {candidate_movie_title} ({year if year else 'Unknown Year'})\n"
             f"Known Alternate Titles/Aliases: {alternate_titles}\n\n"
             "Task: Determine if this release belongs to the candidate movie in Radarr. "
-            "Account for foreign release names, Pinyin, translated movie titles, and release year discrepancies (+/- 1 year between festival and theatrical release)."
+            "Account for foreign release names, Pinyin, translated movie titles, and release year discrepancies (+/- 1 year between festival and theatrical release).\n\n"
+            f"Important Context: Today is {today_str}. Movies with release year {current_year} are currently active in theaters or on digital streaming. Do NOT assume that releases from year {current_year} are unreleased or in the future."
         )
 
         res = await self._call_ollama(system_prompt, user_prompt)
@@ -115,8 +124,9 @@ class OllamaProvider(BaseAIProvider):
         known_seasons: List[int],
         known_episodes_in_season: List[dict]
     ) -> EpisodeMatchResult:
+        today_str = datetime.now().strftime("%Y-%m-%d")
         system_prompt = (
-            "You are an expert TV media parser assistant for Sonarr. "
+            f"You are an expert TV media parser assistant for Sonarr. Current date: {today_str}. "
             "You must respond ONLY with a valid JSON object with keys: "
             "'season_number' (integer or null), 'episode_numbers' (list of integers), 'confidence' (float 0.0-1.0), and 'reasoning' (string)."
         )
@@ -124,6 +134,7 @@ class OllamaProvider(BaseAIProvider):
         ep_titles = [f"E{e.get('episodeNumber')}: {e.get('title')}" for e in known_episodes_in_season[:30]]
 
         user_prompt = (
+            f"Current Date: {today_str}\n"
             f"Series Title: {series_title}\n"
             f"Folder Name: {folder_name}\n"
             f"File Name: {file_name}\n"
@@ -142,12 +153,14 @@ class OllamaProvider(BaseAIProvider):
         folder_name: str,
         media_title: str
     ) -> SampleEvaluationResult:
+        today_str = datetime.now().strftime("%Y-%m-%d")
         system_prompt = (
-            "You are an expert media parser assistant for Sonarr and Radarr. "
+            f"You are an expert media parser assistant for Sonarr and Radarr. Current date: {today_str}. "
             "You must respond ONLY with a valid JSON object with keys: "
             "'is_valid_media' (boolean), 'confidence' (float 0.0-1.0), and 'reasoning' (string)."
         )
         user_prompt = (
+            f"Current Date: {today_str}\n"
             f"Media Title: {media_title}\n"
             f"Folder Name: {folder_name}\n"
             f"File Name: {file_name}\n\n"
@@ -164,8 +177,10 @@ class OllamaProvider(BaseAIProvider):
         media_type: str,
         candidates: List[dict]
     ) -> LibraryMatchResult:
+        today_str = datetime.now().strftime("%Y-%m-%d")
+        current_year = datetime.now().year
         system_prompt = (
-            f"You are an expert {media_type} media parser assistant for the *arr suite. "
+            f"You are an expert {media_type} media parser assistant for the *arr suite. Current date: {today_str}. "
             "You must respond ONLY with a valid JSON object with keys: "
             "'matched_id' (integer or null), 'matched_title' (string or null), 'confidence' (float 0.0-1.0), and 'reasoning' (string)."
         )
@@ -176,12 +191,14 @@ class OllamaProvider(BaseAIProvider):
         candidates_str = "\n".join(candidate_summary)
 
         user_prompt = (
+            f"Current Date: {today_str}\n"
             f"Release Title: {release_title}\n"
             f"Folder Name: {folder_name}\n"
             f"Media Type: {media_type}\n\n"
             f"User's Library Candidates:\n{candidates_str}\n\n"
             "Task: Identify which library candidate this release belongs to. "
-            "Consider Chinese Pinyin translations, Romaji, alternate titles, and year variations."
+            "Consider Chinese Pinyin translations, Romaji, alternate titles, and year variations.\n\n"
+            f"Important Context: Today is {today_str}. Media with release year {current_year} is currently active and releasing now."
         )
         res = await self._call_ollama(system_prompt, user_prompt)
         return LibraryMatchResult(**res)

@@ -1,8 +1,9 @@
 import json
 import logging
 import re
-import httpx
+from datetime import datetime
 from typing import List, Optional
+import httpx
 from .base import (
     BaseAIProvider,
     MediaMatchResult,
@@ -113,6 +114,7 @@ class GeminiProvider(BaseAIProvider):
         else:
             current_model = self._resolved_model or self.model
 
+        today_str = datetime.now().strftime("%Y-%m-%d")
         payload = {
             "contents": [
                 {
@@ -120,6 +122,7 @@ class GeminiProvider(BaseAIProvider):
                         {
                             "text": (
                                 "You are an expert TV and Movie media parser assistant for the *arr suite (Sonarr/Radarr).\n"
+                                f"Current Date: {today_str}.\n"
                                 "Your job is to accurately match messy release filenames, Chinese/Asian Pinyin titles, and foreign characters to official media.\n"
                                 f"{schema_desc}\n\n"
                                 f"{prompt}"
@@ -190,6 +193,8 @@ class GeminiProvider(BaseAIProvider):
         alternate_titles: List[str],
         year: Optional[int] = None
     ) -> MediaMatchResult:
+        today_str = datetime.now().strftime("%Y-%m-%d")
+        current_year = datetime.now().year
         schema_desc = (
             "Return a JSON object with exactly these keys:\n"
             "- is_match (boolean): true if the release definitely refers to this series, false otherwise\n"
@@ -197,12 +202,14 @@ class GeminiProvider(BaseAIProvider):
             "- reasoning (string explaining the decision, citing Pinyin translation, English title, or naming conventions)"
         )
         prompt = (
+            f"Current Date: {today_str}\n"
             f"Release Title: {release_title}\n"
             f"Folder Name: {folder_name}\n"
             f"Candidate Series: {candidate_series_title} ({year if year else 'Unknown Year'})\n"
             f"Known Alternate Titles/Aliases: {alternate_titles}\n\n"
             "Task: Determine if this release belongs to the candidate TV series. "
-            "Consider Chinese Pinyin translations, Romaji, and common international media naming conventions."
+            "Consider Chinese Pinyin translations, Romaji, and common international media naming conventions.\n\n"
+            f"Important Context: Today is {today_str}. Media with release year {current_year} is currently active and releasing now. Do NOT reject matches by assuming {current_year} releases are unreleased or in the future."
         )
 
         res = await self._call_gemini(prompt, schema_desc)
@@ -216,6 +223,8 @@ class GeminiProvider(BaseAIProvider):
         alternate_titles: List[str],
         year: Optional[int] = None
     ) -> MediaMatchResult:
+        today_str = datetime.now().strftime("%Y-%m-%d")
+        current_year = datetime.now().year
         schema_desc = (
             "Return a JSON object with exactly these keys:\n"
             "- is_match (boolean): true if the release definitely refers to this movie, false otherwise\n"
@@ -223,12 +232,14 @@ class GeminiProvider(BaseAIProvider):
             "- reasoning (string explaining the decision, citing Pinyin translation, English title, or naming conventions)"
         )
         prompt = (
+            f"Current Date: {today_str}\n"
             f"Release Title: {release_title}\n"
             f"Folder Name: {folder_name}\n"
             f"Candidate Movie: {candidate_movie_title} ({year if year else 'Unknown Year'})\n"
             f"Known Alternate Titles/Aliases: {alternate_titles}\n\n"
             "Task: Determine if this release belongs to the candidate movie in Radarr. "
-            "Account for foreign release names, Pinyin, translated movie titles, and release year discrepancies (+/- 1 year between festival and theatrical release)."
+            "Account for foreign release names, Pinyin, translated movie titles, and release year discrepancies (+/- 1 year between festival and theatrical release).\n\n"
+            f"Important Context: Today is {today_str}. Movies with release year {current_year} are currently active in theaters or on digital streaming. Do NOT reject matches by assuming {current_year} releases are unreleased or in the future."
         )
 
         res = await self._call_gemini(prompt, schema_desc)
@@ -294,6 +305,8 @@ class GeminiProvider(BaseAIProvider):
         media_type: str,
         candidates: List[dict]
     ) -> LibraryMatchResult:
+        today_str = datetime.now().strftime("%Y-%m-%d")
+        current_year = datetime.now().year
         schema_desc = (
             "Return a JSON object with exactly these keys:\n"
             "- matched_id (integer or null): the ID of the candidate media item that matches, or null if no match\n"
@@ -308,12 +321,14 @@ class GeminiProvider(BaseAIProvider):
         candidates_str = "\n".join(candidate_summary)
 
         prompt = (
+            f"Current Date: {today_str}\n"
             f"Release Title: {release_title}\n"
             f"Folder Name: {folder_name}\n"
             f"Media Type: {media_type}\n\n"
             f"User's Library Candidates:\n{candidates_str}\n\n"
             "Task: Identify which library candidate this release belongs to. "
-            "Consider Chinese Pinyin translations, Romaji, alternate titles, and year variations."
+            "Consider Chinese Pinyin translations, Romaji, alternate titles, and year variations.\n\n"
+            f"Important Context: Today is {today_str}. Media with release year {current_year} is currently active and releasing now."
         )
         res = await self._call_gemini(prompt, schema_desc)
         return LibraryMatchResult(**res)
