@@ -76,7 +76,6 @@ class SonarrClient:
         Query Sonarr for media files detected in the download directory or queue item.
         Prioritizes querying by downloadId if available to accurately link to the queue download.
         """
-        # 1. If download_id is provided, try querying Sonarr by downloadId first
         if download_id:
             try:
                 items = await self._get("manualimport", params={"downloadId": download_id})
@@ -85,7 +84,6 @@ class SonarrClient:
             except Exception as e:
                 logger.debug(f"Query /manualimport by downloadId '{download_id}' failed: {e}")
 
-        # 2. Fall back to querying by folder path (resolving parent folder if folder is a file path)
         p = Path(folder)
         folder_dir = str(p.parent) if p.suffix.lower() in (".mkv", ".mp4", ".avi", ".ts", ".m4v", ".mov", ".wmv") else str(p)
         params: Dict[str, Any] = {"folder": folder_dir, "filterExistingFiles": True}
@@ -113,9 +111,9 @@ class SonarrClient:
         is_dry = self.categories.is_dry_run(category.value, self.dry_run) if dry_run is None else dry_run
 
         if is_dry:
-            logger.info(f"[DRY RUN - Category: {category.value}] Would submit {len(files_to_import)} file(s) for ManualImport to Sonarr")
+            logger.info(f"[DRY RUN] Would import {len(files_to_import)} file(s) to Sonarr [{category.value}]")
             for f in files_to_import:
-                logger.info(f"[DRY RUN - Category: {category.value}]   -> File: {f.get('path')} | SeriesId: {f.get('seriesId')} | Episodes: {f.get('episodeIds')} | DownloadId: {f.get('downloadId')}")
+                logger.debug(f"  [DRY RUN] File: {f.get('path')} | SeriesId: {f.get('seriesId')} | Episodes: {f.get('episodeIds')}")
             return True
 
         payload = {
@@ -124,9 +122,10 @@ class SonarrClient:
             "importMode": "auto"
         }
         try:
+            logger.info(f"Submitting {len(files_to_import)} file(s) to Sonarr for import [{category.value}]...")
             res = await self._post("command", payload)
             cmd_id = res.get("id")
-            logger.info(f"Triggered Sonarr ManualImport command successfully! Command ID: {cmd_id}")
+            logger.debug(f"Triggered Sonarr ManualImport command ID: {cmd_id}")
 
             if cmd_id:
                 # Poll command status up to 10 seconds to confirm execution
@@ -136,7 +135,7 @@ class SonarrClient:
                         cmd_status = await self._get(f"command/{cmd_id}")
                         state = cmd_status.get("status") or cmd_status.get("state")
                         if state == "completed":
-                            logger.info(f"Sonarr ManualImport command {cmd_id} completed successfully: {cmd_status.get('message', 'Import finished')}")
+                            logger.info(f"Sonarr successfully imported {len(files_to_import)} file(s) (Command ID: {cmd_id})")
                             return True
                         elif state == "failed":
                             logger.error(f"Sonarr ManualImport command {cmd_id} failed: {cmd_status.get('message', 'Unknown failure')}")
@@ -166,22 +165,19 @@ class SonarrClient:
         for sm in status_messages:
             all_messages.extend(sm.get("messages", []))
 
-        # Initial classification of the issue based on queue messages and series presence
         category = classify_issue(all_messages, has_media_info=bool(series_info))
 
-        # If clean download with known series and no warnings/errors, skip
         if status not in ("warning", "error") and series_info and not all_messages and category == ErrorCategory.OTHER:
             return False
 
-        # Verify whether this error category is enabled
         if not self.categories.is_enabled(category.value):
-            logger.info(f"Category '{category.value}' is disabled in configuration. Skipping '{title}'.")
+            logger.debug(f"Skipping '{title}': category '{category.value}' is disabled in configuration.")
             return False
 
         is_cat_dry_run = self.categories.is_dry_run(category.value, self.dry_run)
         dry_run_tag = " [DRY RUN]" if is_cat_dry_run else ""
-        logger.info(f"Found blocked/warning download in Sonarr queue: '{title}' (Category: {category.value}{dry_run_tag}, Status: {status})")
-        logger.info(f"  Messages: {all_messages}")
+        logger.info(f"Processing blocked item: '{title}' [{category.value}{dry_run_tag}]")
+        logger.debug(f"  Queue status: {status} | Messages: {all_messages}")
 
         if not output_path and not download_id:
             logger.warning(f"  Cannot process item '{title}': outputPath and downloadId are both empty.")
@@ -193,7 +189,7 @@ class SonarrClient:
 
         # If series is unknown, attempt to match release to Sonarr library using AI
         if not series_info:
-            logger.info(f"  Item has no associated series (Unknown Media). Attempting to match against Sonarr library...")
+            logger.info(f"  Searching Sonarr library to identify unknown release '{title}'...")
             all_series = await self.get_all_series()
             if not all_series:
                 logger.warning("  Could not retrieve library series from Sonarr.")
@@ -214,17 +210,18 @@ class SonarrClient:
                 media_type="series",
                 candidates=candidates
             )
-            logger.info(f"  AI Library Match: matched_id={match_res.matched_id}, title='{match_res.matched_title}', conf={match_res.confidence:.2f}")
-            logger.info(f"  Reasoning: {match_res.reasoning}")
 
             if not match_res.matched_id or match_res.confidence < self.min_confidence:
-                logger.warning(f"  AI could not confidently match '{title}' to any series in your Sonarr library. Skipping.")
+                logger.warning(f"  Could not match '{title}' to any series in Sonarr library ({match_res.confidence:.0%}): {match_res.reasoning}")
                 return False
 
             series_info = next((s for s in all_series if s.get("id") == match_res.matched_id), None)
             if not series_info:
                 logger.warning(f"  Series ID {match_res.matched_id} matched by AI not found in Sonarr library.")
                 return False
+
+            logger.info(f"  AI matched release to library series: '{series_info.get('title')}' ({match_res.confidence:.0%})")
+            logger.debug(f"  Library match reasoning: {match_res.reasoning}")
             matched_from_library = True
 
         series_id = series_info.get("id")
@@ -241,12 +238,13 @@ class SonarrClient:
                 alternate_titles=alternate_titles,
                 year=year
             )
-            logger.info(f"  AI Series Verification: is_match={verify_res.is_match}, confidence={verify_res.confidence:.2f}")
-            logger.info(f"  Reasoning: {verify_res.reasoning}")
 
             if not verify_res.is_match or verify_res.confidence < self.min_confidence:
-                logger.warning(f"  AI rejected match or confidence too low ({verify_res.confidence:.2f} < {self.min_confidence}). Skipping.")
+                logger.warning(f"  AI rejected match for '{title}' against '{candidate_title}' ({verify_res.confidence:.0%}): {verify_res.reasoning}")
                 return False
+
+            logger.info(f"  AI verified series match: '{candidate_title}' ({verify_res.confidence:.0%})")
+            logger.debug(f"  Series match reasoning: {verify_res.reasoning}")
 
         # Query Sonarr manual import to inspect media files
         manual_items = await self.get_manual_import_items(
@@ -254,7 +252,7 @@ class SonarrClient:
         )
 
         if not manual_items:
-            logger.warning(f"  Sonarr /manualimport returned 0 media files for download '{download_id or output_path}'.")
+            logger.warning(f"  Sonarr returned 0 importable files for '{title}'.")
             return False
 
         # Refine issue category if manual import rejections offer more specific classification
@@ -262,10 +260,10 @@ class SonarrClient:
         if all_manual_rejections:
             refined_cat = classify_issue(all_messages, has_media_info=bool(series_info), manual_rejections=all_manual_rejections)
             if refined_cat != category:
-                logger.info(f"  Refined issue category from '{category.value}' to '{refined_cat.value}' based on /manualimport rejections.")
+                logger.debug(f"  Refined issue category from '{category.value}' to '{refined_cat.value}' based on manual import rejections.")
                 category = refined_cat
                 if not self.categories.is_enabled(category.value):
-                    logger.info(f"Category '{category.value}' is disabled in configuration. Skipping.")
+                    logger.debug(f"Skipping '{title}': refined category '{category.value}' is disabled.")
                     return False
                 is_cat_dry_run = self.categories.is_dry_run(category.value, self.dry_run)
 
@@ -290,11 +288,12 @@ class SonarrClient:
                     folder_name=file_folder,
                     media_title=candidate_title
                 )
-                logger.info(f"  AI Sample Evaluation for '{file_name}': is_valid={sample_res.is_valid_media}, conf={sample_res.confidence:.2f}")
-                logger.info(f"  Reasoning: {sample_res.reasoning}")
                 if not sample_res.is_valid_media:
                     logger.info(f"  Skipping disposable sample/extra file: '{file_name}'")
+                    logger.debug(f"  Sample evaluation reasoning: {sample_res.reasoning}")
                     continue
+                else:
+                    logger.debug(f"  Valid media confirmed for '{file_name}': {sample_res.reasoning}")
 
             # Check if Sonarr already identified episodes
             non_blocking_rejections = [
@@ -305,7 +304,8 @@ class SonarrClient:
 
             if curr_episodes and not non_blocking_rejections:
                 ep_ids = [ep.get("id") for ep in curr_episodes]
-                logger.info(f"  Pre-mapped file approved: '{file_name}' -> Episodes: {[ep.get('episodeNumber') for ep in curr_episodes]}")
+                ep_nums = [ep.get("episodeNumber") for ep in curr_episodes]
+                logger.info(f"  Approved file: '{file_name}' -> Episode(s) {ep_nums}")
                 file_payload = {
                     "path": file_path,
                     "seriesId": target_series_id,
@@ -319,7 +319,7 @@ class SonarrClient:
                 files_to_import.append(file_payload)
             else:
                 # Need AI to parse episode number
-                logger.info(f"  Parsing unmapped file with AI: '{file_name}'")
+                logger.info(f"  Parsing unmapped file with AI: '{file_name}'...")
                 ep_match = await ai_provider.parse_episode(
                     file_name=file_name,
                     folder_name=file_folder,
@@ -327,8 +327,6 @@ class SonarrClient:
                     known_seasons=known_seasons,
                     known_episodes_in_season=all_episodes
                 )
-                logger.info(f"  AI Episode Result: Season {ep_match.season_number}, Episodes {ep_match.episode_numbers} (Conf: {ep_match.confidence:.2f})")
-                logger.info(f"  Reasoning: {ep_match.reasoning}")
 
                 if ep_match.confidence >= self.min_confidence and ep_match.episode_numbers:
                     matched_ep_ids = [
@@ -336,6 +334,8 @@ class SonarrClient:
                         if e.get("seasonNumber") == ep_match.season_number and e.get("episodeNumber") in ep_match.episode_numbers
                     ]
                     if matched_ep_ids:
+                        logger.info(f"  AI mapped '{file_name}' -> Season {ep_match.season_number}, Episode(s) {ep_match.episode_numbers} ({ep_match.confidence:.0%})")
+                        logger.debug(f"  Episode parsing reasoning: {ep_match.reasoning}")
                         file_payload = {
                             "path": file_path,
                             "seriesId": target_series_id,
@@ -348,12 +348,11 @@ class SonarrClient:
                             file_payload["downloadId"] = download_id
                         files_to_import.append(file_payload)
                     else:
-                        logger.warning(f"  Episode numbers {ep_match.episode_numbers} for Season {ep_match.season_number} not found in Sonarr's database.")
+                        logger.warning(f"  Episodes {ep_match.episode_numbers} for Season {ep_match.season_number} not found in Sonarr's database.")
                 else:
-                    logger.warning(f"  AI could not confidently identify episode for '{file_name}'.")
+                    logger.warning(f"  AI could not identify episode for '{file_name}' ({ep_match.confidence:.0%}): {ep_match.reasoning}")
 
         if files_to_import:
-            logger.info(f"Submitting {len(files_to_import)} file(s) for automated import to Sonarr (Category: {category.value})...")
             return await self.trigger_manual_import(files_to_import, dry_run=is_cat_dry_run, category=category)
 
         return False

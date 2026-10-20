@@ -34,12 +34,18 @@ async def main():
     log_level = getattr(logging, config.general.log_level.upper(), logging.INFO)
     logging.getLogger().setLevel(log_level)
 
+    # Silence verbose 3rd-party HTTP client logs unless in DEBUG mode
+    http_log_level = logging.DEBUG if log_level == logging.DEBUG else logging.WARNING
+    logging.getLogger("httpx").setLevel(http_log_level)
+    logging.getLogger("httpcore").setLevel(http_log_level)
+
     logger.info(f"Configuration loaded (Dry Run: {config.general.dry_run}, Check Interval: {config.general.check_interval_seconds}s)")
-    logger.info("Configured Category Rules:")
+    active_cats = [c for c in ["id_match", "unknown_media", "unknown_episode", "sample_or_extra", "quality_or_language", "other"] if getattr(config.categories, c).enabled]
+    logger.info(f"Active categories: {', '.join(active_cats)}")
     for cat_name in ["id_match", "unknown_media", "unknown_episode", "sample_or_extra", "quality_or_language", "other"]:
         rule = getattr(config.categories, cat_name)
         cat_dry = rule.dry_run if rule.dry_run is not None else f"{config.general.dry_run} (inherited)"
-        logger.info(f"  - {cat_name}: enabled={rule.enabled}, dry_run={cat_dry}")
+        logger.debug(f"  Category '{cat_name}': enabled={rule.enabled}, dry_run={cat_dry}")
 
     ai_provider = get_ai_provider(config.ai)
 

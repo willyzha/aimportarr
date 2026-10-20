@@ -71,7 +71,6 @@ class RadarrClient:
         Query Radarr for media files detected in the download directory or queue item.
         Prioritizes querying by downloadId if available.
         """
-        # 1. If download_id is provided, try querying Radarr by downloadId first
         if download_id:
             try:
                 items = await self._get("manualimport", params={"downloadId": download_id})
@@ -80,7 +79,6 @@ class RadarrClient:
             except Exception as e:
                 logger.debug(f"Query Radarr /manualimport by downloadId '{download_id}' failed: {e}")
 
-        # 2. Fall back to querying by folder path (resolving parent folder if folder is a file path)
         p = Path(folder)
         folder_dir = str(p.parent) if p.suffix.lower() in (".mkv", ".mp4", ".avi", ".ts", ".m4v", ".mov", ".wmv") else str(p)
         params: Dict[str, Any] = {"folder": folder_dir, "filterExistingFiles": True}
@@ -108,9 +106,9 @@ class RadarrClient:
         is_dry = self.categories.is_dry_run(category.value, self.dry_run) if dry_run is None else dry_run
 
         if is_dry:
-            logger.info(f"[DRY RUN - Category: {category.value}] Would submit {len(files_to_import)} movie file(s) for ManualImport to Radarr")
+            logger.info(f"[DRY RUN] Would import {len(files_to_import)} movie file(s) to Radarr [{category.value}]")
             for f in files_to_import:
-                logger.info(f"[DRY RUN - Category: {category.value}]   -> File: {f.get('path')} | MovieId: {f.get('movieId')} | DownloadId: {f.get('downloadId')}")
+                logger.debug(f"  [DRY RUN] File: {f.get('path')} | MovieId: {f.get('movieId')}")
             return True
 
         payload = {
@@ -119,9 +117,10 @@ class RadarrClient:
             "importMode": "auto"
         }
         try:
+            logger.info(f"Submitting {len(files_to_import)} movie file(s) to Radarr for import [{category.value}]...")
             res = await self._post("command", payload)
             cmd_id = res.get("id")
-            logger.info(f"Triggered Radarr ManualImport command successfully! Command ID: {cmd_id}")
+            logger.debug(f"Triggered Radarr ManualImport command ID: {cmd_id}")
 
             if cmd_id:
                 # Poll command status up to 10 seconds to confirm execution
@@ -131,7 +130,7 @@ class RadarrClient:
                         cmd_status = await self._get(f"command/{cmd_id}")
                         state = cmd_status.get("status") or cmd_status.get("state")
                         if state == "completed":
-                            logger.info(f"Radarr ManualImport command {cmd_id} completed successfully: {cmd_status.get('message', 'Import finished')}")
+                            logger.info(f"Radarr successfully imported {len(files_to_import)} movie file(s) (Command ID: {cmd_id})")
                             return True
                         elif state == "failed":
                             logger.error(f"Radarr ManualImport command {cmd_id} failed: {cmd_status.get('message', 'Unknown failure')}")
@@ -161,22 +160,19 @@ class RadarrClient:
         for sm in status_messages:
             all_messages.extend(sm.get("messages", []))
 
-        # Initial classification of the issue
         category = classify_issue(all_messages, has_media_info=bool(movie_info))
 
-        # If clean download with known movie and no warnings/errors, skip
         if status not in ("warning", "error") and movie_info and not all_messages and category == ErrorCategory.OTHER:
             return False
 
-        # Verify whether this error category is enabled
         if not self.categories.is_enabled(category.value):
-            logger.info(f"Category '{category.value}' is disabled in configuration. Skipping '{title}'.")
+            logger.debug(f"Skipping '{title}': category '{category.value}' is disabled in configuration.")
             return False
 
         is_cat_dry_run = self.categories.is_dry_run(category.value, self.dry_run)
         dry_run_tag = " [DRY RUN]" if is_cat_dry_run else ""
-        logger.info(f"Found blocked/warning movie in Radarr queue: '{title}' (Category: {category.value}{dry_run_tag}, Status: {status})")
-        logger.info(f"  Messages: {all_messages}")
+        logger.info(f"Processing blocked movie: '{title}' [{category.value}{dry_run_tag}]")
+        logger.debug(f"  Queue status: {status} | Messages: {all_messages}")
 
         if not output_path and not download_id:
             logger.warning(f"  Cannot process movie '{title}': outputPath and downloadId are both empty.")
@@ -188,7 +184,7 @@ class RadarrClient:
 
         # If movie is unknown, attempt to match release to Radarr library using AI
         if not movie_info:
-            logger.info(f"  Item has no associated movie (Unknown Media). Attempting to match against Radarr library...")
+            logger.info(f"  Searching Radarr library to identify unknown release '{title}'...")
             all_movies = await self.get_all_movies()
             if not all_movies:
                 logger.warning("  Could not retrieve library movies from Radarr.")
@@ -209,17 +205,18 @@ class RadarrClient:
                 media_type="movie",
                 candidates=candidates
             )
-            logger.info(f"  AI Library Match: matched_id={match_res.matched_id}, title='{match_res.matched_title}', conf={match_res.confidence:.2f}")
-            logger.info(f"  Reasoning: {match_res.reasoning}")
 
             if not match_res.matched_id or match_res.confidence < self.min_confidence:
-                logger.warning(f"  AI could not confidently match '{title}' to any movie in your Radarr library. Skipping.")
+                logger.warning(f"  Could not match '{title}' to any movie in Radarr library ({match_res.confidence:.0%}): {match_res.reasoning}")
                 return False
 
             movie_info = next((m for m in all_movies if m.get("id") == match_res.matched_id), None)
             if not movie_info:
                 logger.warning(f"  Movie ID {match_res.matched_id} matched by AI not found in Radarr library.")
                 return False
+
+            logger.info(f"  AI matched release to library movie: '{movie_info.get('title')}' ({match_res.confidence:.0%})")
+            logger.debug(f"  Library match reasoning: {match_res.reasoning}")
             matched_from_library = True
 
         movie_id = movie_info.get("id")
@@ -236,12 +233,13 @@ class RadarrClient:
                 alternate_titles=alternate_titles,
                 year=year
             )
-            logger.info(f"  AI Movie Verification: is_match={verify_res.is_match}, confidence={verify_res.confidence:.2f}")
-            logger.info(f"  Reasoning: {verify_res.reasoning}")
 
             if not verify_res.is_match or verify_res.confidence < self.min_confidence:
-                logger.warning(f"  AI rejected movie match or confidence too low ({verify_res.confidence:.2f} < {self.min_confidence}). Skipping.")
+                logger.warning(f"  AI rejected movie match for '{title}' against '{candidate_title}' ({verify_res.confidence:.0%}): {verify_res.reasoning}")
                 return False
+
+            logger.info(f"  AI verified movie match: '{candidate_title}' ({verify_res.confidence:.0%})")
+            logger.debug(f"  Movie match reasoning: {verify_res.reasoning}")
 
         # Query Radarr manual import to inspect media files
         manual_items = await self.get_manual_import_items(
@@ -249,7 +247,7 @@ class RadarrClient:
         )
 
         if not manual_items:
-            logger.warning(f"  Radarr /manualimport returned 0 media files for download '{download_id or output_path}'.")
+            logger.warning(f"  Radarr returned 0 importable files for '{title}'.")
             return False
 
         # Refine issue category if manual import rejections offer more specific classification
@@ -257,10 +255,10 @@ class RadarrClient:
         if all_manual_rejections:
             refined_cat = classify_issue(all_messages, has_media_info=bool(movie_info), manual_rejections=all_manual_rejections)
             if refined_cat != category:
-                logger.info(f"  Refined issue category from '{category.value}' to '{refined_cat.value}' based on /manualimport rejections.")
+                logger.debug(f"  Refined issue category from '{category.value}' to '{refined_cat.value}' based on manual import rejections.")
                 category = refined_cat
                 if not self.categories.is_enabled(category.value):
-                    logger.info(f"Category '{category.value}' is disabled in configuration. Skipping.")
+                    logger.debug(f"Skipping '{title}': refined category '{category.value}' is disabled.")
                     return False
                 is_cat_dry_run = self.categories.is_dry_run(category.value, self.dry_run)
 
@@ -281,12 +279,14 @@ class RadarrClient:
                     folder_name=file_folder,
                     media_title=candidate_title
                 )
-                logger.info(f"  AI Sample Evaluation for '{file_name}': is_valid={sample_res.is_valid_media}, conf={sample_res.confidence:.2f}")
-                logger.info(f"  Reasoning: {sample_res.reasoning}")
                 if not sample_res.is_valid_media:
                     logger.info(f"  Skipping disposable sample/extra file: '{file_name}'")
+                    logger.debug(f"  Sample evaluation reasoning: {sample_res.reasoning}")
                     continue
+                else:
+                    logger.debug(f"  Valid media confirmed for '{file_name}': {sample_res.reasoning}")
 
+            logger.info(f"  Approved movie file: '{file_name}' -> '{candidate_title}'")
             file_payload = {
                 "path": file_path,
                 "movieId": target_movie_id,
@@ -299,7 +299,6 @@ class RadarrClient:
             files_to_import.append(file_payload)
 
         if files_to_import:
-            logger.info(f"Submitting {len(files_to_import)} movie file(s) for automated import to Radarr (Category: {category.value})...")
             return await self.trigger_manual_import(files_to_import, dry_run=is_cat_dry_run, category=category)
 
         return False
