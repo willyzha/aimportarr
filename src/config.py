@@ -46,6 +46,7 @@ class CategoriesConfig(BaseModel):
     unknown_episode: CategoryRule = Field(default_factory=CategoryRule)
     sample_or_extra: CategoryRule = Field(default_factory=CategoryRule)
     quality_or_language: CategoryRule = Field(default_factory=CategoryRule)
+    missing_episodes: CategoryRule = Field(default_factory=CategoryRule)
     other: CategoryRule = Field(default_factory=CategoryRule)  # Fallback / Catch-all category
 
     def is_dry_run(self, category: str, default_dry_run: bool) -> bool:
@@ -143,7 +144,7 @@ def load_config(config_path: Optional[str] = None) -> AppConfig:
 
     # Category overrides from environment variables
     # e.g. CATEGORY_ID_MATCH_DRY_RUN=false, CATEGORY_UNKNOWN_MEDIA_DRY_RUN=true, CATEGORY_OTHER_DRY_RUN=false
-    for cat_name in ["id_match", "unknown_media", "unknown_episode", "sample_or_extra", "quality_or_language", "other"]:
+    for cat_name in ["id_match", "unknown_media", "unknown_episode", "sample_or_extra", "quality_or_language", "missing_episodes", "other"]:
         rule = getattr(config.categories, cat_name, None)
         if not rule:
             continue

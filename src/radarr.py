@@ -43,6 +43,23 @@ class RadarrClient:
             resp.raise_for_status()
             return resp.json()
 
+    async def _delete(
+        self,
+        endpoint: str,
+        params: Optional[Dict[str, Any]] = None,
+        json: Optional[Dict[str, Any]] = None
+    ) -> Any:
+        url = f"{self.base_url}/api/v3/{endpoint.lstrip('/')}"
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            resp = await client.request("DELETE", url, headers=self.headers, params=params, json=json)
+            resp.raise_for_status()
+            if resp.content:
+                try:
+                    return resp.json()
+                except Exception:
+                    return resp.text
+            return None
+
     async def get_queue(self) -> List[Dict[str, Any]]:
         """Fetch all items from the Radarr download queue."""
         data = await self._get("queue", params={

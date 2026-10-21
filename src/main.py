@@ -40,9 +40,9 @@ async def main():
     logging.getLogger("httpcore").setLevel(http_log_level)
 
     logger.info(f"Configuration loaded (Dry Run: {config.general.dry_run}, Check Interval: {config.general.check_interval_seconds}s)")
-    active_cats = [c for c in ["id_match", "unknown_media", "unknown_episode", "sample_or_extra", "quality_or_language", "other"] if getattr(config.categories, c).enabled]
+    active_cats = [c for c in ["id_match", "unknown_media", "unknown_episode", "sample_or_extra", "quality_or_language", "missing_episodes", "other"] if getattr(config.categories, c).enabled]
     logger.info(f"Active categories: {', '.join(active_cats)}")
-    for cat_name in ["id_match", "unknown_media", "unknown_episode", "sample_or_extra", "quality_or_language", "other"]:
+    for cat_name in ["id_match", "unknown_media", "unknown_episode", "sample_or_extra", "quality_or_language", "missing_episodes", "other"]:
         rule = getattr(config.categories, cat_name)
         cat_dry = rule.dry_run if rule.dry_run is not None else f"{config.general.dry_run} (inherited)"
         logger.debug(f"  Category '{cat_name}': enabled={rule.enabled}, dry_run={cat_dry}")

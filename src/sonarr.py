@@ -23,6 +23,7 @@ class SonarrClient:
         self.min_confidence = min_confidence
         self.dry_run = dry_run
         self.categories = categories or CategoriesConfig()
+        self._dismissed_downloads: set = set()
         self.headers = {
             "X-Api-Key": self.api_key,
             "Content-Type": "application/json",
@@ -42,6 +43,23 @@ class SonarrClient:
             resp = await client.post(url, headers=self.headers, json=data)
             resp.raise_for_status()
             return resp.json()
+
+    async def _delete(
+        self,
+        endpoint: str,
+        params: Optional[Dict[str, Any]] = None,
+        json: Optional[Dict[str, Any]] = None
+    ) -> Any:
+        url = f"{self.base_url}/api/v3/{endpoint.lstrip('/')}"
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            resp = await client.request("DELETE", url, headers=self.headers, params=params, json=json)
+            resp.raise_for_status()
+            if resp.content:
+                try:
+                    return resp.json()
+                except Exception:
+                    return resp.text
+            return None
 
     async def get_queue(self) -> List[Dict[str, Any]]:
         """Fetch all items from the Sonarr download queue."""
@@ -151,6 +169,69 @@ class SonarrClient:
             logger.error(f"Failed to trigger Sonarr ManualImport command: {e}")
             return False
 
+    async def dismiss_queue_warning(
+        self,
+        queue_id: int,
+        download_id: Optional[str] = None,
+        dry_run: bool = False,
+        title: str = ""
+    ) -> bool:
+        """
+        Dismiss a stuck queue warning from Sonarr (e.g. missing episodes from a season pack).
+        Removes the queue record(s) without removing the torrent from the download client.
+        """
+        ids_to_remove = [queue_id]
+        if download_id:
+            try:
+                current_queue = await self.get_queue()
+                matching_ids = [
+                    q.get("id") for q in current_queue
+                    if q.get("downloadId") == download_id and q.get("id")
+                ]
+                if matching_ids:
+                    ids_to_remove = list(set(ids_to_remove + matching_ids))
+            except Exception as e:
+                logger.debug(f"Failed to lookup all queue items for downloadId '{download_id}': {e}")
+
+        if dry_run:
+            logger.info(f"[DRY RUN] Would dismiss warning from Sonarr queue for '{title}' ({len(ids_to_remove)} queue item(s)) [missing_episodes]")
+            if download_id:
+                self._dismissed_downloads.add(download_id)
+            return True
+
+        logger.info(f"Dismissing warning from Sonarr queue for '{title}' ({len(ids_to_remove)} queue item(s)) [missing_episodes]...")
+        try:
+            if len(ids_to_remove) > 1:
+                try:
+                    await self._delete(
+                        "queue/bulk",
+                        params={"removeFromClient": "false", "blocklist": "false"},
+                        json={"ids": ids_to_remove}
+                    )
+                except Exception as be:
+                    logger.debug(f"Bulk queue delete failed, falling back to individual deletes: {be}")
+                    for qid in ids_to_remove:
+                        try:
+                            await self._delete(
+                                f"queue/{qid}",
+                                params={"removeFromClient": "false", "blocklist": "false"}
+                            )
+                        except Exception:
+                            pass
+            else:
+                await self._delete(
+                    f"queue/{queue_id}",
+                    params={"removeFromClient": "false", "blocklist": "false"}
+                )
+
+            logger.info(f"Successfully dismissed queue warning for '{title}' (Queue IDs: {ids_to_remove})")
+            if download_id:
+                self._dismissed_downloads.add(download_id)
+            return True
+        except Exception as e:
+            logger.error(f"Failed to dismiss queue warning for '{title}': {e}")
+            return False
+
     async def process_queue_item(self, item: Dict[str, Any], ai_provider: BaseAIProvider) -> bool:
         """
         Analyze a queued item. Classify the issue, check category dry_run/enabled settings,
@@ -163,6 +244,11 @@ class SonarrClient:
         output_path = item.get("outputPath", "")
         download_id = item.get("downloadId", "")
         series_info = item.get("series")
+
+        # Skip if this download was already dismissed in the current session
+        if download_id and download_id in self._dismissed_downloads:
+            logger.debug(f"Skipping '{title}': downloadId '{download_id}' was already dismissed.")
+            return True
 
         # Never attempt to import an in-progress download
         if tracked_state in ("downloading", "importing", "imported"):
@@ -259,6 +345,16 @@ class SonarrClient:
         )
 
         if not manual_items:
+            if category == ErrorCategory.MISSING_EPISODES:
+                queue_id = item.get("id")
+                if queue_id:
+                    logger.info(f"  Sonarr returned 0 remaining importable files for '{title}'. Dismissing missing episodes warning from queue...")
+                    return await self.dismiss_queue_warning(
+                        queue_id=queue_id,
+                        download_id=download_id,
+                        dry_run=is_cat_dry_run,
+                        title=title
+                    )
             logger.warning(f"  Sonarr returned 0 importable files for '{title}'.")
             return False
 
@@ -367,6 +463,28 @@ class SonarrClient:
                     logger.warning(f"  AI could not identify episode for '{file_name}' ({ep_match.confidence:.0%}): {ep_match.reasoning}")
 
         if files_to_import:
-            return await self.trigger_manual_import(files_to_import, dry_run=is_cat_dry_run, category=category)
+            import_ok = await self.trigger_manual_import(files_to_import, dry_run=is_cat_dry_run, category=category)
+            if import_ok and category == ErrorCategory.MISSING_EPISODES:
+                queue_id = item.get("id")
+                if queue_id:
+                    await self.dismiss_queue_warning(
+                        queue_id=queue_id,
+                        download_id=download_id,
+                        dry_run=is_cat_dry_run,
+                        title=title
+                    )
+            return import_ok
+
+        # If no files left to import, but this was flagged as missing_episodes:
+        if category == ErrorCategory.MISSING_EPISODES:
+            queue_id = item.get("id")
+            if queue_id:
+                logger.info(f"  All available files for '{title}' are accounted for. Dismissing missing episodes warning from Sonarr queue...")
+                return await self.dismiss_queue_warning(
+                    queue_id=queue_id,
+                    download_id=download_id,
+                    dry_run=is_cat_dry_run,
+                    title=title
+                )
 
         return False

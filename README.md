@@ -149,6 +149,7 @@ AImportarr intelligently categorizes download issues into granular categories, a
 | `unknown_episode` | Series is known, but season/episode numbers could not be parsed | Extracts season and episode numbers from irregular file paths. |
 | `sample_or_extra` | File flagged as a sample, preview, or short video | Evaluates whether the file is disposable or a genuine OVA/special. |
 | `quality_or_language` | Rejected by quality cutoff or language profile | Overrides cutoff when enabled to import alternative releases. |
+| `missing_episodes` | Expected episodes missing from release (e.g. single episode labeled as season pack) | Imports available files, then dismisses lingering season pack warnings from queue without deleting from download client. |
 | `other` | **Fallback / Catch-All** for unclassified queue warnings or errors | Analyzes release and applies configured dry-run/import rules. |
 
 ### Environment Variable Overrides

@@ -7,6 +7,7 @@ class ErrorCategory(str, Enum):
     UNKNOWN_EPISODE = "unknown_episode"
     SAMPLE_OR_EXTRA = "sample_or_extra"
     QUALITY_OR_LANGUAGE = "quality_or_language"
+    MISSING_EPISODES = "missing_episodes"
     OTHER = "other"  # Fallback / Catch-all category
 
 def classify_issue(
@@ -69,5 +70,14 @@ def classify_issue(
     ]):
         return ErrorCategory.QUALITY_OR_LANGUAGE
 
-    # 6. Fallback / Catch-all for any other error or warning status
+    # 6. Expected episodes missing from release (e.g. season pack with only single/subset episodes present)
+    if any(phrase in all_text for phrase in [
+        "one or more episodes expected in this release were not imported",
+        "missing from the release",
+        "episodes expected in this release were not imported",
+        "partially imported"
+    ]):
+        return ErrorCategory.MISSING_EPISODES
+
+    # 7. Fallback / Catch-all for any other error or warning status
     return ErrorCategory.OTHER
