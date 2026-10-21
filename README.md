@@ -31,7 +31,6 @@ Edit `config/config.yml` with your connection details:
 
 ```yaml
 general:
-  dry_run: false                 # Set to true to test matches without importing
   check_interval_seconds: 120   # How often to check queues (in seconds)
   min_confidence: 0.85          # Confidence threshold (0.0 to 1.0)
   log_level: "INFO"
@@ -120,7 +119,6 @@ docker run -d \
 
 | Setting | Default | Description |
 | :--- | :--- | :--- |
-| `general.dry_run` | `false` | When `true`, matches are analyzed and logged without executing imports. |
 | `general.check_interval_seconds` | `120` | Interval between queue inspections. |
 | `general.min_confidence` | `0.85` | AI confidence required (0.0 to 1.0) before executing an import. |
 | `ai.provider` | `gemini` | Selected primary AI backend: `gemini` or `ollama`. |
@@ -136,7 +134,7 @@ docker run -d \
 | `radarr.url` | `http://localhost:7878` | Base URL of your Radarr instance. |
 | `radarr.api_key` | `""` | Radarr API key (*Settings → General → Security*). |
 | `categories.<name>.enabled` | `true` | Enable or disable processing for specific error categories. |
-| `categories.<name>.dry_run` | `null` | Per-category dry-run override (`true`, `false`, or `null` to inherit `general.dry_run`). |
+| `categories.<name>.dry_run` | `true` | Per-category dry-run toggle (`false` to execute real imports, `true` for simulation only). |
 
 ### 🎯 Error & Import Failure Categories
 

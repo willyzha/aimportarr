@@ -5,7 +5,7 @@ from typing import Optional, Literal
 from pydantic import BaseModel, Field
 
 class GeneralConfig(BaseModel):
-    dry_run: bool = False
+    dry_run: Optional[bool] = None  # Deprecated: dry_run is now configured per category
     check_interval_seconds: int = 120
     min_confidence: float = 0.85
     log_level: str = "INFO"
@@ -38,22 +38,24 @@ class RadarrConfig(BaseModel):
 
 class CategoryRule(BaseModel):
     enabled: bool = True
-    dry_run: Optional[bool] = None  # None inherits general.dry_run, True/False explicitly overrides it
+    dry_run: bool = True  # Defaults to True (safe simulation) if omitted
 
 class CategoriesConfig(BaseModel):
-    id_match: CategoryRule = Field(default_factory=CategoryRule)
-    unknown_media: CategoryRule = Field(default_factory=CategoryRule)
-    unknown_episode: CategoryRule = Field(default_factory=CategoryRule)
-    sample_or_extra: CategoryRule = Field(default_factory=CategoryRule)
-    quality_or_language: CategoryRule = Field(default_factory=CategoryRule)
-    missing_episodes: CategoryRule = Field(default_factory=CategoryRule)
-    other: CategoryRule = Field(default_factory=CategoryRule)  # Fallback / Catch-all category
+    id_match: CategoryRule = Field(default_factory=lambda: CategoryRule(enabled=True, dry_run=False))
+    unknown_media: CategoryRule = Field(default_factory=lambda: CategoryRule(enabled=True, dry_run=True))
+    unknown_episode: CategoryRule = Field(default_factory=lambda: CategoryRule(enabled=True, dry_run=True))
+    sample_or_extra: CategoryRule = Field(default_factory=lambda: CategoryRule(enabled=True, dry_run=True))
+    quality_or_language: CategoryRule = Field(default_factory=lambda: CategoryRule(enabled=True, dry_run=True))
+    missing_episodes: CategoryRule = Field(default_factory=lambda: CategoryRule(enabled=True, dry_run=False))
+    other: CategoryRule = Field(default_factory=lambda: CategoryRule(enabled=True, dry_run=True))  # Fallback category
 
-    def is_dry_run(self, category: str, default_dry_run: bool) -> bool:
+    def is_dry_run(self, category: str, default_dry_run: Optional[bool] = None) -> bool:
         rule = getattr(self, category, None)
         if rule and rule.dry_run is not None:
             return rule.dry_run
-        return default_dry_run
+        if default_dry_run is not None:
+            return default_dry_run
+        return True
 
     def is_enabled(self, category: str) -> bool:
         rule = getattr(self, category, None)
@@ -107,7 +109,16 @@ def load_config(config_path: Optional[str] = None) -> AppConfig:
 
     # General overrides
     if env_dry_run := os.getenv("DRY_RUN"):
-        config.general.dry_run = env_dry_run.lower() in ("true", "1", "yes")
+        is_dry = env_dry_run.lower() in ("true", "1", "yes")
+        config.general.dry_run = is_dry
+        for cat_name in ["id_match", "unknown_media", "unknown_episode", "sample_or_extra", "quality_or_language", "missing_episodes", "other"]:
+            getattr(config.categories, cat_name).dry_run = is_dry
+    elif config.general.dry_run is not None:
+        # Legacy support: if general.dry_run is set in YAML, apply to categories without explicit dry_run
+        for cat_name in ["id_match", "unknown_media", "unknown_episode", "sample_or_extra", "quality_or_language", "missing_episodes", "other"]:
+            rule_data = cats_data.get(cat_name)
+            if not isinstance(rule_data, dict) or "dry_run" not in rule_data:
+                getattr(config.categories, cat_name).dry_run = config.general.dry_run
     
     # AI overrides
     if env_provider := os.getenv("AI_PROVIDER"):

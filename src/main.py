@@ -59,7 +59,7 @@ async def main():
         if not rule.enabled:
             disabled_cats.append(cat_name)
             continue
-        is_dry = config.categories.is_dry_run(cat_name, config.general.dry_run)
+        is_dry = config.categories.is_dry_run(cat_name)
         if is_dry:
             dry_run_cats.append(cat_name)
         else:
@@ -84,7 +84,6 @@ async def main():
                 base_url=config.sonarr.url,
                 api_key=config.sonarr.api_key,
                 min_confidence=config.general.min_confidence,
-                dry_run=config.general.dry_run,
                 categories=config.categories
             )
             logger.info(f"Sonarr client configured for: {config.sonarr.url}")
@@ -99,7 +98,6 @@ async def main():
                 base_url=config.radarr.url,
                 api_key=config.radarr.api_key,
                 min_confidence=config.general.min_confidence,
-                dry_run=config.general.dry_run,
                 categories=config.categories
             )
             logger.info(f"Radarr client configured for: {config.radarr.url}")

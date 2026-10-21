@@ -15,7 +15,7 @@ class RadarrClient:
         base_url: str,
         api_key: str,
         min_confidence: float = 0.85,
-        dry_run: bool = False,
+        dry_run: Optional[bool] = None,
         categories: Optional[CategoriesConfig] = None
     ):
         self.base_url = base_url.rstrip("/")
@@ -122,7 +122,7 @@ class RadarrClient:
         if not files_to_import:
             return False
 
-        is_dry = self.categories.is_dry_run(category.value, self.dry_run) if dry_run is None else dry_run
+        is_dry = self.categories.is_dry_run(category.value) if dry_run is None else dry_run
 
         if is_dry:
             logger.info(f"[DRY RUN] Would import {len(files_to_import)} movie file(s) to Radarr [{category.value}]")
@@ -209,7 +209,7 @@ class RadarrClient:
             logger.debug(f"Skipping '{title}': category '{category.value}' is disabled in configuration.")
             return False
 
-        is_cat_dry_run = self.categories.is_dry_run(category.value, self.dry_run)
+        is_cat_dry_run = self.categories.is_dry_run(category.value)
         mode_tag = "[DRY RUN]" if is_cat_dry_run else "[LIVE]"
         logger.info(f"Processing blocked movie: '{title}' [{category.value}] {mode_tag}")
         logger.debug(f"  Queue status: {status} (state: {tracked_state}) | Messages: {all_messages}")
@@ -282,7 +282,7 @@ class RadarrClient:
                 if not self.categories.is_enabled(category.value):
                     logger.debug(f"Skipping '{title}': refined category '{category.value}' is disabled.")
                     return False
-                is_cat_dry_run = self.categories.is_dry_run(category.value, self.dry_run)
+                is_cat_dry_run = self.categories.is_dry_run(category.value)
 
         files_to_import: List[Dict[str, Any]] = []
         movie_path = (movie_info.get("path") or "").rstrip("/") if movie_info else ""
