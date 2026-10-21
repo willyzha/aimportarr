@@ -176,8 +176,12 @@ class RadarrClient:
         download_id = item.get("downloadId", "")
         movie_info = item.get("movie")
 
-        # Never attempt to import an in-progress download
-        if tracked_state in ("downloading", "importing", "imported"):
+        # Never touch downloads in normal non-blocked states:
+        # downloading: active in torrent client
+        # importpending: completed, queued for Radarr's built-in completed download handler to import naturally!
+        # importing / imported: Radarr is actively processing the import
+        # queued, delay, paused: waiting in line
+        if tracked_state in ("downloading", "importing", "imported", "importpending", "queued", "delay", "paused"):
             return False
 
         # Output path is required for importing completed media files
@@ -188,9 +192,17 @@ class RadarrClient:
         for sm in status_messages:
             all_messages.extend(sm.get("messages", []))
 
+        # Ignore stalled downloads with 0 connections (handled by torrent client daemon, not an import failure)
+        error_msg = (item.get("errorMessage") or "").lower()
+        if "stalled" in error_msg and ("no connections" in error_msg or not all_messages):
+            return False
+        if any("stalled with no connections" in m.lower() for m in all_messages):
+            return False
+
         category = classify_issue(all_messages, has_media_info=bool(movie_info))
 
-        if status not in ("warning", "error") and movie_info and not all_messages and category == ErrorCategory.OTHER:
+        # If Radarr has not flagged an issue and item is not importBlocked, let Radarr complete normally
+        if status not in ("warning", "error") and tracked_state != "importblocked" and not all_messages and movie_info:
             return False
 
         if not self.categories.is_enabled(category.value):
@@ -248,22 +260,8 @@ class RadarrClient:
         year = movie_info.get("year")
         alternate_titles = [a.get("title") for a in movie_info.get("alternateTitles", [])]
 
-        # Verify candidate movie match with AI (unless already matched via library search)
-        if not matched_from_library and candidate_title:
-            verify_res = await ai_provider.verify_movie_match(
-                release_title=title,
-                folder_name=folder_name,
-                candidate_movie_title=candidate_title,
-                alternate_titles=alternate_titles,
-                year=year
-            )
-
-            if not verify_res.is_match or verify_res.confidence < self.min_confidence:
-                logger.warning(f"  AI rejected movie match for '{title}' against '{candidate_title}' ({verify_res.confidence:.0%}): {verify_res.reasoning}")
-                return False
-
-            logger.info(f"  AI verified movie match: '{candidate_title}' ({verify_res.confidence:.0%})")
-            logger.debug(f"  Movie match reasoning: {verify_res.reasoning}")
+        # Movie is known (either already matched by Radarr or resolved by AI above).
+        # We do not burn AI calls verifying movie identity that Radarr already confirmed.
 
         # Query Radarr manual import to inspect media files
         manual_items = await self.get_manual_import_items(

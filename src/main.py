@@ -85,9 +85,15 @@ async def main():
             try:
                 queue_items = await sonarr_client.get_queue()
                 if queue_items:
+                    seen_downloads = set()
                     for item in queue_items:
                         if not running:
                             break
+                        dl_id = item.get("downloadId")
+                        if dl_id:
+                            if dl_id in seen_downloads:
+                                continue
+                            seen_downloads.add(dl_id)
                         await sonarr_client.process_queue_item(item, ai_provider)
             except (httpx.ConnectError, httpx.ConnectTimeout) as e:
                 logger.warning(f"Could not connect to Sonarr at '{config.sonarr.url}': connection refused or timed out. Please verify host and port.")
@@ -99,9 +105,15 @@ async def main():
             try:
                 queue_items = await radarr_client.get_queue()
                 if queue_items:
+                    seen_downloads = set()
                     for item in queue_items:
                         if not running:
                             break
+                        dl_id = item.get("downloadId")
+                        if dl_id:
+                            if dl_id in seen_downloads:
+                                continue
+                            seen_downloads.add(dl_id)
                         await radarr_client.process_queue_item(item, ai_provider)
             except (httpx.ConnectError, httpx.ConnectTimeout) as e:
                 logger.warning(f"Could not connect to Radarr at '{config.radarr.url}': connection refused or timed out. Please verify host and port.")

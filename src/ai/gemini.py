@@ -1,8 +1,10 @@
+import asyncio
 import json
 import logging
 import re
+import time
 from datetime import datetime
-from typing import List, Optional
+from typing import Dict, List, Optional
 import httpx
 from .base import (
     BaseAIProvider,
@@ -21,24 +23,20 @@ class GeminiProvider(BaseAIProvider):
         self.model = model.strip() if model else "auto"
         self._resolved_model: Optional[str] = None
         self._failed_models: set = set()
+        self._rate_limited_models: Dict[str, float] = {}
+        self._discovered_candidates: List[str] = []
+        self._last_call_time: float = 0.0
+        self._min_call_interval: float = 2.0  # Pacing delay between calls to respect rate limits
 
     @property
     def name(self) -> str:
         active = self._resolved_model or self.model
         return f"Gemini ({active})"
 
-    async def resolve_smallest_model(self, force_refresh: bool = False) -> str:
-        """
-        Dynamically query Google Generative Language API to discover and verify the smallest
-        and fastest working text generation model for the current API key.
-        Prioritizes:
-          1. Standard flash models (e.g. gemini-3.5-flash, gemini-3-flash-preview)
-          2. flash-lite models
-          3. Higher version numbers over older versions
-        Probes candidate models to ensure they respond with HTTP 200 rather than timing out.
-        """
-        if not force_refresh and self._resolved_model and self._resolved_model not in self._failed_models:
-            return self._resolved_model
+    async def get_candidate_models(self) -> List[str]:
+        """Fetch and score candidate models once or when refreshed."""
+        if self._discovered_candidates:
+            return self._discovered_candidates
 
         url = f"https://generativelanguage.googleapis.com/v1beta/models?key={self.api_key}"
         try:
@@ -48,12 +46,16 @@ class GeminiProvider(BaseAIProvider):
                 data = resp.json()
         except Exception as e:
             logger.warning(
-                "Failed to auto-discover Gemini models catalog: %s. Falling back to default 'gemini-3.5-flash'.",
+                "Failed to auto-discover Gemini models catalog: %s. Using default flash fallback list.",
                 e
             )
-            fallback = "gemini-3.5-flash" if "gemini-3.5-flash" not in self._failed_models else "gemini-3-flash-preview"
-            self._resolved_model = fallback
-            return fallback
+            return [
+                "gemini-3.6-flash",
+                "gemini-3.5-flash-lite",
+                "gemini-3.5-flash",
+                "gemini-3-flash-preview",
+                "gemini-flash-latest"
+            ]
 
         candidates = []
         for m in data.get("models", []):
@@ -63,8 +65,6 @@ class GeminiProvider(BaseAIProvider):
                 continue
             # Exclude specialized modalities (image generation, tts, robotics, audio, transcription)
             if any(x in name for x in ["image", "tts", "robotics", "clip", "banana", "transcribe", "argon", "computer-use"]):
-                continue
-            if name in self._failed_models:
                 continue
             candidates.append(name)
 
@@ -85,35 +85,49 @@ class GeminiProvider(BaseAIProvider):
             return (tier, is_generic_latest, -version, is_preview, name)
 
         candidates.sort(key=model_score)
+        self._discovered_candidates = candidates
+        return candidates
 
-        # Probe candidate models with a lightweight ping to verify responsiveness
-        async with httpx.AsyncClient(timeout=5.0) as probe_client:
-            for candidate in candidates[:8]:
-                probe_url = f"https://generativelanguage.googleapis.com/v1beta/models/{candidate}:generateContent?key={self.api_key}"
-                probe_payload = {"contents": [{"parts": [{"text": "ping"}]}]}
-                try:
-                    r = await probe_client.post(probe_url, json=probe_payload)
-                    if r.status_code == 200:
-                        logger.info("Auto-resolved active Gemini model: '%s' (verified responsive)", candidate)
-                        self._resolved_model = candidate
-                        return candidate
-                    else:
-                        logger.debug("Candidate model '%s' returned HTTP %s during probe. Trying next...", candidate, r.status_code)
-                        self._failed_models.add(candidate)
-                except Exception as probe_err:
-                    logger.debug("Candidate model '%s' timed out or failed probe: %s. Trying next...", candidate, probe_err)
-                    self._failed_models.add(candidate)
+    async def resolve_smallest_model(self, force_refresh: bool = False) -> str:
+        """
+        Select the best available model for text generation without wasting API calls on probe pings.
+        Filters out models that returned 404 (retired) or are currently on rate-limit cooldown (429/503).
+        """
+        now = time.time()
+        # Clean expired rate limits
+        expired = [m for m, exp in self._rate_limited_models.items() if exp <= now]
+        for m in expired:
+            del self._rate_limited_models[m]
 
-        logger.warning("No probed Gemini models responded successfully. Defaulting to 'gemini-3.5-flash'.")
-        self._resolved_model = "gemini-3.5-flash"
-        return "gemini-3.5-flash"
+        if not force_refresh and self._resolved_model:
+            if self._resolved_model not in self._failed_models and self._resolved_model not in self._rate_limited_models:
+                return self._resolved_model
+
+        candidates = await self.get_candidate_models()
+        available = [
+            c for c in candidates
+            if c not in self._failed_models and c not in self._rate_limited_models
+        ]
+
+        if available:
+            chosen = available[0]
+            if chosen != self._resolved_model:
+                logger.info("Active Gemini model selected: '%s'", chosen)
+            self._resolved_model = chosen
+            return chosen
+
+        # If all candidates are currently rate-limited, try the one whose cooldown expires soonest
+        if self._rate_limited_models:
+            soonest = min(self._rate_limited_models.keys(), key=lambda k: self._rate_limited_models[k])
+            logger.warning("All Gemini candidate models are rate-limited. Trying soonest available '%s'...", soonest)
+            self._resolved_model = soonest
+            return soonest
+
+        fallback = "gemini-3.6-flash"
+        self._resolved_model = fallback
+        return fallback
 
     async def _call_gemini(self, prompt: str, schema_desc: str) -> dict:
-        if self.model in ("auto", "smallest", ""):
-            current_model = await self.resolve_smallest_model()
-        else:
-            current_model = self._resolved_model or self.model
-
         today_str = datetime.now().strftime("%Y-%m-%d")
         payload = {
             "contents": [
@@ -137,53 +151,108 @@ class GeminiProvider(BaseAIProvider):
             }
         }
 
-        url = f"https://generativelanguage.googleapis.com/v1beta/models/{current_model}:generateContent?key={self.api_key}"
+        # Allow up to 4 attempts with model rotation on 404, 429, or 503
+        max_attempts = 4
+        last_error = None
 
-        try:
-            async with httpx.AsyncClient(timeout=30.0) as client:
-                resp = await client.post(url, json=payload)
-                if resp.status_code == 404:
-                    # Model deprecated or sunset by Google! Mark as failed and self-heal
-                    self._failed_models.add(current_model)
-                    logger.warning(
-                        "Gemini model '%s' returned HTTP 404 (model retired or unavailable). Auto-discovering replacement...",
-                        current_model
-                    )
-                    new_model = await self.resolve_smallest_model(force_refresh=True)
-                    if new_model != current_model:
-                        logger.info("Retrying request with newly resolved model: '%s'...", new_model)
-                        current_model = new_model
-                        url = f"https://generativelanguage.googleapis.com/v1beta/models/{current_model}:generateContent?key={self.api_key}"
-                        resp = await client.post(url, json=payload)
-
-                resp.raise_for_status()
-                data = resp.json()
-        except httpx.HTTPStatusError as e:
-            status = e.response.status_code
-            if status in (401, 403):
-                raise AIProviderError(f"Gemini API Key is invalid or unauthorized (HTTP {status})") from e
-            elif status == 429:
-                raise AIProviderError(f"Gemini rate limit or quota exceeded (HTTP 429 / Out of tokens)") from e
+        for attempt in range(max_attempts):
+            if self.model in ("auto", "smallest", ""):
+                current_model = await self.resolve_smallest_model()
             else:
-                raise AIProviderError(f"Gemini HTTP {status} error: {e.response.text}") from e
-        except (httpx.RequestError, httpx.TimeoutException) as e:
-            raise AIProviderError(f"Gemini connection / timeout error: {e}") from e
-        except Exception as e:
-            raise AIProviderError(f"Unexpected error calling Gemini API: {e}") from e
+                current_model = self._resolved_model or self.model
 
-        candidates = data.get("candidates", [])
-        if not candidates:
-            raise AIProviderError(f"No response candidates returned from Gemini: {data}")
+            # Pacing: enforce minimum delay between calls to avoid bursting over rate limits
+            now = time.time()
+            elapsed = now - self._last_call_time
+            if elapsed < self._min_call_interval:
+                await asyncio.sleep(self._min_call_interval - elapsed)
+            self._last_call_time = time.time()
 
-        parts = candidates[0].get("content", {}).get("parts", [])
-        if not parts:
-            raise AIProviderError("Empty response parts from Gemini")
+            url = f"https://generativelanguage.googleapis.com/v1beta/models/{current_model}:generateContent?key={self.api_key}"
 
-        raw_text = parts[0].get("text", "{}")
-        try:
-            return json.loads(raw_text)
-        except json.JSONDecodeError as e:
-            raise AIProviderError(f"Failed to parse Gemini JSON output: {raw_text}") from e
+            try:
+                async with httpx.AsyncClient(timeout=30.0) as client:
+                    resp = await client.post(url, json=payload)
+                    status = resp.status_code
+
+                    if status == 404:
+                        self._failed_models.add(current_model)
+                        logger.warning("Gemini model '%s' returned 404 (retired). Rotating to next model...", current_model)
+                        await self.resolve_smallest_model(force_refresh=True)
+                        continue
+
+                    if status == 429:
+                        self._rate_limited_models[current_model] = time.time() + 180  # 3 min cooldown
+                        logger.warning("Gemini model '%s' hit rate limit / quota (HTTP 429). Rotating to next model...", current_model)
+                        await self.resolve_smallest_model(force_refresh=True)
+                        continue
+
+                    if status == 503:
+                        self._rate_limited_models[current_model] = time.time() + 60   # 1 min cooldown
+                        logger.warning("Gemini model '%s' is overloaded (HTTP 503). Rotating to next model...", current_model)
+                        await self.resolve_smallest_model(force_refresh=True)
+                        continue
+
+                    resp.raise_for_status()
+                    data = resp.json()
+                    candidates = data.get("candidates", [])
+                    if not candidates:
+                        raise AIProviderError(f"No response candidates returned from Gemini: {data}")
+                    parts = candidates[0].get("content", {}).get("parts", [])
+                    if not parts:
+                        raise AIProviderError("Empty response parts from Gemini")
+
+                    raw_text = parts[0].get("text", "").strip()
+                    clean_json = re.sub(r"^```(?:json)?\s*", "", raw_text, flags=re.MULTILINE)
+                    clean_json = re.sub(r"\s*```$", "", clean_json, flags=re.MULTILINE)
+                    return json.loads(clean_json)
+
+            except httpx.HTTPStatusError as e:
+                status = e.response.status_code
+                if status in (401, 403):
+                    raise AIProviderError(f"Gemini API Key is invalid or unauthorized (HTTP {status})") from e
+                last_error = e
+            except (httpx.RequestError, httpx.TimeoutException) as e:
+                last_error = e
+                logger.warning("Network/timeout error calling Gemini '%s': %s. Retrying...", current_model, e)
+            except json.JSONDecodeError as e:
+                raise AIProviderError(f"Failed to parse JSON response from Gemini: {raw_text}") from e
+            except Exception as e:
+                last_error = e
+                break
+
+        if isinstance(last_error, httpx.HTTPStatusError) and last_error.response.status_code == 429:
+            raise AIProviderError("All Gemini candidate models hit rate limit or quota (HTTP 429 / Out of tokens)") from last_error
+        raise AIProviderError(f"Failed to get valid response from Gemini after {max_attempts} attempts: {last_error}")
+
+    async def match_unknown_media(
+        self,
+        release_title: str,
+        folder_name: str,
+        media_type: str,
+        candidates: List[dict]
+    ) -> LibraryMatchResult:
+        schema = (
+            "Return JSON adhering strictly to this schema:\n"
+            "{\n"
+            '  "matched_id": integer or null,\n'
+            '  "confidence": float (0.0 to 1.0),\n'
+            '  "reasoning": "brief explanation of match"\n'
+            "}"
+        )
+        prompt = (
+            f"Release Title: {release_title}\n"
+            f"Folder Name: {folder_name}\n"
+            f"Media Type: {media_type}\n"
+            f"Candidate Library Items:\n{json.dumps(candidates, ensure_ascii=False, indent=2)}\n\n"
+            f"Identify if this release matches any candidate in the library. If no confident match exists, set matched_id to null."
+        )
+        data = await self._call_gemini(prompt, schema)
+        return LibraryMatchResult(
+            matched_id=data.get("matched_id"),
+            confidence=float(data.get("confidence", 0.0)),
+            reasoning=data.get("reasoning", "")
+        )
 
     async def verify_series_match(
         self,
@@ -193,27 +262,27 @@ class GeminiProvider(BaseAIProvider):
         alternate_titles: List[str],
         year: Optional[int] = None
     ) -> MediaMatchResult:
-        today_str = datetime.now().strftime("%Y-%m-%d")
-        current_year = datetime.now().year
-        schema_desc = (
-            "Return a JSON object with exactly these keys:\n"
-            "- is_match (boolean): true if the release definitely refers to this series, false otherwise\n"
-            "- confidence (float between 0.0 and 1.0)\n"
-            "- reasoning (string explaining the decision, citing Pinyin translation, English title, or naming conventions)"
+        schema = (
+            "Return JSON adhering strictly to this schema:\n"
+            "{\n"
+            '  "is_match": boolean,\n'
+            '  "confidence": float (0.0 to 1.0),\n'
+            '  "reasoning": "brief explanation"\n'
+            "}"
         )
         prompt = (
-            f"Current Date: {today_str}\n"
             f"Release Title: {release_title}\n"
             f"Folder Name: {folder_name}\n"
-            f"Candidate Series: {candidate_series_title} ({year if year else 'Unknown Year'})\n"
-            f"Known Alternate Titles/Aliases: {alternate_titles}\n\n"
-            "Task: Determine if this release belongs to the candidate TV series. "
-            "Consider Chinese Pinyin translations, Romaji, and common international media naming conventions.\n\n"
-            f"Important Context: Today is {today_str}. Media with release year {current_year} is currently active and releasing now. Do NOT reject matches by assuming {current_year} releases are unreleased or in the future."
+            f"Candidate Series: {candidate_series_title} ({year or 'Unknown Year'})\n"
+            f"Alternate Titles: {', '.join(alternate_titles) if alternate_titles else 'None'}\n\n"
+            f"Does this release belong to the candidate series? Handle Pinyin, English, and Chinese translations."
         )
-
-        res = await self._call_gemini(prompt, schema_desc)
-        return MediaMatchResult(**res)
+        data = await self._call_gemini(prompt, schema)
+        return MediaMatchResult(
+            is_match=bool(data.get("is_match", False)),
+            confidence=float(data.get("confidence", 0.0)),
+            reasoning=data.get("reasoning", "")
+        )
 
     async def verify_movie_match(
         self,
@@ -223,27 +292,27 @@ class GeminiProvider(BaseAIProvider):
         alternate_titles: List[str],
         year: Optional[int] = None
     ) -> MediaMatchResult:
-        today_str = datetime.now().strftime("%Y-%m-%d")
-        current_year = datetime.now().year
-        schema_desc = (
-            "Return a JSON object with exactly these keys:\n"
-            "- is_match (boolean): true if the release definitely refers to this movie, false otherwise\n"
-            "- confidence (float between 0.0 and 1.0)\n"
-            "- reasoning (string explaining the decision, citing Pinyin translation, English title, or naming conventions)"
+        schema = (
+            "Return JSON adhering strictly to this schema:\n"
+            "{\n"
+            '  "is_match": boolean,\n'
+            '  "confidence": float (0.0 to 1.0),\n'
+            '  "reasoning": "brief explanation"\n'
+            "}"
         )
         prompt = (
-            f"Current Date: {today_str}\n"
             f"Release Title: {release_title}\n"
             f"Folder Name: {folder_name}\n"
-            f"Candidate Movie: {candidate_movie_title} ({year if year else 'Unknown Year'})\n"
-            f"Known Alternate Titles/Aliases: {alternate_titles}\n\n"
-            "Task: Determine if this release belongs to the candidate movie in Radarr. "
-            "Account for foreign release names, Pinyin, translated movie titles, and release year discrepancies (+/- 1 year between festival and theatrical release).\n\n"
-            f"Important Context: Today is {today_str}. Movies with release year {current_year} are currently active in theaters or on digital streaming. Do NOT reject matches by assuming {current_year} releases are unreleased or in the future."
+            f"Candidate Movie: {candidate_movie_title} ({year or 'Unknown Year'})\n"
+            f"Alternate Titles: {', '.join(alternate_titles) if alternate_titles else 'None'}\n\n"
+            f"Does this release belong to the candidate movie?"
         )
-
-        res = await self._call_gemini(prompt, schema_desc)
-        return MediaMatchResult(**res)
+        data = await self._call_gemini(prompt, schema)
+        return MediaMatchResult(
+            is_match=bool(data.get("is_match", False)),
+            confidence=float(data.get("confidence", 0.0)),
+            reasoning=data.get("reasoning", "")
+        )
 
     async def parse_episode(
         self,
@@ -253,28 +322,37 @@ class GeminiProvider(BaseAIProvider):
         known_seasons: List[int],
         known_episodes_in_season: List[dict]
     ) -> EpisodeMatchResult:
-        schema_desc = (
-            "Return a JSON object with exactly these keys:\n"
-            "- season_number (integer or null): the identified season number\n"
-            "- episode_numbers (list of integers): the identified episode number(s), e.g. [1] or [1, 2]\n"
-            "- confidence (float between 0.0 and 1.0)\n"
-            "- reasoning (string explaining how the season/episode was derived from the file/folder name)"
+        schema = (
+            "Return JSON adhering strictly to this schema:\n"
+            "{\n"
+            '  "season_number": integer,\n'
+            '  "episode_numbers": [integer],\n'
+            '  "confidence": float (0.0 to 1.0),\n'
+            '  "reasoning": "brief explanation"\n'
+            "}"
         )
-
-        ep_titles = [f"E{e.get('episodeNumber')}: {e.get('title')}" for e in known_episodes_in_season[:30]]
-
+        simplified_eps = [
+            {"season": e.get("seasonNumber"), "episode": e.get("episodeNumber"), "title": e.get("title")}
+            for e in known_episodes_in_season[:100]
+        ]
         prompt = (
-            f"Series Title: {series_title}\n"
-            f"Folder Name: {folder_name}\n"
             f"File Name: {file_name}\n"
+            f"Folder Name: {folder_name}\n"
+            f"Series Title: {series_title}\n"
             f"Known Seasons: {known_seasons}\n"
-            f"Sample Episodes in candidate season: {ep_titles}\n\n"
-            "Task: Extract the Season Number and Episode Number(s) from this file path. "
-            "Look for patterns like 'S01E02', 'EP02', '02.mkv', '第02集', 'Part 1', or episode titles in the filename."
+            f"Sample Known Episodes in Season:\n{json.dumps(simplified_eps, ensure_ascii=False, indent=2)}\n\n"
+            f"Extract the season number and episode number(s) (e.g. for multi-episode files [1, 2])."
         )
-
-        res = await self._call_gemini(prompt, schema_desc)
-        return EpisodeMatchResult(**res)
+        data = await self._call_gemini(prompt, schema)
+        ep_nums = data.get("episode_numbers", [])
+        if isinstance(ep_nums, int):
+            ep_nums = [ep_nums]
+        return EpisodeMatchResult(
+            season_number=int(data.get("season_number", 1)),
+            episode_numbers=[int(x) for x in ep_nums],
+            confidence=float(data.get("confidence", 0.0)),
+            reasoning=data.get("reasoning", "")
+        )
 
     async def evaluate_sample_or_extra(
         self,
@@ -282,53 +360,21 @@ class GeminiProvider(BaseAIProvider):
         folder_name: str,
         media_title: str
     ) -> SampleEvaluationResult:
-        schema_desc = (
-            "Return a JSON object with exactly these keys:\n"
-            "- is_valid_media (boolean): true if the file is genuine episode or feature content, false if it is merely a preview, sample, or disposable extra\n"
-            "- confidence (float between 0.0 and 1.0)\n"
-            "- reasoning (string explaining your evaluation)"
+        schema = (
+            "Return JSON adhering strictly to this schema:\n"
+            "{\n"
+            '  "is_valid_media": boolean,\n'
+            '  "reasoning": "brief explanation"\n'
+            "}"
         )
         prompt = (
-            f"Media Title: {media_title}\n"
+            f"File Name: {file_name}\n"
             f"Folder Name: {folder_name}\n"
-            f"File Name: {file_name}\n\n"
-            "Task: Determine if this file is a genuine media release (such as an episode, OVA, special, or main feature) "
-            "or if it is merely a disposable sample clip/trailer that should be ignored."
+            f"Media Title: {media_title}\n\n"
+            f"Is this file a valid full media episode/movie file, or is it a disposable sample, trailer, preview, or extra clip?"
         )
-        res = await self._call_gemini(prompt, schema_desc)
-        return SampleEvaluationResult(**res)
-
-    async def match_unknown_media(
-        self,
-        release_title: str,
-        folder_name: str,
-        media_type: str,
-        candidates: List[dict]
-    ) -> LibraryMatchResult:
-        today_str = datetime.now().strftime("%Y-%m-%d")
-        current_year = datetime.now().year
-        schema_desc = (
-            "Return a JSON object with exactly these keys:\n"
-            "- matched_id (integer or null): the ID of the candidate media item that matches, or null if no match\n"
-            "- matched_title (string or null): the title of the matched media item, or null\n"
-            "- confidence (float between 0.0 and 1.0)\n"
-            "- reasoning (string explaining the decision, citing Pinyin translation, aliases, or naming matches)"
+        data = await self._call_gemini(prompt, schema)
+        return SampleEvaluationResult(
+            is_valid_media=bool(data.get("is_valid_media", True)),
+            reasoning=data.get("reasoning", "")
         )
-        candidate_summary = [
-            f"ID {c.get('id')}: '{c.get('title')}' ({c.get('year', 'N/A')}) | Aliases: {c.get('aliases', [])}"
-            for c in candidates[:50]
-        ]
-        candidates_str = "\n".join(candidate_summary)
-
-        prompt = (
-            f"Current Date: {today_str}\n"
-            f"Release Title: {release_title}\n"
-            f"Folder Name: {folder_name}\n"
-            f"Media Type: {media_type}\n\n"
-            f"User's Library Candidates:\n{candidates_str}\n\n"
-            "Task: Identify which library candidate this release belongs to. "
-            "Consider Chinese Pinyin translations, Romaji, alternate titles, and year variations.\n\n"
-            f"Important Context: Today is {today_str}. Media with release year {current_year} is currently active and releasing now."
-        )
-        res = await self._call_gemini(prompt, schema_desc)
-        return LibraryMatchResult(**res)
