@@ -251,7 +251,8 @@ class GeminiProvider(BaseAIProvider):
         return LibraryMatchResult(
             matched_id=data.get("matched_id"),
             confidence=float(data.get("confidence", 0.0)),
-            reasoning=data.get("reasoning", "")
+            reasoning=data.get("reasoning", ""),
+            model_name=self.name
         )
 
     async def verify_series_match(
@@ -281,7 +282,8 @@ class GeminiProvider(BaseAIProvider):
         return MediaMatchResult(
             is_match=bool(data.get("is_match", False)),
             confidence=float(data.get("confidence", 0.0)),
-            reasoning=data.get("reasoning", "")
+            reasoning=data.get("reasoning", ""),
+            model_name=self.name
         )
 
     async def verify_movie_match(
@@ -311,7 +313,8 @@ class GeminiProvider(BaseAIProvider):
         return MediaMatchResult(
             is_match=bool(data.get("is_match", False)),
             confidence=float(data.get("confidence", 0.0)),
-            reasoning=data.get("reasoning", "")
+            reasoning=data.get("reasoning", ""),
+            model_name=self.name
         )
 
     async def parse_episode(
@@ -351,7 +354,8 @@ class GeminiProvider(BaseAIProvider):
             season_number=int(data.get("season_number", 1)),
             episode_numbers=[int(x) for x in ep_nums],
             confidence=float(data.get("confidence", 0.0)),
-            reasoning=data.get("reasoning", "")
+            reasoning=data.get("reasoning", ""),
+            model_name=self.name
         )
 
     async def evaluate_sample_or_extra(
@@ -376,5 +380,7 @@ class GeminiProvider(BaseAIProvider):
         data = await self._call_gemini(prompt, schema)
         return SampleEvaluationResult(
             is_valid_media=bool(data.get("is_valid_media", True)),
-            reasoning=data.get("reasoning", "")
+            confidence=float(data.get("confidence", 1.0)),
+            reasoning=data.get("reasoning", ""),
+            model_name=self.name
         )

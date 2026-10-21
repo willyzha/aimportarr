@@ -291,6 +291,7 @@ class SonarrClient:
         p = Path(output_path)
         folder_name = p.parent.name if p.suffix.lower() in (".mkv", ".mp4", ".avi", ".ts", ".m4v", ".mov", ".wmv") else (p.name or title)
         matched_from_library = False
+        match_res: Optional[LibraryMatchResult] = None
 
         # If series is unknown, attempt to match release to Sonarr library using AI
         if not series_info:
@@ -325,7 +326,8 @@ class SonarrClient:
                 logger.warning(f"  Series ID {match_res.matched_id} matched by AI not found in Sonarr library.")
                 return False
 
-            logger.info(f"  AI matched release to library series: '{series_info.get('title')}' ({match_res.confidence:.0%})")
+            model_label = match_res.model_name or ai_provider.name
+            logger.info(f"  ✔ AI matched library series: '{series_info.get('title')}' | Model: {model_label} | Confidence: {match_res.confidence:.0%}")
             logger.debug(f"  Library match reasoning: {match_res.reasoning}")
             matched_from_library = True
 
@@ -396,12 +398,13 @@ class SonarrClient:
                     folder_name=file_folder,
                     media_title=candidate_title
                 )
+                sample_decider = sample_res.model_name or ai_provider.name
                 if not sample_res.is_valid_media:
-                    logger.info(f"  Skipping disposable sample/extra file: '{file_name}'")
+                    logger.info(f"  ✖ Skipping sample/extra: '{file_name}' | Model: {sample_decider} | Confidence: {sample_res.confidence:.0%}")
                     logger.debug(f"  Sample evaluation reasoning: {sample_res.reasoning}")
                     continue
                 else:
-                    logger.debug(f"  Valid media confirmed for '{file_name}': {sample_res.reasoning}")
+                    logger.debug(f"  ✔ Valid media confirmed: '{file_name}' | Model: {sample_decider} | Confidence: {sample_res.confidence:.0%}")
 
             # Check if Sonarr already identified episodes
             non_blocking_rejections = [
@@ -413,7 +416,20 @@ class SonarrClient:
             if curr_episodes and not non_blocking_rejections:
                 ep_ids = [ep.get("id") for ep in curr_episodes]
                 ep_nums = [ep.get("episodeNumber") for ep in curr_episodes]
-                logger.info(f"  Approved file: '{file_name}' -> Episode(s) {ep_nums}")
+                if matched_from_library and match_res:
+                    decider = f"AI ({match_res.model_name or ai_provider.name})"
+                    conf_str = f"{match_res.confidence:.0%}"
+                elif category == ErrorCategory.ID_MATCH:
+                    decider = "Sonarr (Release ID Match)"
+                    conf_str = "100%"
+                elif category == ErrorCategory.MISSING_EPISODES:
+                    decider = "Sonarr (Season Pack Match)"
+                    conf_str = "100%"
+                else:
+                    decider = "Sonarr (Direct Match)"
+                    conf_str = "100%"
+
+                logger.info(f"  ✔ Approved: '{file_name}' -> Episode(s) {ep_nums} | Model: {decider} | Confidence: {conf_str}")
                 file_payload = {
                     "path": file_path,
                     "seriesId": target_series_id,
@@ -442,7 +458,9 @@ class SonarrClient:
                         if e.get("seasonNumber") == ep_match.season_number and e.get("episodeNumber") in ep_match.episode_numbers
                     ]
                     if matched_ep_ids:
-                        logger.info(f"  AI mapped '{file_name}' -> Season {ep_match.season_number}, Episode(s) {ep_match.episode_numbers} ({ep_match.confidence:.0%})")
+                        decider = ep_match.model_name or ai_provider.name
+                        conf_str = f"{ep_match.confidence:.0%}"
+                        logger.info(f"  ✔ Approved: '{file_name}' -> Season {ep_match.season_number}, Episode(s) {ep_match.episode_numbers} | Model: {decider} | Confidence: {conf_str}")
                         logger.debug(f"  Episode parsing reasoning: {ep_match.reasoning}")
                         file_payload = {
                             "path": file_path,
@@ -458,7 +476,9 @@ class SonarrClient:
                     else:
                         logger.warning(f"  Episodes {ep_match.episode_numbers} for Season {ep_match.season_number} not found in Sonarr's database.")
                 else:
-                    logger.warning(f"  AI could not identify episode for '{file_name}' ({ep_match.confidence:.0%}): {ep_match.reasoning}")
+                    decider = ep_match.model_name or ai_provider.name
+                    conf_str = f"{ep_match.confidence:.0%}"
+                    logger.warning(f"  ✖ Rejected file: '{file_name}' | Model: {decider} | Confidence: {conf_str} | Reasoning: {ep_match.reasoning}")
 
         if files_to_import:
             import_ok = await self.trigger_manual_import(files_to_import, dry_run=is_cat_dry_run, category=category)

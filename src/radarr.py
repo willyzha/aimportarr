@@ -217,6 +217,7 @@ class RadarrClient:
         p = Path(output_path)
         folder_name = p.parent.name if p.suffix.lower() in (".mkv", ".mp4", ".avi", ".ts", ".m4v", ".mov", ".wmv") else (p.name or title)
         matched_from_library = False
+        match_res: Optional[LibraryMatchResult] = None
 
         # If movie is unknown, attempt to match release to Radarr library using AI
         if not movie_info:
@@ -251,7 +252,8 @@ class RadarrClient:
                 logger.warning(f"  Movie ID {match_res.matched_id} matched by AI not found in Radarr library.")
                 return False
 
-            logger.info(f"  AI matched release to library movie: '{movie_info.get('title')}' ({match_res.confidence:.0%})")
+            model_label = match_res.model_name or ai_provider.name
+            logger.info(f"  ✔ AI matched library movie: '{movie_info.get('title')}' | Model: {model_label} | Confidence: {match_res.confidence:.0%}")
             logger.debug(f"  Library match reasoning: {match_res.reasoning}")
             matched_from_library = True
 
@@ -309,14 +311,25 @@ class RadarrClient:
                     folder_name=file_folder,
                     media_title=candidate_title
                 )
+                sample_decider = sample_res.model_name or ai_provider.name
                 if not sample_res.is_valid_media:
-                    logger.info(f"  Skipping disposable sample/extra file: '{file_name}'")
+                    logger.info(f"  ✖ Skipping sample/extra: '{file_name}' | Model: {sample_decider} | Confidence: {sample_res.confidence:.0%}")
                     logger.debug(f"  Sample evaluation reasoning: {sample_res.reasoning}")
                     continue
                 else:
-                    logger.debug(f"  Valid media confirmed for '{file_name}': {sample_res.reasoning}")
+                    logger.debug(f"  ✔ Valid media confirmed: '{file_name}' | Model: {sample_decider} | Confidence: {sample_res.confidence:.0%}")
 
-            logger.info(f"  Approved movie file: '{file_name}' -> '{candidate_title}'")
+            if matched_from_library and match_res:
+                decider = f"AI ({match_res.model_name or ai_provider.name})"
+                conf_str = f"{match_res.confidence:.0%}"
+            elif category == ErrorCategory.ID_MATCH:
+                decider = "Radarr (Release ID Match)"
+                conf_str = "100%"
+            else:
+                decider = "Radarr (Direct Match)"
+                conf_str = "100%"
+
+            logger.info(f"  ✔ Approved: '{file_name}' -> '{candidate_title}' | Model: {decider} | Confidence: {conf_str}")
             file_payload = {
                 "path": file_path,
                 "movieId": target_movie_id,

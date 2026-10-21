@@ -86,7 +86,7 @@ class OllamaProvider(BaseAIProvider):
         )
 
         res = await self._call_ollama(system_prompt, user_prompt)
-        return MediaMatchResult(**res)
+        return MediaMatchResult(**res, model_name=self.name)
 
     async def verify_movie_match(
         self,
@@ -114,7 +114,7 @@ class OllamaProvider(BaseAIProvider):
         )
 
         res = await self._call_ollama(system_prompt, user_prompt)
-        return MediaMatchResult(**res)
+        return MediaMatchResult(**res, model_name=self.name)
 
     async def parse_episode(
         self,
@@ -145,7 +145,7 @@ class OllamaProvider(BaseAIProvider):
         )
 
         res = await self._call_ollama(system_prompt, user_prompt)
-        return EpisodeMatchResult(**res)
+        return EpisodeMatchResult(**res, model_name=self.name)
 
     async def evaluate_sample_or_extra(
         self,
@@ -168,7 +168,7 @@ class OllamaProvider(BaseAIProvider):
             "or if it is merely a disposable sample clip/trailer that should be ignored."
         )
         res = await self._call_ollama(system_prompt, user_prompt)
-        return SampleEvaluationResult(**res)
+        return SampleEvaluationResult(**res, model_name=self.name)
 
     async def match_unknown_media(
         self,
@@ -201,4 +201,4 @@ class OllamaProvider(BaseAIProvider):
             f"Important Context: Today is {today_str}. Media with release year {current_year} is currently active and releasing now."
         )
         res = await self._call_ollama(system_prompt, user_prompt)
-        return LibraryMatchResult(**res)
+        return LibraryMatchResult(**res, model_name=self.name)
