@@ -210,8 +210,8 @@ class RadarrClient:
             return False
 
         is_cat_dry_run = self.categories.is_dry_run(category.value, self.dry_run)
-        dry_run_tag = " [DRY RUN]" if is_cat_dry_run else ""
-        logger.info(f"Processing blocked movie: '{title}' [{category.value}{dry_run_tag}]")
+        mode_tag = "[DRY RUN]" if is_cat_dry_run else "[LIVE]"
+        logger.info(f"Processing blocked movie: '{title}' [{category.value}] {mode_tag}")
         logger.debug(f"  Queue status: {status} (state: {tracked_state}) | Messages: {all_messages}")
 
         p = Path(output_path)

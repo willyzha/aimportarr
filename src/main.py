@@ -39,13 +39,38 @@ async def main():
     logging.getLogger("httpx").setLevel(http_log_level)
     logging.getLogger("httpcore").setLevel(http_log_level)
 
-    logger.info(f"Configuration loaded (Dry Run: {config.general.dry_run}, Check Interval: {config.general.check_interval_seconds}s)")
-    active_cats = [c for c in ["id_match", "unknown_media", "unknown_episode", "sample_or_extra", "quality_or_language", "missing_episodes", "other"] if getattr(config.categories, c).enabled]
-    logger.info(f"Active categories: {', '.join(active_cats)}")
-    for cat_name in ["id_match", "unknown_media", "unknown_episode", "sample_or_extra", "quality_or_language", "missing_episodes", "other"]:
+    logger.info(f"Configuration loaded (Check Interval: {config.general.check_interval_seconds}s)")
+
+    all_cat_names = [
+        "id_match",
+        "unknown_media",
+        "unknown_episode",
+        "sample_or_extra",
+        "quality_or_language",
+        "missing_episodes",
+        "other",
+    ]
+    live_cats = []
+    dry_run_cats = []
+    disabled_cats = []
+
+    for cat_name in all_cat_names:
         rule = getattr(config.categories, cat_name)
-        cat_dry = rule.dry_run if rule.dry_run is not None else f"{config.general.dry_run} (inherited)"
-        logger.debug(f"  Category '{cat_name}': enabled={rule.enabled}, dry_run={cat_dry}")
+        if not rule.enabled:
+            disabled_cats.append(cat_name)
+            continue
+        is_dry = config.categories.is_dry_run(cat_name, config.general.dry_run)
+        if is_dry:
+            dry_run_cats.append(cat_name)
+        else:
+            live_cats.append(cat_name)
+
+    live_str = ", ".join(live_cats) if live_cats else "none"
+    dry_str = ", ".join(dry_run_cats) if dry_run_cats else "none"
+    logger.info(f"Live categories (Auto-Import): {live_str}")
+    logger.info(f"Dry run categories (Simulation only): {dry_str}")
+    if disabled_cats:
+        logger.info(f"Disabled categories: {', '.join(disabled_cats)}")
 
     ai_provider = get_ai_provider(config.ai)
 
