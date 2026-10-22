@@ -218,13 +218,17 @@ class GeminiProvider(BaseAIProvider):
                     usage = data.get("usageMetadata", {})
                     p_tok = usage.get("promptTokenCount", 0)
                     c_tok = usage.get("candidatesTokenCount", 0)
-                    t_tok = usage.get("totalTokenCount", p_tok + c_tok)
+                    th_tok = usage.get("thoughtsTokenCount", 0)
+                    t_tok = usage.get("totalTokenCount", p_tok + c_tok + th_tok)
+                    if th_tok == 0 and t_tok > (p_tok + c_tok):
+                        th_tok = t_tok - (p_tok + c_tok)
                     duration_ms = int((time.time() - start_time) * 1000)
 
                     metrics.record_token_usage(
                         operation=operation,
                         model=current_model,
                         prompt_tokens=p_tok,
+                        thinking_tokens=th_tok,
                         completion_tokens=c_tok,
                         total_tokens=t_tok,
                         duration_ms=duration_ms,

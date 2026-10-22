@@ -161,8 +161,9 @@ class ContainerSmokeTests(unittest.TestCase):
             operation="verify_series_match",
             model="gemini-flash",
             prompt_tokens=450,
+            thinking_tokens=300,
             completion_tokens=50,
-            total_tokens=500,
+            total_tokens=800,
             duration_ms=320,
             item_title="Show.S01E01",
             success=True
@@ -176,9 +177,11 @@ class ContainerSmokeTests(unittest.TestCase):
         self.assertEqual(summary["total_blocked"], 1)
         self.assertEqual(summary["total_ai_calls"], 1)
         self.assertEqual(summary["total_prompt_tokens"], 450)
+        self.assertEqual(summary["total_thinking_tokens"], 300)
         self.assertEqual(summary["total_completion_tokens"], 50)
-        self.assertEqual(summary["total_tokens"], 500)
+        self.assertEqual(summary["total_tokens"], 800)
         self.assertIn("gemini-flash", summary["tokens_by_model"])
+        self.assertEqual(summary["tokens_by_model"]["gemini-flash"]["thinking_tokens"], 300)
 
         history = tracker.get_processed_history()
         self.assertEqual(len(history), 2)
@@ -186,7 +189,8 @@ class ContainerSmokeTests(unittest.TestCase):
 
         tokens = tracker.get_token_history()
         self.assertEqual(len(tokens), 1)
-        self.assertEqual(tokens[0]["total_tokens"], 500)
+        self.assertEqual(tokens[0]["total_tokens"], 800)
+        self.assertEqual(tokens[0]["thinking_tokens"], 300)
 
     def test_web_server_endpoints(self):
         """Verify WebServerRunner serves dashboard HTML, metrics API, history API, and health API."""
@@ -373,8 +377,9 @@ class ContainerSmokeTests(unittest.TestCase):
                 operation="test_op",
                 model="gemini-flash",
                 prompt_tokens=100,
+                thinking_tokens=50,
                 completion_tokens=20,
-                total_tokens=120,
+                total_tokens=170,
                 duration_ms=150,
                 item_title="Movie.Rejected.1",
                 success=True
@@ -383,7 +388,13 @@ class ContainerSmokeTests(unittest.TestCase):
 
             stats = db.get_summary_stats()
             self.assertGreaterEqual(stats["total_items_processed"], 3)
-            self.assertEqual(stats["total_tokens"], 120)
+            self.assertEqual(stats["total_tokens"], 170)
+            self.assertEqual(stats["total_thinking_tokens"], 50)
+            self.assertEqual(stats["tokens_by_model"]["gemini-flash"]["thinking_tokens"], 50)
+
+            history = db.get_token_history(limit=5)
+            self.assertEqual(len(history), 1)
+            self.assertEqual(history[0]["thinking_tokens"], 50)
 
             # Test retention purge (insert old records directly with timestamp 40 days ago)
             old_time = (datetime.now(timezone.utc) - timedelta(days=40)).isoformat()

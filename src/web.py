@@ -735,7 +735,7 @@ DASHBOARD_HTML = """<!DOCTYPE html>
           <div class="metric-icon" style="background: rgba(168, 85, 247, 0.15); color: #c084fc;">✨</div>
         </div>
         <div class="metric-value" style="color: #c084fc;" id="stat-tokens">0</div>
-        <div class="metric-sub" id="stat-token-sub">Prompt: 0 | Comp: 0</div>
+        <div class="metric-sub" id="stat-token-sub">Prompt: 0 | Thinking: 0 | Output: 0</div>
       </div>
     </div>
 
@@ -813,18 +813,19 @@ DASHBOARD_HTML = """<!DOCTYPE html>
           <thead>
             <tr>
               <th style="width: 130px;">Time</th>
-              <th style="width: 180px;">Operation</th>
-              <th style="width: 160px;">Model</th>
-              <th style="width: 110px;">Prompt Tokens</th>
-              <th style="width: 110px;">Completion</th>
-              <th style="width: 110px;">Total Tokens</th>
-              <th style="width: 90px;">Latency</th>
-              <th style="width: 90px;">Status</th>
+              <th style="width: 170px;">Operation</th>
+              <th style="width: 150px;">Model</th>
+              <th style="width: 95px;">Prompt</th>
+              <th style="width: 95px;">Thinking</th>
+              <th style="width: 95px;">Output</th>
+              <th style="width: 95px;">Total</th>
+              <th style="width: 85px;">Latency</th>
+              <th style="width: 85px;">Status</th>
             </tr>
           </thead>
           <tbody id="token-table-body">
             <tr>
-              <td colspan="8" class="empty-state">
+              <td colspan="9" class="empty-state">
                 <div class="empty-icon">✨</div>
                 <div>No AI calls recorded yet.</div>
               </td>
@@ -993,7 +994,7 @@ DASHBOARD_HTML = """<!DOCTYPE html>
       if (!tokens || tokens.length === 0) {
         tbody.innerHTML = `
           <tr>
-            <td colspan="8" class="empty-state">
+            <td colspan="9" class="empty-state">
               <div class="empty-icon">✨</div>
               <div>No AI token calls recorded yet.</div>
             </td>
@@ -1006,6 +1007,9 @@ DASHBOARD_HTML = """<!DOCTYPE html>
           ? '<span class="badge badge-imported">Success</span>'
           : '<span class="badge badge-blocked">Failed</span>';
         const latency = t.duration_ms ? `${t.duration_ms}ms` : '--';
+        const thinkingHtml = (t.thinking_tokens && t.thinking_tokens > 0)
+          ? `<span style="color: #a78bfa; font-feature-settings: 'tnum'; font-weight: 500;">${formatNumber(t.thinking_tokens)}</span>`
+          : `<span style="color: var(--text-dim);">&mdash;</span>`;
 
         return `
           <tr>
@@ -1016,6 +1020,7 @@ DASHBOARD_HTML = """<!DOCTYPE html>
             </td>
             <td><span style="color: #c084fc; font-weight: 500;">${escapeHtml(t.model)}</span></td>
             <td style="color: #60a5fa; font-feature-settings: 'tnum';">${formatNumber(t.prompt_tokens)}</td>
+            <td>${thinkingHtml}</td>
             <td style="color: #34d399; font-feature-settings: 'tnum';">${formatNumber(t.completion_tokens)}</td>
             <td style="font-weight: 700; color: var(--text-main); font-feature-settings: 'tnum';">${formatNumber(t.total_tokens)}</td>
             <td style="color: var(--text-dim);">${latency}</td>
@@ -1048,7 +1053,7 @@ DASHBOARD_HTML = """<!DOCTYPE html>
                 <div class="bar-fill" style="width: ${pct}%;"></div>
               </div>
               <div style="font-size: 0.7rem; color: var(--text-dim); margin-top: 0.2rem;">
-                Prompt: ${formatNumber(m.prompt_tokens)} &bull; Completion: ${formatNumber(m.completion_tokens)}
+                Prompt: ${formatNumber(m.prompt_tokens)} &bull; Thinking: ${formatNumber(m.thinking_tokens || 0)} &bull; Output: ${formatNumber(m.completion_tokens)}
               </div>
             </div>
           `;
@@ -1113,7 +1118,10 @@ DASHBOARD_HTML = """<!DOCTYPE html>
           document.getElementById('stat-blocked').innerText = formatNumber(summary.total_blocked + summary.total_rejected);
           document.getElementById('stat-blocked-sub').innerText = `${formatNumber(summary.total_blocked)} Blocked | ${formatNumber(summary.total_rejected)} Rejected`;
           document.getElementById('stat-tokens').innerText = formatNumber(summary.total_tokens);
-          document.getElementById('stat-token-sub').innerText = `Prompt: ${formatNumber(summary.total_prompt_tokens)} | Comp: ${formatNumber(summary.total_completion_tokens)}`;
+          const pTok = formatNumber(summary.total_prompt_tokens || 0);
+          const thTok = formatNumber(summary.total_thinking_tokens || 0);
+          const outTok = formatNumber(summary.total_completion_tokens || 0);
+          document.getElementById('stat-token-sub').innerText = `Prompt: ${pTok} | Thinking: ${thTok} | Output: ${outTok}`;
           renderAnalytics(summary);
         }
 

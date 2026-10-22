@@ -34,6 +34,7 @@ class MetricsTracker:
         # AI & Token counters
         self.total_ai_calls: int = 0
         self.total_prompt_tokens: int = 0
+        self.total_thinking_tokens: int = 0
         self.total_completion_tokens: int = 0
         self.total_tokens: int = 0
 
@@ -72,6 +73,7 @@ class MetricsTracker:
             self.total_dismissed = summary["total_dismissed"]
             self.total_ai_calls = summary["total_ai_calls"]
             self.total_prompt_tokens = summary["total_prompt_tokens"]
+            self.total_thinking_tokens = summary.get("total_thinking_tokens", 0)
             self.total_completion_tokens = summary["total_completion_tokens"]
             self.total_tokens = summary["total_tokens"]
             self.tokens_by_model = summary["tokens_by_model"]
@@ -230,11 +232,13 @@ class MetricsTracker:
         duration_ms: int = 0,
         item_title: Optional[str] = None,
         success: bool = True,
+        thinking_tokens: int = 0,
     ) -> None:
         """Record an AI token usage transaction in SQLite and in-memory summary."""
         with self._lock:
             self.total_ai_calls += 1
             self.total_prompt_tokens += max(0, prompt_tokens)
+            self.total_thinking_tokens += max(0, thinking_tokens)
             self.total_completion_tokens += max(0, completion_tokens)
             self.total_tokens += max(0, total_tokens)
 
@@ -243,12 +247,14 @@ class MetricsTracker:
                 self.tokens_by_model[model] = {
                     "calls": 0,
                     "prompt_tokens": 0,
+                    "thinking_tokens": 0,
                     "completion_tokens": 0,
                     "total_tokens": 0,
                 }
             m = self.tokens_by_model[model]
             m["calls"] += 1
             m["prompt_tokens"] += max(0, prompt_tokens)
+            m["thinking_tokens"] = m.get("thinking_tokens", 0) + max(0, thinking_tokens)
             m["completion_tokens"] += max(0, completion_tokens)
             m["total_tokens"] += max(0, total_tokens)
 
@@ -274,6 +280,7 @@ class MetricsTracker:
                         duration_ms=duration_ms,
                         item_title=item_title,
                         success=success,
+                        thinking_tokens=thinking_tokens,
                     )
                 except Exception as e:
                     logger.error(f"Failed to record token usage to SQLite: {e}")
@@ -288,6 +295,7 @@ class MetricsTracker:
                 "operation": operation,
                 "model": model,
                 "prompt_tokens": prompt_tokens,
+                "thinking_tokens": thinking_tokens,
                 "completion_tokens": completion_tokens,
                 "total_tokens": total_tokens,
                 "duration_ms": duration_ms,
@@ -328,6 +336,7 @@ class MetricsTracker:
                 "total_archives_extracted": self.total_archives_extracted,
                 "total_ai_calls": self.total_ai_calls,
                 "total_prompt_tokens": self.total_prompt_tokens,
+                "total_thinking_tokens": self.total_thinking_tokens,
                 "total_completion_tokens": self.total_completion_tokens,
                 "total_tokens": self.total_tokens,
                 "tokens_by_model": dict(self.tokens_by_model),
@@ -365,6 +374,7 @@ class MetricsTracker:
             self.total_archives_extracted = 0
             self.total_ai_calls = 0
             self.total_prompt_tokens = 0
+            self.total_thinking_tokens = 0
             self.total_completion_tokens = 0
             self.total_tokens = 0
             self.tokens_by_model.clear()

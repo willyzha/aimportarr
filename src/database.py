@@ -98,6 +98,7 @@ class DatabaseManager:
                     operation TEXT NOT NULL,
                     model TEXT NOT NULL,
                     prompt_tokens INTEGER DEFAULT 0,
+                    thinking_tokens INTEGER DEFAULT 0,
                     completion_tokens INTEGER DEFAULT 0,
                     total_tokens INTEGER DEFAULT 0,
                     duration_ms INTEGER DEFAULT 0,
@@ -107,6 +108,15 @@ class DatabaseManager:
                 """)
                 conn.execute("CREATE INDEX IF NOT EXISTS idx_token_timestamp ON token_usage(timestamp);")
                 conn.execute("CREATE INDEX IF NOT EXISTS idx_token_model ON token_usage(model);")
+
+                # Migration: Ensure thinking_tokens exists in existing databases
+                try:
+                    cursor = conn.execute("PRAGMA table_info(token_usage);")
+                    col_names = [row["name"] for row in cursor.fetchall()]
+                    if "thinking_tokens" not in col_names:
+                        conn.execute("ALTER TABLE token_usage ADD COLUMN thinking_tokens INTEGER DEFAULT 0;")
+                except Exception as e:
+                    logger.warning(f"Could not check/migrate token_usage table columns: {e}")
 
                 # 4. App metadata / lifetime counters table
                 conn.execute("""
@@ -279,6 +289,7 @@ class DatabaseManager:
         duration_ms: int = 0,
         item_title: Optional[str] = None,
         success: bool = True,
+        thinking_tokens: int = 0,
     ) -> int:
         """Record an AI token usage transaction."""
         now_str = datetime.now(timezone.utc).isoformat()
@@ -287,13 +298,14 @@ class DatabaseManager:
             with conn:
                 cursor = conn.execute("""
                     INSERT INTO token_usage (
-                        timestamp, operation, model, prompt_tokens, completion_tokens, total_tokens, duration_ms, item_title, success
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        timestamp, operation, model, prompt_tokens, thinking_tokens, completion_tokens, total_tokens, duration_ms, item_title, success
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """, (
                     now_str,
                     operation,
                     model,
                     max(0, prompt_tokens),
+                    max(0, thinking_tokens),
                     max(0, completion_tokens),
                     max(0, total_tokens),
                     duration_ms,
@@ -320,7 +332,7 @@ class DatabaseManager:
         with self._lock:
             conn = self._get_connection()
             cursor = conn.execute("""
-                SELECT id, timestamp, operation, model, prompt_tokens, completion_tokens, total_tokens, duration_ms, item_title, success
+                SELECT id, timestamp, operation, model, prompt_tokens, thinking_tokens, completion_tokens, total_tokens, duration_ms, item_title, success
                 FROM token_usage
                 ORDER BY id DESC
                 LIMIT ?
@@ -354,6 +366,7 @@ class DatabaseManager:
                 SELECT
                     COUNT(*) as total_calls,
                     COALESCE(SUM(prompt_tokens), 0) as sum_prompt,
+                    COALESCE(SUM(thinking_tokens), 0) as sum_thinking,
                     COALESCE(SUM(completion_tokens), 0) as sum_comp,
                     COALESCE(SUM(total_tokens), 0) as sum_total
                 FROM token_usage
@@ -361,6 +374,7 @@ class DatabaseManager:
             tok_row = cursor.fetchone()
             total_ai_calls = tok_row["total_calls"] if tok_row else 0
             prompt_tokens = tok_row["sum_prompt"] if tok_row else 0
+            thinking_tokens = tok_row["sum_thinking"] if tok_row else 0
             comp_tokens = tok_row["sum_comp"] if tok_row else 0
             total_tokens = tok_row["sum_total"] if tok_row else 0
 
@@ -370,6 +384,7 @@ class DatabaseManager:
                     model,
                     COUNT(*) as calls,
                     COALESCE(SUM(prompt_tokens), 0) as prompt_tokens,
+                    COALESCE(SUM(thinking_tokens), 0) as thinking_tokens,
                     COALESCE(SUM(completion_tokens), 0) as completion_tokens,
                     COALESCE(SUM(total_tokens), 0) as total_tokens
                 FROM token_usage
@@ -379,6 +394,7 @@ class DatabaseManager:
                 row["model"]: {
                     "calls": row["calls"],
                     "prompt_tokens": row["prompt_tokens"],
+                    "thinking_tokens": row["thinking_tokens"],
                     "completion_tokens": row["completion_tokens"],
                     "total_tokens": row["total_tokens"],
                 }
@@ -413,6 +429,7 @@ class DatabaseManager:
                 "total_dismissed": status_map.get("dismissed", 0),
                 "total_ai_calls": total_ai_calls,
                 "total_prompt_tokens": prompt_tokens,
+                "total_thinking_tokens": thinking_tokens,
                 "total_completion_tokens": comp_tokens,
                 "total_tokens": total_tokens,
                 "tokens_by_model": tokens_by_model,
