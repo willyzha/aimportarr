@@ -24,6 +24,7 @@ class SonarrClient:
         self.dry_run = dry_run
         self.categories = categories or CategoriesConfig()
         self._dismissed_downloads: set = set()
+        self._attempted_items: set = set()
         self.headers = {
             "X-Api-Key": self.api_key,
             "Content-Type": "application/json",
@@ -232,6 +233,20 @@ class SonarrClient:
             logger.error(f"Failed to dismiss queue warning for '{title}': {e}")
             return False
 
+    def _get_item_keys(self, item: Dict[str, Any]) -> List[str]:
+        keys = []
+        dl_id = item.get("downloadId")
+        if dl_id:
+            keys.append(f"dl:{dl_id}")
+        out = item.get("outputPath")
+        if out and out.strip() not in (".", "/"):
+            keys.append(f"path:{out.strip()}")
+        q_id = item.get("id")
+        title = item.get("title", "")
+        if q_id or title:
+            keys.append(f"item:{q_id}:{title}")
+        return keys
+
     async def process_queue_item(self, item: Dict[str, Any], ai_provider: BaseAIProvider) -> bool:
         """
         Analyze a queued item. Classify the issue, check category dry_run/enabled settings,
@@ -249,6 +264,12 @@ class SonarrClient:
         if download_id and download_id in self._dismissed_downloads:
             logger.debug(f"Skipping '{title}': downloadId '{download_id}' was already dismissed.")
             return True
+
+        # Skip if already attempted in this session (in-memory, resets on restart)
+        item_keys = self._get_item_keys(item)
+        if any(k in self._attempted_items for k in item_keys):
+            logger.debug(f"Skipping '{title}': already attempted with AI in this session (will not retry until restart).")
+            return False
 
         # Never touch downloads in normal non-blocked states:
         # downloading: active in torrent client
@@ -287,6 +308,10 @@ class SonarrClient:
         mode_tag = "[DRY RUN]" if is_cat_dry_run else "[LIVE]"
         logger.info(f"Processing blocked item: '{title}' [{category.value}] {mode_tag}")
         logger.debug(f"  Queue status: {status} (state: {tracked_state}) | Messages: {all_messages}")
+
+        # Record this item as attempted in memory so it is not retried until service restart
+        for k in item_keys:
+            self._attempted_items.add(k)
 
         p = Path(output_path)
         folder_name = p.parent.name if p.suffix.lower() in (".mkv", ".mp4", ".avi", ".ts", ".m4v", ".mov", ".wmv") else (p.name or title)
