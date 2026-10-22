@@ -42,6 +42,10 @@ async def main():
     logging.getLogger("httpcore").setLevel(http_log_level)
 
     logger.info(f"Configuration loaded (Check Interval: {config.general.check_interval_seconds}s)")
+    metrics.init_database(
+        db_path=config.database.path,
+        retention_days=config.database.retention_days
+    )
 
     all_cat_names = [
         "fake_or_malware",

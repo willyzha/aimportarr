@@ -74,6 +74,10 @@ class WebConfig(BaseModel):
     host: str = "0.0.0.0"
     port: int = 9890
 
+class DatabaseConfig(BaseModel):
+    path: str = "/config/aimportarr.db"
+    retention_days: int = 30
+
 class PathMapping(BaseModel):
     model_config = {"populate_by_name": True}
     from_path: str = Field(alias="from")
@@ -87,6 +91,7 @@ class AppConfig(BaseModel):
     categories: CategoriesConfig = Field(default_factory=CategoriesConfig)
     extraction: ExtractionConfig = Field(default_factory=ExtractionConfig)
     web: WebConfig = Field(default_factory=WebConfig)
+    database: DatabaseConfig = Field(default_factory=DatabaseConfig)
     path_mappings: List[PathMapping] = Field(default_factory=list)
 
 def load_config(config_path: Optional[str] = None) -> AppConfig:
@@ -208,6 +213,15 @@ def load_config(config_path: Optional[str] = None) -> AppConfig:
     if env_web_port := (os.getenv("WEB_PORT") or os.getenv("PORT")):
         try:
             config.web.port = int(env_web_port.strip())
+        except ValueError:
+            pass
+
+    # Database overrides
+    if env_db_path := os.getenv("DATABASE_PATH"):
+        config.database.path = env_db_path.strip()
+    if env_db_retention := os.getenv("DATABASE_RETENTION_DAYS"):
+        try:
+            config.database.retention_days = int(env_db_retention.strip())
         except ValueError:
             pass
 

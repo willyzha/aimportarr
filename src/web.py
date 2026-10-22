@@ -178,6 +178,70 @@ DASHBOARD_HTML = """<!DOCTYPE html>
       border-color: #4f46e5;
     }
 
+    .btn-sm {
+      padding: 0.22rem 0.55rem;
+      font-size: 0.72rem;
+      border-radius: 4px;
+    }
+
+    .btn-retry {
+      background-color: rgba(245, 158, 11, 0.12);
+      border: 1px solid rgba(245, 158, 11, 0.35);
+      color: #fbbf24;
+      font-weight: 600;
+    }
+
+    .btn-retry:hover {
+      background-color: rgba(245, 158, 11, 0.25);
+      border-color: #f59e0b;
+      color: #fff;
+    }
+
+    .btn-warning {
+      background-color: rgba(245, 158, 11, 0.15);
+      border: 1px solid rgba(245, 158, 11, 0.4);
+      color: #fbbf24;
+    }
+
+    .btn-warning:hover {
+      background-color: rgba(245, 158, 11, 0.3);
+      color: #fff;
+    }
+
+    .toast-container {
+      position: fixed;
+      bottom: 1.5rem;
+      right: 1.5rem;
+      z-index: 999;
+      display: flex;
+      flex-direction: column;
+      gap: 0.5rem;
+      pointer-events: none;
+    }
+
+    .toast {
+      background: #1e2430;
+      border: 1px solid var(--border);
+      border-left: 4px solid var(--accent);
+      color: var(--text-main);
+      padding: 0.65rem 1rem;
+      border-radius: 6px;
+      font-size: 0.8rem;
+      box-shadow: 0 4px 16px rgba(0, 0, 0, 0.5);
+      animation: toastIn 0.2s ease forwards;
+      pointer-events: auto;
+      max-width: 380px;
+    }
+
+    .toast-success { border-left-color: var(--success); }
+    .toast-warning { border-left-color: var(--warning); }
+    .toast-danger { border-left-color: var(--danger); }
+
+    @keyframes toastIn {
+      from { transform: translateY(12px); opacity: 0; }
+      to { transform: translateY(0); opacity: 1; }
+    }
+
     select.input-select {
       background-color: var(--bg-card);
       color: var(--text-main);
@@ -695,19 +759,25 @@ DASHBOARD_HTML = """<!DOCTYPE html>
     <!-- TAB 1: Processed History -->
     <div id="tab-history" class="tab-pane">
       <div class="table-toolbar">
-        <div class="search-box">
-          <span class="search-icon">🔍</span>
-          <input type="text" id="history-search" placeholder="Filter by title, category, or reasoning..." oninput="filterHistory()">
+        <div style="display: flex; gap: 0.75rem; align-items: center; flex: 1; flex-wrap: wrap;">
+          <div class="search-box">
+            <span class="search-icon">🔍</span>
+            <input type="text" id="history-search" placeholder="Filter by title, category, or reasoning..." oninput="filterHistory()">
+          </div>
+
+          <div class="filter-pills">
+            <div class="filter-pill active" data-filter="all" onclick="setFilter('all')">All</div>
+            <div class="filter-pill" data-filter="imported" onclick="setFilter('imported')">Imported</div>
+            <div class="filter-pill" data-filter="dry_run" onclick="setFilter('dry_run')">Dry Run</div>
+            <div class="filter-pill" data-filter="blocked" onclick="setFilter('blocked')">Blocked</div>
+            <div class="filter-pill" data-filter="rejected" onclick="setFilter('rejected')">Rejected</div>
+            <div class="filter-pill" data-filter="dismissed" onclick="setFilter('dismissed')">Dismissed</div>
+          </div>
         </div>
 
-        <div class="filter-pills">
-          <div class="filter-pill active" data-filter="all" onclick="setFilter('all')">All</div>
-          <div class="filter-pill" data-filter="imported" onclick="setFilter('imported')">Imported</div>
-          <div class="filter-pill" data-filter="dry_run" onclick="setFilter('dry_run')">Dry Run</div>
-          <div class="filter-pill" data-filter="blocked" onclick="setFilter('blocked')">Blocked</div>
-          <div class="filter-pill" data-filter="rejected" onclick="setFilter('rejected')">Rejected</div>
-          <div class="filter-pill" data-filter="dismissed" onclick="setFilter('dismissed')">Dismissed</div>
-        </div>
+        <button class="btn btn-warning" id="btn-retry-all" onclick="retryAllRejected()" title="Allow all rejected, blocked, and failed items to be re-evaluated on next queue scan">
+          <span>🔄</span> Retry All Rejected
+        </button>
       </div>
 
       <div class="card-table-wrapper">
@@ -720,12 +790,13 @@ DASHBOARD_HTML = """<!DOCTYPE html>
               <th style="width: 140px;">Category</th>
               <th style="width: 100px;">Status</th>
               <th style="width: 170px;">AI Model & Conf.</th>
-              <th style="width: 40px;"></th>
+              <th style="width: 100px; text-align: center;">Action</th>
+              <th style="width: 35px;"></th>
             </tr>
           </thead>
           <tbody id="history-table-body">
             <tr>
-              <td colspan="7" class="empty-state">
+              <td colspan="8" class="empty-state">
                 <div class="empty-icon">⏳</div>
                 <div>Waiting for data...</div>
               </td>
@@ -860,7 +931,7 @@ DASHBOARD_HTML = """<!DOCTYPE html>
       if (!items || items.length === 0) {
         tbody.innerHTML = `
           <tr>
-            <td colspan="7" class="empty-state">
+            <td colspan="8" class="empty-state">
               <div class="empty-icon">📭</div>
               <div>No processed items found.</div>
             </td>
@@ -873,6 +944,15 @@ DASHBOARD_HTML = """<!DOCTYPE html>
         const modelText = item.model || 'Direct / Rule';
         const appClass = (item.app || '').toLowerCase() === 'sonarr' ? 'badge-sonarr' : 'badge-radarr';
         const statusClass = `badge-${item.status || 'skipped'}`;
+
+        let actionCell = '<span style="color: var(--text-dim); font-size: 0.75rem;">--</span>';
+        if (['rejected', 'failed', 'blocked'].includes(item.status)) {
+          if (item.retry_requested) {
+            actionCell = '<span class="badge" style="background: rgba(245, 158, 11, 0.15); color: #f59e0b; border: 1px solid rgba(245, 158, 11, 0.3); font-size: 0.65rem;">Pending Retry</span>';
+          } else {
+            actionCell = `<button class="btn btn-sm btn-retry" onclick="event.stopPropagation(); retryItem(${item.id})" title="Allow this release to be re-evaluated on next scan">🔄 Retry</button>`;
+          }
+        }
 
         return `
           <tr class="clickable-row" onclick="toggleReasoning(${item.id})">
@@ -888,17 +968,18 @@ DASHBOARD_HTML = """<!DOCTYPE html>
               <div style="font-weight: 600;">${confText}</div>
               <div style="font-size: 0.7rem; color: var(--text-dim);">${escapeHtml(modelText)}</div>
             </td>
+            <td style="text-align: center;" onclick="event.stopPropagation()">${actionCell}</td>
             <td style="color: var(--text-dim); font-size: 0.8rem;">▾</td>
           </tr>
           <tr id="reasoning-${item.id}" class="reasoning-row">
-            <td colspan="7">
+            <td colspan="8">
               <div class="reasoning-box">
                 <div style="font-weight: 600; color: #a5b4fc; margin-bottom: 0.35rem;">
                   🤖 AI Reasoning & Decision Details
                 </div>
                 <div>${escapeHtml(item.reasoning || item.details || 'No reasoning details recorded.')}</div>
                 <div style="font-size: 0.7rem; color: var(--text-dim); margin-top: 0.35rem;">
-                  Timestamp: ${item.timestamp} &bull; Model: ${escapeHtml(modelText)} &bull; Confidence: ${confText}
+                  ID: #${item.id} &bull; Timestamp: ${item.timestamp} &bull; Model: ${escapeHtml(modelText)} &bull; Confidence: ${confText}
                 </div>
               </div>
             </td>
@@ -1065,6 +1146,70 @@ DASHBOARD_HTML = """<!DOCTYPE html>
       }
     }
 
+    function showToast(msg, type = 'info') {
+      let container = document.getElementById('toast-container');
+      if (!container) {
+        container = document.createElement('div');
+        container.id = 'toast-container';
+        container.className = 'toast-container';
+        document.body.appendChild(container);
+      }
+      const el = document.createElement('div');
+      el.className = `toast toast-${type}`;
+      el.innerText = msg;
+      container.appendChild(el);
+      setTimeout(() => {
+        el.style.opacity = '0';
+        el.style.transition = 'opacity 0.3s ease';
+        setTimeout(() => el.remove(), 300);
+      }, 3500);
+    }
+
+    async function retryItem(id) {
+      try {
+        const res = await fetch('/api/retry', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ id: id })
+        });
+        const data = await res.json();
+        if (res.ok && data.status === 'ok') {
+          showToast(`Release #${id} marked for retry on next scan!`, 'success');
+          const it = rawHistory.find(x => x.id === id);
+          if (it) it.retry_requested = 1;
+          filterHistory();
+        } else {
+          showToast(`Failed to retry item #${id}`, 'danger');
+        }
+      } catch (e) {
+        console.error(e);
+        showToast('Network error retrying item', 'danger');
+      }
+    }
+
+    async function retryAllRejected() {
+      if (!confirm('Mark all previously rejected, blocked, and failed items for retry on the next queue scan cycle?')) {
+        return;
+      }
+      try {
+        const res = await fetch('/api/retry', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ all: true })
+        });
+        const data = await res.json();
+        if (res.ok && data.status === 'ok') {
+          showToast(data.message || `Marked ${data.count || 0} items for retry!`, 'success');
+          fetchData(true);
+        } else {
+          showToast('Failed to retry all rejected items', 'danger');
+        }
+      } catch (e) {
+        console.error(e);
+        showToast('Network error retrying items', 'danger');
+      }
+    }
+
     // Initialize
     fetchData();
     updateAutoRefresh();
@@ -1172,6 +1317,59 @@ class MetricsHTTPHandler(BaseHTTPRequestHandler):
             return
 
         # 404
+        self.send_error(HTTPStatus.NOT_FOUND, "Endpoint not found")
+
+    def do_OPTIONS(self) -> None:
+        self.send_response(HTTPStatus.NO_CONTENT)
+        self.send_header("Access-Control-Allow-Origin", "*")
+        self.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
+        self.send_header("Access-Control-Allow-Headers", "Content-Type")
+        self.end_headers()
+
+    def do_POST(self) -> None:
+        parsed = urlparse(self.path)
+        path = parsed.path.rstrip("/")
+
+        if path == "/api/retry":
+            try:
+                length = int(self.headers.get("Content-Length", 0))
+                body = self.rfile.read(length).decode("utf-8") if length > 0 else "{}"
+                data = json.loads(body) if body.strip() else {}
+            except Exception as e:
+                logger.warning(f"Error parsing POST /api/retry payload: {e}")
+                data = {}
+
+            if data.get("all"):
+                count = self.metrics.mark_all_rejected_for_retry()
+                self._send_json({
+                    "status": "ok",
+                    "message": f"Marked {count} rejected item(s) for retry on next scan.",
+                    "count": count
+                })
+                return
+
+            item_id = data.get("id")
+            if item_id is not None:
+                try:
+                    item_id = int(item_id)
+                except ValueError:
+                    self.send_error(HTTPStatus.BAD_REQUEST, "Invalid item ID")
+                    return
+                success = self.metrics.mark_item_for_retry(item_id)
+                if success:
+                    self._send_json({
+                        "status": "ok",
+                        "message": f"Item #{item_id} marked for retry on next scan.",
+                        "id": item_id,
+                        "success": True
+                    })
+                else:
+                    self.send_error(HTTPStatus.NOT_FOUND, f"Item #{item_id} not found")
+                return
+
+            self.send_error(HTTPStatus.BAD_REQUEST, "Must specify 'id' or 'all: true'")
+            return
+
         self.send_error(HTTPStatus.NOT_FOUND, "Endpoint not found")
 
 class WebServerRunner:

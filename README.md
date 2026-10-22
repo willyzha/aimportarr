@@ -107,9 +107,12 @@ docker run -d \
 
 ## 📊 Lightweight Web UI & Metrics Monitor
 
-AImportarr includes an in-memory, ultra-lightweight web dashboard accessible at **`http://<your-ip>:9890`**:
+AImportarr includes a persistent, ultra-lightweight web dashboard accessible at **`http://<your-ip>:9890`**:
 
-- **Processed History**: Live feed of all scanned queue items, categorized issues, actions taken (Imported, Blocked, Dismissed, Dry Run), and expandable row drawers displaying full AI decision reasoning.
+- **Processed History & Retry Actions**: Live feed of all scanned queue items, categorized issues, actions taken (Imported, Blocked, Dismissed, Dry Run), and expandable row drawers displaying full AI decision reasoning.
+  - **Single Item Retry**: Click **🔄 Retry** on any rejected, failed, or blocked item to allow it to be re-evaluated by AI on the next scan cycle.
+  - **Retry All Rejected**: One-click button in the toolbar to clear retry blocks on all previously rejected items.
+- **SQLite Persistence & Re-Evaluation Prevention**: Processed queue items and decisions are saved to a local SQLite database (`/config/aimportarr.db`), preventing duplicate AI evaluations across container restarts. History older than 30 days is automatically purged (configurable).
 - **Token Usage History**: Real-time log of every AI API interaction, tracking prompt tokens, completion tokens, latency (ms), and success/failure status.
 - **Model Analytics**: Aggregate breakdown of token consumption by model (`gemini-2.5-flash`, `ollama (qwen2.5)`, etc.) and operation type.
 - **Real-Time Monitoring**: Selectable auto-refresh (5s, 10s, 30s) and zero external CDN dependencies (works 100% offline in isolated homelabs).
@@ -118,6 +121,7 @@ AImportarr includes an in-memory, ultra-lightweight web dashboard accessible at 
   - `GET /api/history?limit=100`: JSON list of recently processed items.
   - `GET /api/tokens?limit=100`: JSON list of recent token transactions.
   - `GET /api/health`: Container healthcheck endpoint.
+  - `POST /api/retry`: Trigger re-evaluation for an item (`{"id": <id>}`) or all rejected items (`{"all": true}`).
 
 ---
 
@@ -155,6 +159,8 @@ To enable extraction, mount your downloads folder to the container (matching Son
 | `general.min_confidence` | `0.85` | AI confidence required (0.0 to 1.0) before executing an import. |
 | `web.enabled` | `true` | Enable built-in web UI dashboard and REST metrics API. |
 | `web.port` | `9890` | Web UI HTTP listening port. |
+| `database.path` | `/config/aimportarr.db` | SQLite database file location for persistent history & retry prevention. |
+| `database.retention_days` | `30` | Auto-purge retention period in days (set to `0` to keep records indefinitely). |
 | `extraction.enabled` | `true` | Enable automated secure archive inspection and extraction. |
 | `extraction.delete_after_import` | `true` | Delete temporary extracted video files after Sonarr/Radarr import (keeps original archive seeding). |
 | `path_mappings` | `[]` | Optional: List of `{from: "/remote", to: "/local"}` path mappings if Sonarr/Radarr container paths differ from AImportarr. |
@@ -202,6 +208,8 @@ SONARR_URL=http://localhost:8989
 SONARR_API_KEY=your_sonarr_api_key
 RADARR_URL=http://localhost:7878
 RADARR_API_KEY=your_radarr_api_key
+DATABASE_PATH=/config/aimportarr.db
+DATABASE_RETENTION_DAYS=30
 
 # Category dry-run and enabled overrides
 CATEGORY_ID_MATCH_DRY_RUN=false

@@ -266,10 +266,10 @@ class RadarrClient:
             logger.debug(f"Skipping '{title}': downloadId '{download_id}' was already dismissed.")
             return True
 
-        # Skip if already attempted in this session (in-memory, resets on restart)
+        # Skip if already attempted (persisted in SQLite to prevent retries, resets on UI Retry click)
         item_keys = self._get_item_keys(item)
-        if any(k in self._attempted_items for k in item_keys):
-            logger.debug(f"Skipping '{title}': already attempted with AI in this session (will not retry until restart).")
+        if metrics.is_item_attempted(item_keys):
+            logger.debug(f"Skipping '{title}': previously attempted (will not retry until Retry is clicked in UI or retention expires).")
             return False
 
         all_messages: List[str] = []
@@ -313,10 +313,6 @@ class RadarrClient:
         logger.info(f"Processing blocked movie: '{title}' [{category.value}] {mode_tag}")
         logger.debug(f"  Queue status: {status} (state: {tracked_state}) | Messages: {all_messages}")
 
-        # Record this item as attempted in memory so it is not retried until service restart
-        for k in item_keys:
-            self._attempted_items.add(k)
-
         # Check for archive files on disk if extraction is enabled
         staging_dir_to_clean: Optional[Path] = None
         if self.extraction_config.enabled and output_path:
@@ -351,7 +347,8 @@ class RadarrClient:
                                 confidence=fake_res.confidence,
                                 model=model_label,
                                 reasoning=fake_res.reasoning,
-                                details=f"Blocklisted scam archive ({archive_file.name})"
+                                details=f"Blocklisted scam archive ({archive_file.name})",
+                                item_keys=item_keys,
                             )
                             queue_id = item.get("id")
                             if queue_id:
@@ -403,7 +400,8 @@ class RadarrClient:
                     confidence=fake_res.confidence,
                     model=model_label,
                     reasoning=fake_res.reasoning,
-                    details="Blocklisted scam/malware release from queue status"
+                    details="Blocklisted scam/malware release from queue status",
+                    item_keys=item_keys,
                 )
                 queue_id = item.get("id")
                 if queue_id:
@@ -426,7 +424,8 @@ class RadarrClient:
                     confidence=fake_res.confidence,
                     model=model_label,
                     reasoning=fake_res.reasoning,
-                    details="AI determined release is not malware"
+                    details="AI determined release is not malware",
+                    item_keys=item_keys,
                 )
                 return False
 
@@ -469,7 +468,8 @@ class RadarrClient:
                     confidence=match_res.confidence,
                     model=match_res.model_name or ai_provider.name,
                     reasoning=match_res.reasoning,
-                    details="Could not match release to Radarr library"
+                    details="Could not match release to Radarr library",
+                    item_keys=item_keys,
                 )
                 return False
 
@@ -507,7 +507,8 @@ class RadarrClient:
                 confidence=0.0,
                 model=ai_provider.name,
                 reasoning="Radarr manual import returned 0 importable files",
-                details="0 files found"
+                details="0 files found",
+                item_keys=item_keys,
             )
             return False
 
@@ -548,7 +549,8 @@ class RadarrClient:
                     confidence=movie_verify_res.confidence,
                     model=model_label,
                     reasoning=movie_verify_res.reasoning,
-                    details=f"AI rejected movie match against '{candidate_title}'"
+                    details=f"AI rejected movie match against '{candidate_title}'",
+                    item_keys=item_keys,
                 )
                 return False
 
@@ -643,7 +645,8 @@ class RadarrClient:
                 confidence=decider_conf,
                 model=decider_model,
                 reasoning=decider_reasoning,
-                details=f"Imported {len(files_to_import)} movie file(s) into '{candidate_title}'"
+                details=f"Imported {len(files_to_import)} movie file(s) into '{candidate_title}'",
+                item_keys=item_keys,
             )
             return import_ok
 
@@ -655,6 +658,7 @@ class RadarrClient:
             confidence=0.0,
             model=ai_provider.name,
             reasoning="No files available or approved for import",
-            details="0 files imported"
+            details="0 files imported",
+            item_keys=item_keys,
         )
         return False

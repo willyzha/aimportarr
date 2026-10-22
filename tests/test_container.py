@@ -13,7 +13,18 @@ class ContainerSmokeTests(unittest.TestCase):
     def test_imports(self):
         """Verify all application modules import without NameError, SyntaxError, or ImportError."""
         try:
-            from src.config import load_config, AppConfig, PathMapping, GeneralConfig, AIConfig, CategoriesConfig, ExtractionConfig, WebConfig
+            from src.config import (
+                load_config,
+                AppConfig,
+                PathMapping,
+                GeneralConfig,
+                AIConfig,
+                CategoriesConfig,
+                ExtractionConfig,
+                WebConfig,
+                DatabaseConfig,
+            )
+            from src.database import DatabaseManager
             from src.extractor import inspect_archive, extract_archive, find_archive_file, resolve_local_path
             from src.classifier import classify_issue, ErrorCategory
             from src.sonarr import SonarrClient
@@ -50,10 +61,12 @@ class ContainerSmokeTests(unittest.TestCase):
             self.assertTrue(config.extraction.enabled)
             self.assertTrue(config.web.enabled)
             self.assertEqual(config.web.port, 9890)
+            self.assertEqual(config.database.retention_days, 30)
+            self.assertEqual(config.database.path, "/config/aimportarr.db")
 
     def test_pydantic_model_definitions(self):
         """Verify all Pydantic models instantiate properly with default factories."""
-        from src.config import AppConfig, PathMapping, WebConfig
+        from src.config import AppConfig, PathMapping, WebConfig, DatabaseConfig
         config = AppConfig()
         self.assertIsNotNone(config.general)
         self.assertIsNotNone(config.ai)
@@ -62,8 +75,11 @@ class ContainerSmokeTests(unittest.TestCase):
         self.assertIsNotNone(config.categories)
         self.assertIsNotNone(config.extraction)
         self.assertIsNotNone(config.web)
+        self.assertIsNotNone(config.database)
         self.assertEqual(config.web.port, 9890)
         self.assertTrue(config.web.enabled)
+        self.assertEqual(config.database.retention_days, 30)
+        self.assertEqual(config.database.path, "/config/aimportarr.db")
         self.assertIsInstance(config.path_mappings, list)
 
         mapping = PathMapping(**{"from": "/remote/path", "to": "/local/path"})
@@ -231,8 +247,155 @@ class ContainerSmokeTests(unittest.TestCase):
                 health = json.loads(resp.read().decode("utf-8"))
                 self.assertEqual(health["status"], "ok")
 
+            # 5. REST API: POST /api/retry for single item
+            test_tracker.record_processed_item(
+                app="Radarr",
+                title="Failed.Movie.2024",
+                category="unknown_media",
+                status="rejected",
+                details="Could not match"
+            )
+            hist = test_tracker.get_processed_history()
+            failed_id = hist[0]["id"]
+
+            post_data = json.dumps({"id": failed_id}).encode("utf-8")
+            req = urllib.request.Request(
+                f"http://127.0.0.1:{port}/api/retry",
+                data=post_data,
+                headers={"Content-Type": "application/json"}
+            )
+            with urllib.request.urlopen(req, timeout=3.0) as resp:
+                self.assertEqual(resp.status, 200)
+                res = json.loads(resp.read().decode("utf-8"))
+                self.assertEqual(res["status"], "ok")
+                self.assertTrue(res["success"])
+
+            # 6. REST API: POST /api/retry for all items
+            post_data = json.dumps({"all": True}).encode("utf-8")
+            req = urllib.request.Request(
+                f"http://127.0.0.1:{port}/api/retry",
+                data=post_data,
+                headers={"Content-Type": "application/json"}
+            )
+            with urllib.request.urlopen(req, timeout=3.0) as resp:
+                self.assertEqual(resp.status, 200)
+                res = json.loads(resp.read().decode("utf-8"))
+                self.assertEqual(res["status"], "ok")
+                self.assertIn("count", res)
+
         finally:
             server.stop()
+
+    def test_database_persistence_and_retention(self):
+        """Verify DatabaseManager persistent storage, key indexing, retry toggles, and retention purge."""
+        from datetime import datetime, timedelta, timezone
+        from src.database import DatabaseManager
+
+        with tempfile.TemporaryDirectory() as td:
+            db_file = Path(td) / "test.db"
+            db = DatabaseManager(db_path=str(db_file), retention_days=30)
+
+            # Initially not attempted
+            item_keys = ["dl:abc123", "path:/data/downloads/Test.Show.S01E01", "item:12:Test.Show"]
+            self.assertFalse(db.is_item_attempted(item_keys))
+
+            # Record item as rejected
+            item_id = db.record_processed_item(
+                app="Sonarr",
+                title="Test.Show.S01E01",
+                category="id_match",
+                status="rejected",
+                confidence=0.45,
+                model="gemini-flash",
+                reasoning="Title does not match series",
+                details="Rejected by AI",
+                item_keys=item_keys
+            )
+            self.assertGreater(item_id, 0)
+
+            # Now is_item_attempted should be True (retry not requested)
+            self.assertTrue(db.is_item_attempted(item_keys))
+            self.assertTrue(db.is_item_attempted(["dl:abc123"]))
+
+            # Mark for retry
+            ok = db.mark_item_for_retry(item_id)
+            self.assertTrue(ok)
+
+            # Now is_item_attempted should be False (allows re-scan!)
+            self.assertFalse(db.is_item_attempted(item_keys))
+
+            # Record again (simulating re-evaluation success)
+            new_id = db.record_processed_item(
+                app="Sonarr",
+                title="Test.Show.S01E01",
+                category="id_match",
+                status="imported",
+                confidence=0.99,
+                model="gemini-flash",
+                reasoning="Confirmed match",
+                details="Imported 1 file",
+                item_keys=item_keys
+            )
+            # Re-recording clears retry_requested, so it is once again marked as attempted
+            self.assertTrue(db.is_item_attempted(item_keys))
+
+            # Test mark_all_rejected_for_retry
+            rej_id1 = db.record_processed_item(
+                app="Radarr",
+                title="Movie.Rejected.1",
+                category="fake_or_malware",
+                status="blocked",
+                item_keys=["dl:rej1"]
+            )
+            rej_id2 = db.record_processed_item(
+                app="Radarr",
+                title="Movie.Rejected.2",
+                category="unknown_media",
+                status="rejected",
+                item_keys=["dl:rej2"]
+            )
+            self.assertTrue(db.is_item_attempted(["dl:rej1"]))
+            self.assertTrue(db.is_item_attempted(["dl:rej2"]))
+
+            count = db.mark_all_rejected_for_retry()
+            self.assertEqual(count, 3) # item_id (rejected) + rej_id1 (blocked) + rej_id2 (rejected)
+            self.assertFalse(db.is_item_attempted(["dl:rej1"]))
+            self.assertFalse(db.is_item_attempted(["dl:rej2"]))
+
+            # Test token recording
+            tok_id = db.record_token_usage(
+                operation="test_op",
+                model="gemini-flash",
+                prompt_tokens=100,
+                completion_tokens=20,
+                total_tokens=120,
+                duration_ms=150,
+                item_title="Movie.Rejected.1",
+                success=True
+            )
+            self.assertGreater(tok_id, 0)
+
+            stats = db.get_summary_stats()
+            self.assertGreaterEqual(stats["total_items_processed"], 3)
+            self.assertEqual(stats["total_tokens"], 120)
+
+            # Test retention purge (insert old records directly with timestamp 40 days ago)
+            old_time = (datetime.now(timezone.utc) - timedelta(days=40)).isoformat()
+            conn = db._get_connection()
+            with conn:
+                conn.execute(
+                    "INSERT INTO processed_items (app, title, category, status, timestamp) VALUES (?, ?, ?, ?, ?)",
+                    ("Sonarr", "Ancient.Item", "other", "rejected", old_time)
+                )
+                conn.execute(
+                    "INSERT INTO token_usage (timestamp, operation, model, total_tokens) VALUES (?, ?, ?, ?)",
+                    (old_time, "old_call", "gemini-flash", 50)
+                )
+
+            purged = db.purge_old_records(retention_days=30)
+            self.assertGreaterEqual(purged, 2)
+
+            db.close()
 
 if __name__ == "__main__":
     unittest.main()

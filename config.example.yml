@@ -125,6 +125,17 @@ web:
   port: 9890
 
 # ==========================================
+# SQLite Database & Retention
+# ==========================================
+# Persists processed items, AI decision history, and token usage across container restarts.
+# Prevents duplicate AI evaluations on previously rejected items.
+# Automatically purges history records older than retention_days (default: 30 days).
+# Set retention_days to 0 to retain history indefinitely.
+database:
+  path: "/config/aimportarr.db"
+  retention_days: 30
+
+# ==========================================
 # Path Mappings (Optional)
 # ==========================================
 # Only needed if Sonarr/Radarr's internal container paths differ from AImportarr's container paths.
