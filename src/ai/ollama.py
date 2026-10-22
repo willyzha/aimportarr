@@ -9,6 +9,7 @@ from .base import (
     EpisodeMatchResult,
     SampleEvaluationResult,
     LibraryMatchResult,
+    MalwareEvaluationResult,
     AIProviderError
 )
 
@@ -202,3 +203,28 @@ class OllamaProvider(BaseAIProvider):
         )
         res = await self._call_ollama(system_prompt, user_prompt)
         return LibraryMatchResult(**res, model_name=self.name)
+
+    async def evaluate_fake_or_malware(
+        self,
+        release_title: str,
+        file_name: str,
+        error_messages: List[str]
+    ) -> MalwareEvaluationResult:
+        today_str = datetime.now().strftime("%Y-%m-%d")
+        system_prompt = (
+            f"You are a media security and release verification assistant for Sonarr and Radarr. Current date: {today_str}. "
+            "You must respond ONLY with a valid JSON object with keys: "
+            "'is_fake_or_malware' (boolean), 'confidence' (float 0.0-1.0), and 'reasoning' (string)."
+        )
+        user_prompt = (
+            f"Release Title: {release_title}\n"
+            f"File Name: {file_name}\n"
+            f"Error / Status Messages: {', '.join(error_messages) if error_messages else 'None'}\n\n"
+            "Task: Determine if this release is a fake, scam, trojan, or malware release pretending to be TV or Movie media.\n\n"
+            "Guidelines:\n"
+            "- Legitimate scene and P2P TV/movie release groups (-FLUX, -EZTV, -MeGusta, -TGx, etc.) distribute video streams in video containers (.mkv, .mp4, .avi) or multi-part scene RAR archives.\n"
+            "- They NEVER package standalone TV/movie releases as '.7z' archives containing Windows executables (.exe, .scr, codec packs, crypted binaries).\n"
+            "- If a release has an unsupported extension like .7z, .exe, .scr, .bat or claims to be a video but contains no video stream or has a known malware payload pattern, classify it as fake/malware."
+        )
+        res = await self._call_ollama(system_prompt, user_prompt)
+        return MalwareEvaluationResult(**res, model_name=self.name)

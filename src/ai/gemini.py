@@ -12,6 +12,7 @@ from .base import (
     EpisodeMatchResult,
     SampleEvaluationResult,
     LibraryMatchResult,
+    MalwareEvaluationResult,
     AIProviderError
 )
 
@@ -381,6 +382,38 @@ class GeminiProvider(BaseAIProvider):
         return SampleEvaluationResult(
             is_valid_media=bool(data.get("is_valid_media", True)),
             confidence=float(data.get("confidence", 1.0)),
+            reasoning=data.get("reasoning", ""),
+            model_name=self.name
+        )
+
+    async def evaluate_fake_or_malware(
+        self,
+        release_title: str,
+        file_name: str,
+        error_messages: List[str]
+    ) -> MalwareEvaluationResult:
+        schema = (
+            "Return JSON adhering strictly to this schema:\n"
+            "{\n"
+            '  "is_fake_or_malware": boolean,\n'
+            '  "confidence": float (0.0 to 1.0),\n'
+            '  "reasoning": "brief explanation"\n'
+            "}"
+        )
+        prompt = (
+            f"Release Title: {release_title}\n"
+            f"File Name: {file_name}\n"
+            f"Error / Status Messages: {', '.join(error_messages) if error_messages else 'None'}\n\n"
+            "Task: Determine if this release is a fake, scam, trojan, or malware release pretending to be TV or Movie media.\n\n"
+            "Guidelines:\n"
+            "- Legitimate scene and P2P TV/movie release groups (-FLUX, -EZTV, -MeGusta, -TGx, etc.) distribute video streams in video containers (.mkv, .mp4, .avi) or multi-part scene RAR archives.\n"
+            "- They NEVER package standalone TV/movie releases as '.7z' archives containing Windows executables (.exe, .scr, codec packs, crypted binaries).\n"
+            "- If a release has an unsupported extension like .7z, .exe, .scr, .bat or claims to be a video but contains no video stream or has a known malware payload pattern, classify it as fake/malware."
+        )
+        data = await self._call_gemini(prompt, schema)
+        return MalwareEvaluationResult(
+            is_fake_or_malware=bool(data.get("is_fake_or_malware", False)),
+            confidence=float(data.get("confidence", 0.0)),
             reasoning=data.get("reasoning", ""),
             model_name=self.name
         )

@@ -35,6 +35,12 @@ class LibraryMatchResult(BaseModel):
     reasoning: str = Field(description="Brief explanation of how the match was found")
     model_name: Optional[str] = Field(None, description="Name of the model or provider that generated this result")
 
+class MalwareEvaluationResult(BaseModel):
+    is_fake_or_malware: bool = Field(description="Whether the release is a fake, scam, or malware/virus release")
+    confidence: float = Field(ge=0.0, le=1.0, description="Confidence score between 0.0 and 1.0")
+    reasoning: str = Field(description="Brief explanation of why this is or isn't a fake/malware release")
+    model_name: Optional[str] = Field(None, description="Name of the model or provider that generated this result")
+
 class BaseAIProvider(ABC):
     """Abstract interface for AI Providers (Gemini, Ollama, etc.)"""
 
@@ -97,4 +103,14 @@ class BaseAIProvider(ABC):
         candidates: List[dict]
     ) -> LibraryMatchResult:
         """Match an unknown release to one of the tracked media items in the user's library."""
+        pass
+
+    @abstractmethod
+    async def evaluate_fake_or_malware(
+        self,
+        release_title: str,
+        file_name: str,
+        error_messages: List[str]
+    ) -> MalwareEvaluationResult:
+        """Determine if a release is a fake, scam, or malware/virus release."""
         pass

@@ -6,6 +6,7 @@ from .base import (
     EpisodeMatchResult,
     SampleEvaluationResult,
     LibraryMatchResult,
+    MalwareEvaluationResult,
     AIProviderError
 )
 
@@ -187,3 +188,31 @@ class FallbackProvider(BaseAIProvider):
             except Exception as fe:
                 logger.error(f"Fallback AI provider '{self.fallback.name}' also failed: {fe}")
                 return LibraryMatchResult(matched_id=None, matched_title=None, confidence=0.0, reasoning=f"Both primary and fallback failed: {fe}")
+
+    async def evaluate_fake_or_malware(
+        self,
+        release_title: str,
+        file_name: str,
+        error_messages: List[str]
+    ) -> MalwareEvaluationResult:
+        try:
+            return await self.primary.evaluate_fake_or_malware(
+                release_title=release_title,
+                file_name=file_name,
+                error_messages=error_messages
+            )
+        except (AIProviderError, Exception) as e:
+            if not self.fallback:
+                logger.error(f"Primary AI provider '{self.primary.name}' failed: {e}. No fallback configured.")
+                return MalwareEvaluationResult(is_fake_or_malware=False, confidence=0.0, reasoning=f"AI error: {e}")
+
+            logger.warning(f"Primary AI provider '{self.primary.name}' failed: {e}. Automatically falling back to '{self.fallback.name}'...")
+            try:
+                return await self.fallback.evaluate_fake_or_malware(
+                    release_title=release_title,
+                    file_name=file_name,
+                    error_messages=error_messages
+                )
+            except Exception as fe:
+                logger.error(f"Fallback AI provider '{self.fallback.name}' also failed: {fe}")
+                return MalwareEvaluationResult(is_fake_or_malware=False, confidence=0.0, reasoning=f"Both primary and fallback failed: {fe}")

@@ -41,6 +41,7 @@ class CategoryRule(BaseModel):
     dry_run: bool = True  # Defaults to True (safe simulation) if omitted
 
 class CategoriesConfig(BaseModel):
+    fake_or_malware: CategoryRule = Field(default_factory=lambda: CategoryRule(enabled=True, dry_run=False))
     id_match: CategoryRule = Field(default_factory=lambda: CategoryRule(enabled=True, dry_run=False))
     unknown_media: CategoryRule = Field(default_factory=lambda: CategoryRule(enabled=True, dry_run=True))
     unknown_episode: CategoryRule = Field(default_factory=lambda: CategoryRule(enabled=True, dry_run=True))
@@ -155,7 +156,7 @@ def load_config(config_path: Optional[str] = None) -> AppConfig:
 
     # Category overrides from environment variables
     # e.g. CATEGORY_ID_MATCH_DRY_RUN=false, CATEGORY_UNKNOWN_MEDIA_DRY_RUN=true, CATEGORY_OTHER_DRY_RUN=false
-    for cat_name in ["id_match", "unknown_media", "unknown_episode", "sample_or_extra", "quality_or_language", "missing_episodes", "other"]:
+    for cat_name in ["fake_or_malware", "id_match", "unknown_media", "unknown_episode", "sample_or_extra", "quality_or_language", "missing_episodes", "other"]:
         rule = getattr(config.categories, cat_name, None)
         if not rule:
             continue

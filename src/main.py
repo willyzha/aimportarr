@@ -42,6 +42,7 @@ async def main():
     logger.info(f"Configuration loaded (Check Interval: {config.general.check_interval_seconds}s)")
 
     all_cat_names = [
+        "fake_or_malware",
         "id_match",
         "unknown_media",
         "unknown_episode",

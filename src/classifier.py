@@ -2,6 +2,7 @@ from enum import Enum
 from typing import List, Optional
 
 class ErrorCategory(str, Enum):
+    FAKE_OR_MALWARE = "fake_or_malware"
     ID_MATCH = "id_match"
     UNKNOWN_MEDIA = "unknown_media"
     UNKNOWN_EPISODE = "unknown_episode"
@@ -13,18 +14,39 @@ class ErrorCategory(str, Enum):
 def classify_issue(
     messages: List[str],
     has_media_info: bool = True,
-    manual_rejections: Optional[List[str]] = None
+    manual_rejections: Optional[List[str]] = None,
+    title: Optional[str] = None
 ) -> ErrorCategory:
     """
     Classify a Sonarr/Radarr queue warning or import failure into a configured ErrorCategory.
-    Analyzes status messages from the queue and rejection reasons from /manualimport.
+    Analyzes status messages from the queue, release title, and rejection reasons from /manualimport.
     """
     combined_texts = [m.lower() for m in messages]
     if manual_rejections:
         combined_texts.extend([r.lower() for r in manual_rejections])
+    if title:
+        combined_texts.append(title.lower())
     all_text = " ".join(combined_texts)
 
-    # 1. ID Match guardrail (Release matched by ID, blocked from automatic import)
+    # 1. Fake or Malware (Unsupported archives, executables, malware signatures)
+    if any(phrase in all_text for phrase in [
+        "unsupported extension: '.7z'",
+        "unsupported extension: '.exe'",
+        "unsupported extension: '.scr'",
+        "unsupported extension: '.bat'",
+        "unsupported extension: '.cmd'",
+        "unsupported extension: '.iso'",
+        "invalid video file",
+        "has unsupported extension",
+        ".7z",
+        ".exe",
+        "malware",
+        "virus",
+        "trojan",
+    ]):
+        return ErrorCategory.FAKE_OR_MALWARE
+
+    # 2. ID Match guardrail (Release matched by ID, blocked from automatic import)
     if "matched to series by id" in all_text or "matched to movie by id" in all_text or "matched by id" in all_text:
         return ErrorCategory.ID_MATCH
 

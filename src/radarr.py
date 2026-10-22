@@ -3,7 +3,7 @@ import logging
 from pathlib import Path
 from typing import List, Dict, Any, Optional
 import httpx
-from .ai.base import BaseAIProvider, MediaMatchResult, LibraryMatchResult
+from .ai.base import BaseAIProvider, MediaMatchResult, LibraryMatchResult, MalwareEvaluationResult
 from .classifier import classify_issue, ErrorCategory
 from .config import CategoriesConfig
 
@@ -165,6 +165,68 @@ class RadarrClient:
             logger.error(f"Failed to trigger Radarr ManualImport command: {e}")
             return False
 
+    async def delete_and_blocklist(
+        self,
+        queue_id: int,
+        download_id: Optional[str] = None,
+        dry_run: bool = False,
+        title: str = ""
+    ) -> bool:
+        """
+        Delete a fake/malware release from Radarr and the download client, and add it to the blocklist.
+        """
+        ids_to_remove = [queue_id]
+        if download_id:
+            try:
+                current_queue = await self.get_queue()
+                matching_ids = [
+                    q.get("id") for q in current_queue
+                    if q.get("downloadId") == download_id and q.get("id")
+                ]
+                if matching_ids:
+                    ids_to_remove = list(set(ids_to_remove + matching_ids))
+            except Exception as e:
+                logger.debug(f"Failed to lookup all queue items for downloadId '{download_id}': {e}")
+
+        if dry_run:
+            logger.info(f"  [DRY RUN] Would delete and blocklist fake/malware release '{title}' (Queue IDs: {ids_to_remove}) from download client and queue.")
+            if download_id:
+                self._dismissed_downloads.add(download_id)
+            return True
+
+        logger.info(f"  🗑 Deleting and blocklisting fake/malware release '{title}' (Queue IDs: {ids_to_remove}) from download client and queue...")
+        try:
+            if len(ids_to_remove) > 1:
+                try:
+                    await self._delete(
+                        "queue/bulk",
+                        params={"removeFromClient": "true", "blocklist": "true"},
+                        json={"ids": ids_to_remove}
+                    )
+                except Exception as be:
+                    logger.debug(f"Bulk delete failed, falling back to individual deletes: {be}")
+                    for qid in ids_to_remove:
+                        try:
+                            await self._delete(
+                                f"queue/{qid}",
+                                params={"removeFromClient": "true", "blocklist": "true"}
+                            )
+                        except Exception:
+                            pass
+            else:
+                await self._delete(
+                    f"queue/{queue_id}",
+                    params={"removeFromClient": "true", "blocklist": "true"}
+                )
+
+            logger.info(f"  ✔ Successfully deleted and blocklisted fake release: '{title}'")
+            if download_id:
+                self._dismissed_downloads.add(download_id)
+            return True
+        except Exception as e:
+            logger.error(f"  Failed to delete and blocklist '{title}': {e}")
+            return False
+
     def _get_item_keys(self, item: Dict[str, Any]) -> List[str]:
         keys = []
         dl_id = item.get("downloadId")
@@ -203,21 +265,24 @@ class RadarrClient:
             logger.debug(f"Skipping '{title}': already attempted with AI in this session (will not retry until restart).")
             return False
 
+        all_messages: List[str] = []
+        for sm in status_messages:
+            all_messages.extend(sm.get("messages", []))
+
         # Never touch downloads in normal non-blocked states:
         # downloading: active in torrent client
-        # importpending: completed, queued for Radarr's built-in completed download handler to import naturally!
         # importing / imported: Radarr is actively processing the import
         # queued, delay, paused: waiting in line
-        if tracked_state in ("downloading", "importing", "imported", "importpending", "queued", "delay", "paused"):
+        if tracked_state in ("downloading", "importing", "imported", "queued", "delay", "paused"):
+            return False
+
+        # If importpending without any warning/error or status messages, let Radarr import naturally
+        if tracked_state == "importpending" and status not in ("warning", "error") and not all_messages:
             return False
 
         # Output path is required for importing completed media files
         if not output_path or not output_path.strip() or output_path.strip() in (".", "/"):
             return False
-
-        all_messages: List[str] = []
-        for sm in status_messages:
-            all_messages.extend(sm.get("messages", []))
 
         # Ignore stalled downloads with 0 connections (handled by torrent client daemon, not an import failure)
         error_msg = (item.get("errorMessage") or "").lower()
@@ -226,7 +291,7 @@ class RadarrClient:
         if any("stalled with no connections" in m.lower() for m in all_messages):
             return False
 
-        category = classify_issue(all_messages, has_media_info=bool(movie_info))
+        category = classify_issue(all_messages, has_media_info=bool(movie_info), title=title)
 
         # If Radarr has not flagged an issue and item is not importBlocked, let Radarr complete normally
         if status not in ("warning", "error") and tracked_state != "importblocked" and not all_messages and movie_info:
@@ -244,6 +309,36 @@ class RadarrClient:
         # Record this item as attempted in memory so it is not retried until service restart
         for k in item_keys:
             self._attempted_items.add(k)
+
+        # Handle fake or malware releases
+        if category == ErrorCategory.FAKE_OR_MALWARE:
+            file_name = Path(output_path).name if output_path else title
+            logger.info(f"  Evaluating potential fake/malware release with AI: '{title}'...")
+            fake_res = await ai_provider.evaluate_fake_or_malware(
+                release_title=title,
+                file_name=file_name,
+                error_messages=all_messages
+            )
+            model_label = fake_res.model_name or ai_provider.name
+            if fake_res.is_fake_or_malware and fake_res.confidence >= self.min_confidence:
+                logger.warning(
+                    f"  🚨 AI confirmed fake/malware release: '{title}' | Model: {model_label} | Confidence: {fake_res.confidence:.0%}"
+                )
+                logger.warning(f"  Reasoning: {fake_res.reasoning}")
+                queue_id = item.get("id")
+                if queue_id:
+                    return await self.delete_and_blocklist(
+                        queue_id=queue_id,
+                        download_id=download_id,
+                        dry_run=is_cat_dry_run,
+                        title=title
+                    )
+                return False
+            else:
+                logger.info(
+                    f"  AI did not confirm '{title}' as fake/malware (Model: {model_label}, Confidence: {fake_res.confidence:.0%}): {fake_res.reasoning}. Skipping."
+                )
+                return False
 
         p = Path(output_path)
         folder_name = p.parent.name if p.suffix.lower() in (".mkv", ".mp4", ".avi", ".ts", ".m4v", ".mov", ".wmv") else (p.name or title)
