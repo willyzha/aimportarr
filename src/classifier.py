@@ -25,7 +25,7 @@ def classify_issue(
     all_text = " ".join(combined_texts)
 
     # 1. ID Match guardrail (Release matched by ID, blocked from automatic import)
-    if "matched to series by id" in all_text or "matched to movie by id" in all_text:
+    if "matched to series by id" in all_text or "matched to movie by id" in all_text or "matched by id" in all_text:
         return ErrorCategory.ID_MATCH
 
     # 2. Unknown Media (Unknown series or unknown movie)

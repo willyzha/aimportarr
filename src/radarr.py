@@ -3,7 +3,7 @@ import logging
 from pathlib import Path
 from typing import List, Dict, Any, Optional
 import httpx
-from .ai.base import BaseAIProvider
+from .ai.base import BaseAIProvider, MediaMatchResult, LibraryMatchResult
 from .classifier import classify_issue, ErrorCategory
 from .config import CategoriesConfig
 
@@ -262,8 +262,9 @@ class RadarrClient:
         year = movie_info.get("year")
         alternate_titles = [a.get("title") for a in movie_info.get("alternateTitles", [])]
 
-        # Movie is known (either already matched by Radarr or resolved by AI above).
-        # We do not burn AI calls verifying movie identity that Radarr already confirmed.
+        # If the movie was already confirmed by Radarr's title parser or AI library match,
+        # we don't re-verify it. However, if Radarr blocked the item because it was matched by ID
+        # (ID_MATCH), we will use AI below to verify that the release actually belongs to this movie.
 
         # Query Radarr manual import to inspect media files
         manual_items = await self.get_manual_import_items(
@@ -285,6 +286,30 @@ class RadarrClient:
                     logger.debug(f"Skipping '{title}': refined category '{category.value}' is disabled.")
                     return False
                 is_cat_dry_run = self.categories.is_dry_run(category.value)
+
+        # If matched by ID, verify with AI that the release actually belongs to the movie
+        movie_verify_res: Optional[MediaMatchResult] = None
+        if category == ErrorCategory.ID_MATCH:
+            logger.info(f"  Verifying release identity with AI for '{title}' against '{candidate_title}' ({year or 'Unknown Year'})...")
+            movie_verify_res = await ai_provider.verify_movie_match(
+                release_title=title,
+                folder_name=folder_name,
+                candidate_movie_title=candidate_title,
+                alternate_titles=alternate_titles,
+                year=year
+            )
+            model_label = movie_verify_res.model_name or ai_provider.name
+            if not movie_verify_res.is_match or movie_verify_res.confidence < self.min_confidence:
+                logger.warning(
+                    f"  ✖ AI rejected movie match for '{title}' against '{candidate_title}' "
+                    f"| Model: {model_label} | Confidence: {movie_verify_res.confidence:.0%} | Reasoning: {movie_verify_res.reasoning}"
+                )
+                return False
+
+            logger.info(
+                f"  ✔ AI confirmed movie match: '{candidate_title}' | Model: {model_label} | Confidence: {movie_verify_res.confidence:.0%}"
+            )
+            logger.debug(f"  Movie match reasoning: {movie_verify_res.reasoning}")
 
         files_to_import: List[Dict[str, Any]] = []
         movie_path = (movie_info.get("path") or "").rstrip("/") if movie_info else ""
@@ -320,11 +345,11 @@ class RadarrClient:
                     logger.debug(f"  ✔ Valid media confirmed: '{file_name}' | Model: {sample_decider} | Confidence: {sample_res.confidence:.0%}")
 
             if matched_from_library and match_res:
-                decider = f"AI ({match_res.model_name or ai_provider.name})"
+                decider = match_res.model_name or ai_provider.name
                 conf_str = f"{match_res.confidence:.0%}"
-            elif category == ErrorCategory.ID_MATCH:
-                decider = "Radarr (Release ID Match)"
-                conf_str = "100%"
+            elif movie_verify_res:
+                decider = movie_verify_res.model_name or ai_provider.name
+                conf_str = f"{movie_verify_res.confidence:.0%}"
             else:
                 decider = "Radarr (Direct Match)"
                 conf_str = "100%"

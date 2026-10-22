@@ -3,7 +3,7 @@ import logging
 from pathlib import Path
 from typing import List, Dict, Any, Optional
 import httpx
-from .ai.base import BaseAIProvider
+from .ai.base import BaseAIProvider, MediaMatchResult, LibraryMatchResult
 from .classifier import classify_issue, ErrorCategory
 from .config import CategoriesConfig
 
@@ -336,8 +336,9 @@ class SonarrClient:
         year = series_info.get("year")
         alternate_titles = [a.get("title") for a in series_info.get("alternateTitles", [])]
 
-        # Series is known (either already matched by Sonarr or resolved by AI above).
-        # We do not burn AI calls verifying series identity that Sonarr already confirmed.
+        # If the series was already confirmed by Sonarr's title parser or AI library match,
+        # we don't re-verify it. However, if Sonarr blocked the item because it was matched by ID
+        # (ID_MATCH), we will use AI below to verify that the release actually belongs to this series.
 
         # Query Sonarr manual import to inspect media files
         manual_items = await self.get_manual_import_items(
@@ -369,6 +370,30 @@ class SonarrClient:
                     logger.debug(f"Skipping '{title}': refined category '{category.value}' is disabled.")
                     return False
                 is_cat_dry_run = self.categories.is_dry_run(category.value)
+
+        # If matched by ID, verify with AI that the release actually belongs to the series
+        series_verify_res: Optional[MediaMatchResult] = None
+        if category == ErrorCategory.ID_MATCH:
+            logger.info(f"  Verifying release identity with AI for '{title}' against '{candidate_title}' ({year or 'Unknown Year'})...")
+            series_verify_res = await ai_provider.verify_series_match(
+                release_title=title,
+                folder_name=folder_name,
+                candidate_series_title=candidate_title,
+                alternate_titles=alternate_titles,
+                year=year
+            )
+            model_label = series_verify_res.model_name or ai_provider.name
+            if not series_verify_res.is_match or series_verify_res.confidence < self.min_confidence:
+                logger.warning(
+                    f"  ✖ AI rejected series match for '{title}' against '{candidate_title}' "
+                    f"| Model: {model_label} | Confidence: {series_verify_res.confidence:.0%} | Reasoning: {series_verify_res.reasoning}"
+                )
+                return False
+
+            logger.info(
+                f"  ✔ AI confirmed series match: '{candidate_title}' | Model: {model_label} | Confidence: {series_verify_res.confidence:.0%}"
+            )
+            logger.debug(f"  Series match reasoning: {series_verify_res.reasoning}")
 
         files_to_import: List[Dict[str, Any]] = []
         all_episodes = await self.get_series_episodes(series_id) if series_id else []
@@ -417,11 +442,11 @@ class SonarrClient:
                 ep_ids = [ep.get("id") for ep in curr_episodes]
                 ep_nums = [ep.get("episodeNumber") for ep in curr_episodes]
                 if matched_from_library and match_res:
-                    decider = f"AI ({match_res.model_name or ai_provider.name})"
+                    decider = match_res.model_name or ai_provider.name
                     conf_str = f"{match_res.confidence:.0%}"
-                elif category == ErrorCategory.ID_MATCH:
-                    decider = "Sonarr (Release ID Match)"
-                    conf_str = "100%"
+                elif series_verify_res:
+                    decider = series_verify_res.model_name or ai_provider.name
+                    conf_str = f"{series_verify_res.confidence:.0%}"
                 elif category == ErrorCategory.MISSING_EPISODES:
                     decider = "Sonarr (Season Pack Match)"
                     conf_str = "100%"
