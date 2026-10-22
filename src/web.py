@@ -456,7 +456,27 @@ DASHBOARD_HTML = """<!DOCTYPE html>
       background-color: var(--bg-card);
       border: 1px solid var(--border);
       border-radius: 10px;
-      overflow: hidden;
+      overflow-x: auto;
+      overflow-y: hidden;
+      -webkit-overflow-scrolling: touch;
+    }
+
+    .card-table-wrapper::-webkit-scrollbar {
+      height: 6px;
+    }
+
+    .card-table-wrapper::-webkit-scrollbar-track {
+      background: #11151d;
+      border-radius: 4px;
+    }
+
+    .card-table-wrapper::-webkit-scrollbar-thumb {
+      background: #2b3545;
+      border-radius: 4px;
+    }
+
+    .card-table-wrapper::-webkit-scrollbar-thumb:hover {
+      background: #3e4c63;
     }
 
     table {
@@ -647,6 +667,37 @@ DASHBOARD_HTML = """<!DOCTYPE html>
     @keyframes spin {
       100% { transform: rotate(360deg); }
     }
+
+    /* Tablet & iPad Vertical Responsive Optimizations */
+    @media (max-width: 1024px) {
+      main {
+        padding: 1.25rem 1rem;
+      }
+      th, td {
+        padding: 0.6rem 0.65rem;
+        font-size: 0.8rem;
+      }
+      .title-cell {
+        max-width: 250px;
+      }
+    }
+
+    @media (max-width: 768px) {
+      main {
+        padding: 1rem 0.65rem;
+      }
+      th, td {
+        padding: 0.5rem 0.45rem;
+        font-size: 0.75rem;
+      }
+      .table-toolbar {
+        flex-direction: column;
+        align-items: stretch;
+      }
+      .search-box {
+        max-width: 100%;
+      }
+    }
   </style>
 </head>
 <body>
@@ -812,15 +863,15 @@ DASHBOARD_HTML = """<!DOCTYPE html>
         <table>
           <thead>
             <tr>
-              <th style="width: 130px;">Time</th>
-              <th style="width: 170px;">Operation</th>
-              <th style="width: 150px;">Model</th>
-              <th style="width: 95px;">Prompt</th>
-              <th style="width: 95px;">Thinking</th>
-              <th style="width: 95px;">Output</th>
-              <th style="width: 95px;">Total</th>
-              <th style="width: 85px;">Latency</th>
-              <th style="width: 85px;">Status</th>
+              <th style="width: 105px;">Time</th>
+              <th style="min-width: 130px;">Operation</th>
+              <th style="width: 125px;">Model</th>
+              <th style="width: 70px; text-align: right;">Prompt</th>
+              <th style="width: 70px; text-align: right;">Thinking</th>
+              <th style="width: 70px; text-align: right;">Output</th>
+              <th style="width: 75px; text-align: right;">Total</th>
+              <th style="width: 70px; text-align: right;">Latency</th>
+              <th style="width: 75px; text-align: center;">Status</th>
             </tr>
           </thead>
           <tbody id="token-table-body">
@@ -1019,12 +1070,12 @@ DASHBOARD_HTML = """<!DOCTYPE html>
               ${t.item_title ? `<div class="title-sub">${escapeHtml(t.item_title)}</div>` : ''}
             </td>
             <td><span style="color: #c084fc; font-weight: 500;">${escapeHtml(t.model)}</span></td>
-            <td style="color: #60a5fa; font-feature-settings: 'tnum';">${formatNumber(t.prompt_tokens)}</td>
-            <td>${thinkingHtml}</td>
-            <td style="color: #34d399; font-feature-settings: 'tnum';">${formatNumber(t.completion_tokens)}</td>
-            <td style="font-weight: 700; color: var(--text-main); font-feature-settings: 'tnum';">${formatNumber(t.total_tokens)}</td>
-            <td style="color: var(--text-dim);">${latency}</td>
-            <td>${statusBadge}</td>
+            <td style="color: #60a5fa; font-feature-settings: 'tnum'; text-align: right;">${formatNumber(t.prompt_tokens)}</td>
+            <td style="text-align: right;">${thinkingHtml}</td>
+            <td style="color: #34d399; font-feature-settings: 'tnum'; text-align: right;">${formatNumber(t.completion_tokens)}</td>
+            <td style="font-weight: 700; color: var(--text-main); font-feature-settings: 'tnum'; text-align: right;">${formatNumber(t.total_tokens)}</td>
+            <td style="color: var(--text-dim); text-align: right;">${latency}</td>
+            <td style="text-align: center;">${statusBadge}</td>
           </tr>
         `;
       }).join('');
