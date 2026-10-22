@@ -322,6 +322,9 @@ class RadarrClient:
 
         # Check for archive files on disk if extraction is enabled
         staging_dir_to_clean: Optional[Path] = None
+        last_evaluated_model: Optional[str] = None
+        last_evaluated_confidence: Optional[float] = None
+        last_evaluated_reasoning: Optional[str] = None
         if self.extraction_config.enabled and output_path:
             p_local = resolve_local_path(output_path, self.path_mappings)
             if not p_local.exists():
@@ -345,7 +348,10 @@ class RadarrClient:
                             error_messages=all_messages,
                             archive_files=[e.path for e in inspection.files]
                         )
-                        model_label = fake_res.model_name or ai_provider.name
+                        model_label = fake_res.model_name or "AI"
+                        last_evaluated_model = fake_res.model_name
+                        last_evaluated_confidence = fake_res.confidence
+                        last_evaluated_reasoning = fake_res.reasoning
                         if fake_res.is_fake_or_malware and fake_res.confidence >= self.min_confidence:
                             logger.warning(
                                 f"  🚨 AI confirmed fake/malware archive: '{title}' | Model: {model_label} | Confidence: {fake_res.confidence:.0%}"
@@ -402,7 +408,10 @@ class RadarrClient:
                 file_name=file_name,
                 error_messages=all_messages
             )
-            model_label = fake_res.model_name or ai_provider.name
+            model_label = fake_res.model_name or "AI"
+            last_evaluated_model = fake_res.model_name
+            last_evaluated_confidence = fake_res.confidence
+            last_evaluated_reasoning = fake_res.reasoning
             if fake_res.is_fake_or_malware and fake_res.confidence >= self.min_confidence:
                 logger.warning(
                     f"  🚨 AI confirmed fake/malware release: '{title}' | Model: {model_label} | Confidence: {fake_res.confidence:.0%}"
@@ -473,6 +482,11 @@ class RadarrClient:
                 media_type="movie",
                 candidates=candidates
             )
+            model_label = match_res.model_name or "AI"
+            if match_res.model_name:
+                last_evaluated_model = match_res.model_name
+                last_evaluated_confidence = match_res.confidence
+                last_evaluated_reasoning = match_res.reasoning
 
             if not match_res.matched_id or match_res.confidence < self.min_confidence:
                 logger.warning(f"  Could not match '{title}' to any movie in Radarr library ({match_res.confidence:.0%}): {match_res.reasoning}")
@@ -482,7 +496,7 @@ class RadarrClient:
                     category="unknown_media",
                     status="rejected",
                     confidence=match_res.confidence,
-                    model=match_res.model_name or ai_provider.name,
+                    model=model_label,
                     reasoning=match_res.reasoning,
                     details="Could not match release to Radarr library",
                     item_keys=item_keys,
@@ -494,7 +508,6 @@ class RadarrClient:
                 logger.warning(f"  Movie ID {match_res.matched_id} matched by AI not found in Radarr library.")
                 return False
 
-            model_label = match_res.model_name or ai_provider.name
             logger.info(f"  ✔ AI matched library movie: '{movie_info.get('title')}' | Model: {model_label} | Confidence: {match_res.confidence:.0%}")
             logger.debug(f"  Library match reasoning: {match_res.reasoning}")
             matched_from_library = True
@@ -521,8 +534,8 @@ class RadarrClient:
                 title=title,
                 category=category.value,
                 status="rejected",
-                confidence=0.0,
-                model=ai_provider.name,
+                confidence=last_evaluated_confidence if last_evaluated_model else 0.0,
+                model=last_evaluated_model,
                 reasoning="Radarr manual import returned 0 importable files",
                 details="0 files found",
                 item_keys=item_keys,
@@ -552,7 +565,12 @@ class RadarrClient:
                 alternate_titles=alternate_titles,
                 year=year
             )
-            model_label = movie_verify_res.model_name or ai_provider.name
+            model_label = movie_verify_res.model_name or "AI"
+            if movie_verify_res.model_name:
+                last_evaluated_model = movie_verify_res.model_name
+                last_evaluated_confidence = movie_verify_res.confidence
+                last_evaluated_reasoning = movie_verify_res.reasoning
+
             if not movie_verify_res.is_match or movie_verify_res.confidence < self.min_confidence:
                 logger.warning(
                     f"  ✖ AI rejected movie match for '{title}' against '{candidate_title}' "
@@ -601,7 +619,12 @@ class RadarrClient:
                     folder_name=file_folder,
                     media_title=candidate_title
                 )
-                sample_decider = sample_res.model_name or ai_provider.name
+                sample_decider = sample_res.model_name or "AI"
+                if sample_res.model_name:
+                    last_evaluated_model = sample_res.model_name
+                    last_evaluated_confidence = sample_res.confidence
+                    last_evaluated_reasoning = sample_res.reasoning
+
                 if not sample_res.is_valid_media:
                     logger.info(f"  ✖ Skipping sample/extra: '{file_name}' | Model: {sample_decider} | Confidence: {sample_res.confidence:.0%}")
                     logger.debug(f"  Sample evaluation reasoning: {sample_res.reasoning}")
@@ -610,10 +633,10 @@ class RadarrClient:
                     logger.debug(f"  ✔ Valid media confirmed: '{file_name}' | Model: {sample_decider} | Confidence: {sample_res.confidence:.0%}")
 
             if matched_from_library and match_res:
-                decider = match_res.model_name or ai_provider.name
+                decider = match_res.model_name or "AI"
                 conf_str = f"{match_res.confidence:.0%}"
             elif movie_verify_res:
-                decider = movie_verify_res.model_name or ai_provider.name
+                decider = movie_verify_res.model_name or "AI"
                 conf_str = f"{movie_verify_res.confidence:.0%}"
             else:
                 decider = "Radarr (Direct Match)"
@@ -645,14 +668,18 @@ class RadarrClient:
             decider_model = None
             decider_conf = 1.0
             decider_reasoning = f"Imported {len(files_to_import)} file(s)"
-            if match_res:
-                decider_model = match_res.model_name or ai_provider.name
+            if match_res and match_res.model_name:
+                decider_model = match_res.model_name
                 decider_conf = match_res.confidence
                 decider_reasoning = match_res.reasoning
-            elif movie_verify_res:
-                decider_model = movie_verify_res.model_name or ai_provider.name
+            elif movie_verify_res and movie_verify_res.model_name:
+                decider_model = movie_verify_res.model_name
                 decider_conf = movie_verify_res.confidence
                 decider_reasoning = movie_verify_res.reasoning
+            elif last_evaluated_model:
+                decider_model = last_evaluated_model
+                decider_conf = last_evaluated_confidence or 1.0
+                decider_reasoning = last_evaluated_reasoning or decider_reasoning
 
             status_label = "dry_run" if is_cat_dry_run else ("imported" if import_ok else "failed")
             metrics.record_processed_item(
@@ -675,14 +702,18 @@ class RadarrClient:
             except Exception as ce:
                 logger.debug(f"Failed to clean up staging folder '{staging_dir_to_clean}': {ce}")
 
+        reasoning_msg = "No files available or approved for import"
+        if last_evaluated_reasoning and last_evaluated_model:
+            reasoning_msg = f"{last_evaluated_reasoning} (0 files imported)"
+
         metrics.record_processed_item(
             app="Radarr",
             title=title,
             category=category.value,
             status="rejected",
-            confidence=0.0,
-            model=ai_provider.name,
-            reasoning="No files available or approved for import",
+            confidence=last_evaluated_confidence if last_evaluated_model else 0.0,
+            model=last_evaluated_model,
+            reasoning=reasoning_msg,
             details="0 files imported",
             item_keys=item_keys,
         )

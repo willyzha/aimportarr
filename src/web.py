@@ -993,7 +993,10 @@ DASHBOARD_HTML = """<!DOCTYPE html>
 
       tbody.innerHTML = items.map(item => {
         const confText = item.confidence !== null ? `${Math.round(item.confidence * 100)}%` : '--';
-        const modelText = item.model || 'Direct / Rule';
+        let modelText = item.model || 'Direct / Rule';
+        if (modelText.includes(' with Fallback to ')) {
+          modelText = modelText.split(' with Fallback to ')[0];
+        }
         const appClass = (item.app || '').toLowerCase() === 'sonarr' ? 'badge-sonarr' : 'badge-radarr';
         const statusClass = `badge-${item.status || 'skipped'}`;
 
