@@ -69,6 +69,11 @@ class ExtractionConfig(BaseModel):
     delete_after_import: bool = True
     staging_suffix: str = "_extracted"
 
+class WebConfig(BaseModel):
+    enabled: bool = True
+    host: str = "0.0.0.0"
+    port: int = 8990
+
 class PathMapping(BaseModel):
     model_config = {"populate_by_name": True}
     from_path: str = Field(alias="from")
@@ -81,6 +86,7 @@ class AppConfig(BaseModel):
     radarr: RadarrConfig = Field(default_factory=RadarrConfig)
     categories: CategoriesConfig = Field(default_factory=CategoriesConfig)
     extraction: ExtractionConfig = Field(default_factory=ExtractionConfig)
+    web: WebConfig = Field(default_factory=WebConfig)
     path_mappings: List[PathMapping] = Field(default_factory=list)
 
 def load_config(config_path: Optional[str] = None) -> AppConfig:
@@ -193,6 +199,17 @@ def load_config(config_path: Optional[str] = None) -> AppConfig:
                 mappings.append(PathMapping(**{"from": f.strip(), "to": t.strip()}))
         if mappings:
             config.path_mappings = mappings
+
+    # Web UI overrides
+    if env_web_enabled := os.getenv("WEB_ENABLED"):
+        config.web.enabled = env_web_enabled.lower() in ("true", "1", "yes")
+    if env_web_host := os.getenv("WEB_HOST"):
+        config.web.host = env_web_host.strip()
+    if env_web_port := (os.getenv("WEB_PORT") or os.getenv("PORT")):
+        try:
+            config.web.port = int(env_web_port.strip())
+        except ValueError:
+            pass
 
     # Normalize URLs (strip trailing slashes)
     config.sonarr.url = config.sonarr.url.rstrip("/")

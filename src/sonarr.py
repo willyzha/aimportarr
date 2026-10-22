@@ -8,6 +8,7 @@ from .ai.base import BaseAIProvider, MediaMatchResult, LibraryMatchResult, Malwa
 from .classifier import classify_issue, ErrorCategory
 from .config import CategoriesConfig, ExtractionConfig
 from .extractor import find_archive_file, inspect_archive, extract_archive, resolve_local_path
+from .metrics import metrics
 
 logger = logging.getLogger("aimportarr.sonarr")
 
@@ -410,6 +411,16 @@ class SonarrClient:
                                 f"  🚨 AI confirmed fake/malware archive: '{title}' | Model: {model_label} | Confidence: {fake_res.confidence:.0%}"
                             )
                             logger.warning(f"  Reasoning: {fake_res.reasoning}")
+                            metrics.record_processed_item(
+                                app="Sonarr",
+                                title=title,
+                                category="fake_or_malware",
+                                status="dry_run" if is_cat_dry_run else "blocked",
+                                confidence=fake_res.confidence,
+                                model=model_label,
+                                reasoning=fake_res.reasoning,
+                                details=f"Blocklisted scam archive ({archive_file.name})"
+                            )
                             queue_id = item.get("id")
                             if queue_id:
                                 return await self.delete_and_blocklist(
@@ -431,6 +442,7 @@ class SonarrClient:
                             if not extract_ok:
                                 logger.error(f"  Failed to extract archive '{archive_file.name}'")
                                 return False
+                            metrics.record_archive_extracted()
                             logger.info(f"  ✔ Extraction complete in sandbox: '{staging_dir}'. Scanning for import...")
                             output_path = str(staging_dir)
                             if self.extraction_config.delete_after_import:
@@ -451,6 +463,16 @@ class SonarrClient:
                     f"  🚨 AI confirmed fake/malware release: '{title}' | Model: {model_label} | Confidence: {fake_res.confidence:.0%}"
                 )
                 logger.warning(f"  Reasoning: {fake_res.reasoning}")
+                metrics.record_processed_item(
+                    app="Sonarr",
+                    title=title,
+                    category="fake_or_malware",
+                    status="dry_run" if is_cat_dry_run else "blocked",
+                    confidence=fake_res.confidence,
+                    model=model_label,
+                    reasoning=fake_res.reasoning,
+                    details="Blocklisted scam/malware release from queue status"
+                )
                 queue_id = item.get("id")
                 if queue_id:
                     return await self.delete_and_blocklist(
@@ -463,6 +485,16 @@ class SonarrClient:
             else:
                 logger.info(
                     f"  AI did not confirm '{title}' as fake/malware (Model: {model_label}, Confidence: {fake_res.confidence:.0%}): {fake_res.reasoning}. Skipping."
+                )
+                metrics.record_processed_item(
+                    app="Sonarr",
+                    title=title,
+                    category="fake_or_malware",
+                    status="skipped",
+                    confidence=fake_res.confidence,
+                    model=model_label,
+                    reasoning=fake_res.reasoning,
+                    details="AI determined release is not malware"
                 )
                 return False
 
@@ -497,6 +529,16 @@ class SonarrClient:
 
             if not match_res.matched_id or match_res.confidence < self.min_confidence:
                 logger.warning(f"  Could not match '{title}' to any series in Sonarr library ({match_res.confidence:.0%}): {match_res.reasoning}")
+                metrics.record_processed_item(
+                    app="Sonarr",
+                    title=title,
+                    category="unknown_media",
+                    status="rejected",
+                    confidence=match_res.confidence,
+                    model=match_res.model_name or ai_provider.name,
+                    reasoning=match_res.reasoning,
+                    details="Could not match release to Sonarr library"
+                )
                 return False
 
             series_info = next((s for s in all_series if s.get("id") == match_res.matched_id), None)
@@ -528,6 +570,16 @@ class SonarrClient:
                 queue_id = item.get("id")
                 if queue_id:
                     logger.info(f"  Sonarr returned 0 remaining importable files for '{title}'. Dismissing missing episodes warning from queue...")
+                    metrics.record_processed_item(
+                        app="Sonarr",
+                        title=title,
+                        category="missing_episodes",
+                        status="dry_run" if is_cat_dry_run else "dismissed",
+                        confidence=1.0,
+                        model=None,
+                        reasoning="All available files accounted for; queue warning dismissed",
+                        details="Dismissed missing episodes queue warning"
+                    )
                     return await self.dismiss_queue_warning(
                         queue_id=queue_id,
                         download_id=download_id,
@@ -535,6 +587,16 @@ class SonarrClient:
                         title=title
                     )
             logger.warning(f"  Sonarr returned 0 importable files for '{title}'.")
+            metrics.record_processed_item(
+                app="Sonarr",
+                title=title,
+                category=category.value,
+                status="rejected",
+                confidence=0.0,
+                model=ai_provider.name,
+                reasoning="Sonarr manual import returned 0 importable files",
+                details="0 files found"
+            )
             return False
 
         # Refine issue category if manual import rejections offer more specific classification
@@ -565,6 +627,16 @@ class SonarrClient:
                 logger.warning(
                     f"  ✖ AI rejected series match for '{title}' against '{candidate_title}' "
                     f"| Model: {model_label} | Confidence: {series_verify_res.confidence:.0%} | Reasoning: {series_verify_res.reasoning}"
+                )
+                metrics.record_processed_item(
+                    app="Sonarr",
+                    title=title,
+                    category="id_match",
+                    status="rejected",
+                    confidence=series_verify_res.confidence,
+                    model=model_label,
+                    reasoning=series_verify_res.reasoning,
+                    details=f"AI rejected series match against '{candidate_title}'"
                 )
                 return False
 
@@ -692,6 +764,31 @@ class SonarrClient:
                 except Exception as ce:
                     logger.debug(f"Failed to clean up staging folder '{staging_dir_to_clean}': {ce}")
 
+            # Record metrics
+            decider_model = None
+            decider_conf = 1.0
+            decider_reasoning = f"Imported {len(files_to_import)} file(s)"
+            if match_res:
+                decider_model = match_res.model_name or ai_provider.name
+                decider_conf = match_res.confidence
+                decider_reasoning = match_res.reasoning
+            elif series_verify_res:
+                decider_model = series_verify_res.model_name or ai_provider.name
+                decider_conf = series_verify_res.confidence
+                decider_reasoning = series_verify_res.reasoning
+
+            status_label = "dry_run" if is_cat_dry_run else ("imported" if import_ok else "failed")
+            metrics.record_processed_item(
+                app="Sonarr",
+                title=title,
+                category=category.value,
+                status=status_label,
+                confidence=decider_conf,
+                model=decider_model,
+                reasoning=decider_reasoning,
+                details=f"Imported {len(files_to_import)} episode file(s) into '{candidate_title}'"
+            )
+
             if import_ok and category == ErrorCategory.MISSING_EPISODES:
                 queue_id = item.get("id")
                 if queue_id:
@@ -708,6 +805,16 @@ class SonarrClient:
             queue_id = item.get("id")
             if queue_id:
                 logger.info(f"  All available files for '{title}' are accounted for. Dismissing missing episodes warning from Sonarr queue...")
+                metrics.record_processed_item(
+                    app="Sonarr",
+                    title=title,
+                    category="missing_episodes",
+                    status="dry_run" if is_cat_dry_run else "dismissed",
+                    confidence=1.0,
+                    model=None,
+                    reasoning="All available files accounted for; queue warning dismissed",
+                    details="Dismissed missing episodes queue warning"
+                )
                 return await self.dismiss_queue_warning(
                     queue_id=queue_id,
                     download_id=download_id,
@@ -715,4 +822,14 @@ class SonarrClient:
                     title=title
                 )
 
+        metrics.record_processed_item(
+            app="Sonarr",
+            title=title,
+            category=category.value,
+            status="rejected",
+            confidence=0.0,
+            model=ai_provider.name,
+            reasoning="No files available or approved for import",
+            details="0 files imported"
+        )
         return False

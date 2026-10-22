@@ -7,6 +7,8 @@ from .config import load_config
 from .ai import get_ai_provider
 from .sonarr import SonarrClient
 from .radarr import RadarrClient
+from .metrics import metrics
+from .web import WebServerRunner
 
 logging.basicConfig(
     level=logging.INFO,
@@ -109,7 +111,21 @@ async def main():
             )
             logger.info(f"Radarr client configured for: {config.radarr.url}")
 
+    # Start Lightweight Web UI & Metrics server
+    web_server = None
+    if config.web.enabled:
+        try:
+            web_server = WebServerRunner(
+                host=config.web.host,
+                port=config.web.port,
+                metrics_instance=metrics
+            )
+            web_server.start()
+        except Exception as we:
+            logger.error(f"Failed to start Web UI server on {config.web.host}:{config.web.port}: {we}")
+
     while running:
+        metrics.record_scan()
         # 1. Scan Sonarr queue
         if sonarr_client and running:
             try:
@@ -155,6 +171,9 @@ async def main():
             if not running:
                 break
             await asyncio.sleep(1)
+
+    if web_server:
+        web_server.stop()
 
     logger.info("AImportarr has stopped.")
 

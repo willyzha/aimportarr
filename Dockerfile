@@ -18,11 +18,15 @@ RUN apt-get update && \
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Copy source code
+# Copy source code and assets
 COPY src/ /app/src/
+COPY assets/ /app/assets/
 
 # Default volume for configuration
 VOLUME ["/config"]
+
+# Expose Web UI & Metrics Dashboard
+EXPOSE 8990
 
 # Run the service
 CMD ["python", "-m", "src.main"]

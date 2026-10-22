@@ -76,6 +76,8 @@ services:
     image: ghcr.io/willyzha/aimportarr:beta
     container_name: aimportarr
     restart: unless-stopped
+    ports:
+      - "8990:8990" # Web UI Metrics & History Monitor
     volumes:
       - ./config:/config
     environment:
@@ -95,10 +97,27 @@ docker compose up -d
 docker run -d \
   --name aimportarr \
   --restart unless-stopped \
+  -p 8990:8990 \
   -v /path/to/config:/config \
   -e TZ=UTC \
   ghcr.io/willyzha/aimportarr:beta
 ```
+
+---
+
+## 📊 Lightweight Web UI & Metrics Monitor
+
+AImportarr includes an in-memory, ultra-lightweight web dashboard accessible at **`http://<your-ip>:8990`**:
+
+- **Processed History**: Live feed of all scanned queue items, categorized issues, actions taken (Imported, Blocked, Dismissed, Dry Run), and expandable row drawers displaying full AI decision reasoning.
+- **Token Usage History**: Real-time log of every AI API interaction, tracking prompt tokens, completion tokens, latency (ms), and success/failure status.
+- **Model Analytics**: Aggregate breakdown of token consumption by model (`gemini-2.5-flash`, `ollama (qwen2.5)`, etc.) and operation type.
+- **Real-Time Monitoring**: Selectable auto-refresh (5s, 10s, 30s) and zero external CDN dependencies (works 100% offline in isolated homelabs).
+- **REST API Endpoints**:
+  - `GET /api/metrics`: JSON summary of uptime, counters, and token totals.
+  - `GET /api/history?limit=100`: JSON list of recently processed items.
+  - `GET /api/tokens?limit=100`: JSON list of recent token transactions.
+  - `GET /api/health`: Container healthcheck endpoint.
 
 ---
 
@@ -134,6 +153,8 @@ To enable extraction, mount your downloads folder to the container (matching Son
 | :--- | :--- | :--- |
 | `general.check_interval_seconds` | `120` | Interval between queue inspections. |
 | `general.min_confidence` | `0.85` | AI confidence required (0.0 to 1.0) before executing an import. |
+| `web.enabled` | `true` | Enable built-in web UI dashboard and REST metrics API. |
+| `web.port` | `8990` | Web UI HTTP listening port. |
 | `extraction.enabled` | `true` | Enable automated secure archive inspection and extraction. |
 | `extraction.delete_after_import` | `true` | Delete temporary extracted video files after Sonarr/Radarr import (keeps original archive seeding). |
 | `path_mappings` | `[]` | Optional: List of `{from: "/remote", to: "/local"}` path mappings if Sonarr/Radarr container paths differ from AImportarr. |

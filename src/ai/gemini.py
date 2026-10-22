@@ -6,6 +6,7 @@ import time
 from datetime import datetime
 from typing import Dict, List, Optional
 import httpx
+from ..metrics import metrics
 from .base import (
     BaseAIProvider,
     MediaMatchResult,
@@ -128,7 +129,13 @@ class GeminiProvider(BaseAIProvider):
         self._resolved_model = fallback
         return fallback
 
-    async def _call_gemini(self, prompt: str, schema_desc: str) -> dict:
+    async def _call_gemini(
+        self,
+        prompt: str,
+        schema_desc: str,
+        operation: str = "ai_query",
+        item_title: Optional[str] = None
+    ) -> dict:
         today_str = datetime.now().strftime("%Y-%m-%d")
         payload = {
             "contents": [
@@ -172,6 +179,7 @@ class GeminiProvider(BaseAIProvider):
             url = f"https://generativelanguage.googleapis.com/v1beta/models/{current_model}:generateContent?key={self.api_key}"
 
             try:
+                start_time = time.time()
                 async with httpx.AsyncClient(timeout=30.0) as client:
                     resp = await client.post(url, json=payload)
                     status = resp.status_code
@@ -206,6 +214,24 @@ class GeminiProvider(BaseAIProvider):
                     raw_text = parts[0].get("text", "").strip()
                     clean_json = re.sub(r"^```(?:json)?\s*", "", raw_text, flags=re.MULTILINE)
                     clean_json = re.sub(r"\s*```$", "", clean_json, flags=re.MULTILINE)
+
+                    usage = data.get("usageMetadata", {})
+                    p_tok = usage.get("promptTokenCount", 0)
+                    c_tok = usage.get("candidatesTokenCount", 0)
+                    t_tok = usage.get("totalTokenCount", p_tok + c_tok)
+                    duration_ms = int((time.time() - start_time) * 1000)
+
+                    metrics.record_token_usage(
+                        operation=operation,
+                        model=current_model,
+                        prompt_tokens=p_tok,
+                        completion_tokens=c_tok,
+                        total_tokens=t_tok,
+                        duration_ms=duration_ms,
+                        item_title=item_title,
+                        success=True
+                    )
+
                     return json.loads(clean_json)
 
             except httpx.HTTPStatusError as e:
@@ -221,6 +247,18 @@ class GeminiProvider(BaseAIProvider):
             except Exception as e:
                 last_error = e
                 break
+
+        if last_error:
+            metrics.record_token_usage(
+                operation=operation,
+                model=self._resolved_model or self.model or "gemini",
+                prompt_tokens=0,
+                completion_tokens=0,
+                total_tokens=0,
+                duration_ms=0,
+                item_title=item_title,
+                success=False
+            )
 
         if isinstance(last_error, httpx.HTTPStatusError) and last_error.response.status_code == 429:
             raise AIProviderError("All Gemini candidate models hit rate limit or quota (HTTP 429 / Out of tokens)") from last_error
@@ -248,7 +286,12 @@ class GeminiProvider(BaseAIProvider):
             f"Candidate Library Items:\n{json.dumps(candidates, ensure_ascii=False, indent=2)}\n\n"
             f"Identify if this release matches any candidate in the library. If no confident match exists, set matched_id to null."
         )
-        data = await self._call_gemini(prompt, schema)
+        data = await self._call_gemini(
+            prompt,
+            schema,
+            operation="match_unknown_media",
+            item_title=release_title
+        )
         return LibraryMatchResult(
             matched_id=data.get("matched_id"),
             confidence=float(data.get("confidence", 0.0)),
@@ -279,7 +322,12 @@ class GeminiProvider(BaseAIProvider):
             f"Alternate Titles: {', '.join(alternate_titles) if alternate_titles else 'None'}\n\n"
             f"Does this release belong to the candidate series? Handle Pinyin, English, and Chinese translations."
         )
-        data = await self._call_gemini(prompt, schema)
+        data = await self._call_gemini(
+            prompt,
+            schema,
+            operation="verify_series_match",
+            item_title=release_title
+        )
         return MediaMatchResult(
             is_match=bool(data.get("is_match", False)),
             confidence=float(data.get("confidence", 0.0)),
@@ -310,7 +358,12 @@ class GeminiProvider(BaseAIProvider):
             f"Alternate Titles: {', '.join(alternate_titles) if alternate_titles else 'None'}\n\n"
             f"Does this release belong to the candidate movie?"
         )
-        data = await self._call_gemini(prompt, schema)
+        data = await self._call_gemini(
+            prompt,
+            schema,
+            operation="verify_movie_match",
+            item_title=release_title
+        )
         return MediaMatchResult(
             is_match=bool(data.get("is_match", False)),
             confidence=float(data.get("confidence", 0.0)),
@@ -347,7 +400,12 @@ class GeminiProvider(BaseAIProvider):
             f"Sample Known Episodes in Season:\n{json.dumps(simplified_eps, ensure_ascii=False, indent=2)}\n\n"
             f"Extract the season number and episode number(s) (e.g. for multi-episode files [1, 2])."
         )
-        data = await self._call_gemini(prompt, schema)
+        data = await self._call_gemini(
+            prompt,
+            schema,
+            operation="parse_episode",
+            item_title=file_name
+        )
         ep_nums = data.get("episode_numbers", [])
         if isinstance(ep_nums, int):
             ep_nums = [ep_nums]
@@ -378,7 +436,12 @@ class GeminiProvider(BaseAIProvider):
             f"Media Title: {media_title}\n\n"
             f"Is this file a valid full media episode/movie file, or is it a disposable sample, trailer, preview, or extra clip?"
         )
-        data = await self._call_gemini(prompt, schema)
+        data = await self._call_gemini(
+            prompt,
+            schema,
+            operation="evaluate_sample_or_extra",
+            item_title=file_name
+        )
         return SampleEvaluationResult(
             is_valid_media=bool(data.get("is_valid_media", True)),
             confidence=float(data.get("confidence", 1.0)),
@@ -413,7 +476,12 @@ class GeminiProvider(BaseAIProvider):
             "- They NEVER package standalone TV/movie releases as '.7z' archives containing Windows executables (.exe, .scr, codec packs, crypted binaries).\n"
             "- If an archive contains executables (.exe, .scr, .bat) and no actual video stream, or has an unsupported extension like .7z masquerading as scene video, classify it as fake/malware."
         )
-        data = await self._call_gemini(prompt, schema)
+        data = await self._call_gemini(
+            prompt,
+            schema,
+            operation="evaluate_fake_or_malware",
+            item_title=release_title
+        )
         return MalwareEvaluationResult(
             is_fake_or_malware=bool(data.get("is_fake_or_malware", False)),
             confidence=float(data.get("confidence", 0.0)),

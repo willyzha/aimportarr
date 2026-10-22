@@ -115,6 +115,16 @@ extraction:
   staging_suffix: "_extracted"
 
 # ==========================================
+# Web UI & Metrics Monitor
+# ==========================================
+# Lightweight dashboard to monitor processing history, AI token consumption,
+# queue scans, and model analytics in real-time. Accessible via web browser.
+web:
+  enabled: true
+  host: "0.0.0.0"
+  port: 8990
+
+# ==========================================
 # Path Mappings (Optional)
 # ==========================================
 # Only needed if Sonarr/Radarr's internal container paths differ from AImportarr's container paths.

@@ -1,8 +1,10 @@
 import json
 import logging
+import time
 from datetime import datetime
 from typing import List, Optional
 import httpx
+from ..metrics import metrics
 from .base import (
     BaseAIProvider,
     MediaMatchResult,
@@ -26,7 +28,13 @@ class OllamaProvider(BaseAIProvider):
     def name(self) -> str:
         return f"Ollama ({self.model})"
 
-    async def _call_ollama(self, system_prompt: str, user_prompt: str) -> dict:
+    async def _call_ollama(
+        self,
+        system_prompt: str,
+        user_prompt: str,
+        operation: str = "ai_query",
+        item_title: Optional[str] = None
+    ) -> dict:
         options = {"temperature": 0.1}
         if self.num_gpu is not None:
             options["num_gpu"] = self.num_gpu
@@ -42,17 +50,38 @@ class OllamaProvider(BaseAIProvider):
             "options": options
         }
 
+        start_time = time.time()
         try:
             async with httpx.AsyncClient(timeout=60.0) as client:
                 resp = await client.post(self.chat_url, json=payload)
                 resp.raise_for_status()
                 data = resp.json()
         except httpx.HTTPStatusError as e:
+            metrics.record_token_usage(operation=operation, model=self.model, prompt_tokens=0, completion_tokens=0, total_tokens=0, duration_ms=int((time.time() - start_time) * 1000), item_title=item_title, success=False)
             raise AIProviderError(f"Ollama server returned HTTP {e.response.status_code}: {e.response.text}") from e
         except (httpx.RequestError, httpx.TimeoutException) as e:
+            metrics.record_token_usage(operation=operation, model=self.model, prompt_tokens=0, completion_tokens=0, total_tokens=0, duration_ms=int((time.time() - start_time) * 1000), item_title=item_title, success=False)
             raise AIProviderError(f"Cannot connect to Ollama at '{self.chat_url}': {e}") from e
         except Exception as e:
+            metrics.record_token_usage(operation=operation, model=self.model, prompt_tokens=0, completion_tokens=0, total_tokens=0, duration_ms=int((time.time() - start_time) * 1000), item_title=item_title, success=False)
             raise AIProviderError(f"Unexpected error calling Ollama: {e}") from e
+
+        p_tok = data.get("prompt_eval_count", 0)
+        c_tok = data.get("eval_count", 0)
+        t_tok = p_tok + c_tok
+        duration_ns = data.get("total_duration", 0)
+        duration_ms = int(duration_ns / 1_000_000) if duration_ns else int((time.time() - start_time) * 1000)
+
+        metrics.record_token_usage(
+            operation=operation,
+            model=self.model,
+            prompt_tokens=p_tok,
+            completion_tokens=c_tok,
+            total_tokens=t_tok,
+            duration_ms=duration_ms,
+            item_title=item_title,
+            success=True
+        )
 
         message = data.get("message", {})
         raw_text = message.get("content", "{}")
@@ -86,7 +115,12 @@ class OllamaProvider(BaseAIProvider):
             f"Important Context: Today is {today_str}. Series with release year {current_year} (or recent years) are currently active and being broadcast/streamed now. Do NOT assume that releases from year {current_year} are unreleased or in the future."
         )
 
-        res = await self._call_ollama(system_prompt, user_prompt)
+        res = await self._call_ollama(
+            system_prompt,
+            user_prompt,
+            operation="verify_series_match",
+            item_title=release_title
+        )
         return MediaMatchResult(**res, model_name=self.name)
 
     async def verify_movie_match(
@@ -114,7 +148,12 @@ class OllamaProvider(BaseAIProvider):
             f"Important Context: Today is {today_str}. Movies with release year {current_year} are currently active in theaters or on digital streaming. Do NOT assume that releases from year {current_year} are unreleased or in the future."
         )
 
-        res = await self._call_ollama(system_prompt, user_prompt)
+        res = await self._call_ollama(
+            system_prompt,
+            user_prompt,
+            operation="verify_movie_match",
+            item_title=release_title
+        )
         return MediaMatchResult(**res, model_name=self.name)
 
     async def parse_episode(
@@ -145,7 +184,12 @@ class OllamaProvider(BaseAIProvider):
             "Look for patterns like 'S01E02', 'EP02', '02.mkv', '第02集', 'Part 1', or episode titles."
         )
 
-        res = await self._call_ollama(system_prompt, user_prompt)
+        res = await self._call_ollama(
+            system_prompt,
+            user_prompt,
+            operation="parse_episode",
+            item_title=file_name
+        )
         return EpisodeMatchResult(**res, model_name=self.name)
 
     async def evaluate_sample_or_extra(
@@ -168,7 +212,12 @@ class OllamaProvider(BaseAIProvider):
             "Task: Determine if this file is a genuine media release (such as an episode, OVA, special, or main feature) "
             "or if it is merely a disposable sample clip/trailer that should be ignored."
         )
-        res = await self._call_ollama(system_prompt, user_prompt)
+        res = await self._call_ollama(
+            system_prompt,
+            user_prompt,
+            operation="evaluate_sample_or_extra",
+            item_title=file_name
+        )
         return SampleEvaluationResult(**res, model_name=self.name)
 
     async def match_unknown_media(
@@ -201,7 +250,12 @@ class OllamaProvider(BaseAIProvider):
             "Consider Chinese Pinyin translations, Romaji, alternate titles, and year variations.\n\n"
             f"Important Context: Today is {today_str}. Media with release year {current_year} is currently active and releasing now."
         )
-        res = await self._call_ollama(system_prompt, user_prompt)
+        res = await self._call_ollama(
+            system_prompt,
+            user_prompt,
+            operation="match_unknown_media",
+            item_title=release_title
+        )
         return LibraryMatchResult(**res, model_name=self.name)
 
     async def evaluate_fake_or_malware(
@@ -229,5 +283,10 @@ class OllamaProvider(BaseAIProvider):
             "- They NEVER package standalone TV/movie releases as '.7z' archives containing Windows executables (.exe, .scr, codec packs, crypted binaries).\n"
             "- If an archive contains executables (.exe, .scr, .bat) and no actual video stream, or has an unsupported extension like .7z masquerading as scene video, classify it as fake/malware."
         )
-        res = await self._call_ollama(system_prompt, user_prompt)
+        res = await self._call_ollama(
+            system_prompt,
+            user_prompt,
+            operation="evaluate_fake_or_malware",
+            item_title=release_title
+        )
         return MalwareEvaluationResult(**res, model_name=self.name)

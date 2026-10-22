@@ -8,6 +8,7 @@ from .ai.base import BaseAIProvider, MediaMatchResult, LibraryMatchResult, Malwa
 from .classifier import classify_issue, ErrorCategory
 from .config import CategoriesConfig, ExtractionConfig
 from .extractor import find_archive_file, inspect_archive, extract_archive, resolve_local_path
+from .metrics import metrics
 
 logger = logging.getLogger("aimportarr.radarr")
 
@@ -342,6 +343,16 @@ class RadarrClient:
                                 f"  🚨 AI confirmed fake/malware archive: '{title}' | Model: {model_label} | Confidence: {fake_res.confidence:.0%}"
                             )
                             logger.warning(f"  Reasoning: {fake_res.reasoning}")
+                            metrics.record_processed_item(
+                                app="Radarr",
+                                title=title,
+                                category="fake_or_malware",
+                                status="dry_run" if is_cat_dry_run else "blocked",
+                                confidence=fake_res.confidence,
+                                model=model_label,
+                                reasoning=fake_res.reasoning,
+                                details=f"Blocklisted scam archive ({archive_file.name})"
+                            )
                             queue_id = item.get("id")
                             if queue_id:
                                 return await self.delete_and_blocklist(
@@ -363,6 +374,7 @@ class RadarrClient:
                             if not extract_ok:
                                 logger.error(f"  Failed to extract archive '{archive_file.name}'")
                                 return False
+                            metrics.record_archive_extracted()
                             logger.info(f"  ✔ Extraction complete in sandbox: '{staging_dir}'. Scanning for import...")
                             output_path = str(staging_dir)
                             if self.extraction_config.delete_after_import:
@@ -383,6 +395,16 @@ class RadarrClient:
                     f"  🚨 AI confirmed fake/malware release: '{title}' | Model: {model_label} | Confidence: {fake_res.confidence:.0%}"
                 )
                 logger.warning(f"  Reasoning: {fake_res.reasoning}")
+                metrics.record_processed_item(
+                    app="Radarr",
+                    title=title,
+                    category="fake_or_malware",
+                    status="dry_run" if is_cat_dry_run else "blocked",
+                    confidence=fake_res.confidence,
+                    model=model_label,
+                    reasoning=fake_res.reasoning,
+                    details="Blocklisted scam/malware release from queue status"
+                )
                 queue_id = item.get("id")
                 if queue_id:
                     return await self.delete_and_blocklist(
@@ -395,6 +417,16 @@ class RadarrClient:
             else:
                 logger.info(
                     f"  AI did not confirm '{title}' as fake/malware (Model: {model_label}, Confidence: {fake_res.confidence:.0%}): {fake_res.reasoning}. Skipping."
+                )
+                metrics.record_processed_item(
+                    app="Radarr",
+                    title=title,
+                    category="fake_or_malware",
+                    status="skipped",
+                    confidence=fake_res.confidence,
+                    model=model_label,
+                    reasoning=fake_res.reasoning,
+                    details="AI determined release is not malware"
                 )
                 return False
 
@@ -429,6 +461,16 @@ class RadarrClient:
 
             if not match_res.matched_id or match_res.confidence < self.min_confidence:
                 logger.warning(f"  Could not match '{title}' to any movie in Radarr library ({match_res.confidence:.0%}): {match_res.reasoning}")
+                metrics.record_processed_item(
+                    app="Radarr",
+                    title=title,
+                    category="unknown_media",
+                    status="rejected",
+                    confidence=match_res.confidence,
+                    model=match_res.model_name or ai_provider.name,
+                    reasoning=match_res.reasoning,
+                    details="Could not match release to Radarr library"
+                )
                 return False
 
             movie_info = next((m for m in all_movies if m.get("id") == match_res.matched_id), None)
@@ -457,6 +499,16 @@ class RadarrClient:
 
         if not manual_items:
             logger.warning(f"  Radarr returned 0 importable files for '{title}'.")
+            metrics.record_processed_item(
+                app="Radarr",
+                title=title,
+                category=category.value,
+                status="rejected",
+                confidence=0.0,
+                model=ai_provider.name,
+                reasoning="Radarr manual import returned 0 importable files",
+                details="0 files found"
+            )
             return False
 
         # Refine issue category if manual import rejections offer more specific classification
@@ -487,6 +539,16 @@ class RadarrClient:
                 logger.warning(
                     f"  ✖ AI rejected movie match for '{title}' against '{candidate_title}' "
                     f"| Model: {model_label} | Confidence: {movie_verify_res.confidence:.0%} | Reasoning: {movie_verify_res.reasoning}"
+                )
+                metrics.record_processed_item(
+                    app="Radarr",
+                    title=title,
+                    category="id_match",
+                    status="rejected",
+                    confidence=movie_verify_res.confidence,
+                    model=model_label,
+                    reasoning=movie_verify_res.reasoning,
+                    details=f"AI rejected movie match against '{candidate_title}'"
                 )
                 return False
 
@@ -558,6 +620,41 @@ class RadarrClient:
                     logger.info(f"  🧹 Cleaned up extracted staging folder '{staging_dir_to_clean}'. Seeding archive preserved.")
                 except Exception as ce:
                     logger.debug(f"Failed to clean up staging folder '{staging_dir_to_clean}': {ce}")
+
+            # Record metrics
+            decider_model = None
+            decider_conf = 1.0
+            decider_reasoning = f"Imported {len(files_to_import)} file(s)"
+            if match_res:
+                decider_model = match_res.model_name or ai_provider.name
+                decider_conf = match_res.confidence
+                decider_reasoning = match_res.reasoning
+            elif movie_verify_res:
+                decider_model = movie_verify_res.model_name or ai_provider.name
+                decider_conf = movie_verify_res.confidence
+                decider_reasoning = movie_verify_res.reasoning
+
+            status_label = "dry_run" if is_cat_dry_run else ("imported" if import_ok else "failed")
+            metrics.record_processed_item(
+                app="Radarr",
+                title=title,
+                category=category.value,
+                status=status_label,
+                confidence=decider_conf,
+                model=decider_model,
+                reasoning=decider_reasoning,
+                details=f"Imported {len(files_to_import)} movie file(s) into '{candidate_title}'"
+            )
             return import_ok
 
+        metrics.record_processed_item(
+            app="Radarr",
+            title=title,
+            category=category.value,
+            status="rejected",
+            confidence=0.0,
+            model=ai_provider.name,
+            reasoning="No files available or approved for import",
+            details="0 files imported"
+        )
         return False

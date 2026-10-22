@@ -13,12 +13,14 @@ class ContainerSmokeTests(unittest.TestCase):
     def test_imports(self):
         """Verify all application modules import without NameError, SyntaxError, or ImportError."""
         try:
-            from src.config import load_config, AppConfig, PathMapping, GeneralConfig, AIConfig, CategoriesConfig, ExtractionConfig
+            from src.config import load_config, AppConfig, PathMapping, GeneralConfig, AIConfig, CategoriesConfig, ExtractionConfig, WebConfig
             from src.extractor import inspect_archive, extract_archive, find_archive_file, resolve_local_path
             from src.classifier import classify_issue, ErrorCategory
             from src.sonarr import SonarrClient
             from src.radarr import RadarrClient
             from src.main import main
+            from src.metrics import MetricsTracker, metrics
+            from src.web import WebServerRunner, DASHBOARD_HTML
             from src.ai.base import (
                 BaseAIProvider,
                 MediaMatchResult,
@@ -46,10 +48,12 @@ class ContainerSmokeTests(unittest.TestCase):
             self.assertTrue(config.categories.is_enabled("fake_or_malware"))
             self.assertTrue(config.categories.is_enabled("id_match"))
             self.assertTrue(config.extraction.enabled)
+            self.assertTrue(config.web.enabled)
+            self.assertEqual(config.web.port, 8990)
 
     def test_pydantic_model_definitions(self):
         """Verify all Pydantic models instantiate properly with default factories."""
-        from src.config import AppConfig, PathMapping
+        from src.config import AppConfig, PathMapping, WebConfig
         config = AppConfig()
         self.assertIsNotNone(config.general)
         self.assertIsNotNone(config.ai)
@@ -57,6 +61,9 @@ class ContainerSmokeTests(unittest.TestCase):
         self.assertIsNotNone(config.radarr)
         self.assertIsNotNone(config.categories)
         self.assertIsNotNone(config.extraction)
+        self.assertIsNotNone(config.web)
+        self.assertEqual(config.web.port, 8990)
+        self.assertTrue(config.web.enabled)
         self.assertIsInstance(config.path_mappings, list)
 
         mapping = PathMapping(**{"from": "/remote/path", "to": "/local/path"})
@@ -100,6 +107,132 @@ class ContainerSmokeTests(unittest.TestCase):
             self.assertFalse(result.has_video_files)
             self.assertEqual(len(result.suspicious_files), 1)
             self.assertIn("vlc-win64_crypted.exe", result.suspicious_files[0].path)
+
+    def test_metrics_tracker(self):
+        """Verify MetricsTracker correctly aggregates counters, breakdowns, and bounded histories."""
+        from src.metrics import MetricsTracker
+        tracker = MetricsTracker(max_history=5)
+
+        # Scans & archive extractions
+        tracker.record_scan()
+        tracker.record_scan()
+        tracker.record_archive_extracted()
+
+        # Processed items
+        tracker.record_processed_item(
+            app="Sonarr",
+            title="Show.S01E01",
+            category="id_match",
+            status="imported",
+            confidence=0.98,
+            model="gemini-flash",
+            reasoning="Matched official title",
+            details="Imported 1 file"
+        )
+        tracker.record_processed_item(
+            app="Radarr",
+            title="Movie.2024",
+            category="fake_or_malware",
+            status="blocked",
+            confidence=0.99,
+            model="gemini-flash",
+            reasoning="Executable disguised as movie",
+            details="Deleted and blocklisted"
+        )
+
+        # AI token usage
+        tracker.record_token_usage(
+            operation="verify_series_match",
+            model="gemini-flash",
+            prompt_tokens=450,
+            completion_tokens=50,
+            total_tokens=500,
+            duration_ms=320,
+            item_title="Show.S01E01",
+            success=True
+        )
+
+        summary = tracker.get_summary()
+        self.assertEqual(summary["total_scans"], 2)
+        self.assertEqual(summary["total_archives_extracted"], 1)
+        self.assertEqual(summary["total_items_processed"], 2)
+        self.assertEqual(summary["total_imported"], 1)
+        self.assertEqual(summary["total_blocked"], 1)
+        self.assertEqual(summary["total_ai_calls"], 1)
+        self.assertEqual(summary["total_prompt_tokens"], 450)
+        self.assertEqual(summary["total_completion_tokens"], 50)
+        self.assertEqual(summary["total_tokens"], 500)
+        self.assertIn("gemini-flash", summary["tokens_by_model"])
+
+        history = tracker.get_processed_history()
+        self.assertEqual(len(history), 2)
+        self.assertEqual(history[0]["title"], "Movie.2024") # Newest first
+
+        tokens = tracker.get_token_history()
+        self.assertEqual(len(tokens), 1)
+        self.assertEqual(tokens[0]["total_tokens"], 500)
+
+    def test_web_server_endpoints(self):
+        """Verify WebServerRunner serves dashboard HTML, metrics API, history API, and health API."""
+        import time
+        import urllib.request
+        import json
+        from src.metrics import MetricsTracker
+        from src.web import WebServerRunner
+
+        test_tracker = MetricsTracker()
+        test_tracker.record_scan()
+        test_tracker.record_processed_item(
+            app="Sonarr",
+            title="Test.Release.S01E01",
+            category="id_match",
+            status="imported",
+            confidence=0.95
+        )
+
+        # Choose a high test port to avoid conflict
+        port = 18992
+        server = WebServerRunner(host="127.0.0.1", port=port, metrics_instance=test_tracker)
+        server.start()
+
+        try:
+            time.sleep(0.1) # Wait for server to bind
+
+            # 1. Dashboard UI
+            req = urllib.request.Request(f"http://127.0.0.1:{port}/")
+            with urllib.request.urlopen(req, timeout=3.0) as resp:
+                self.assertEqual(resp.status, 200)
+                self.assertIn("text/html", resp.headers.get("Content-Type", ""))
+                html = resp.read().decode("utf-8")
+                self.assertIn("AImportarr", html)
+                self.assertIn("Processed History", html)
+                self.assertIn("Token Usage History", html)
+
+            # 2. REST API: Summary / Metrics
+            req = urllib.request.Request(f"http://127.0.0.1:{port}/api/metrics")
+            with urllib.request.urlopen(req, timeout=3.0) as resp:
+                self.assertEqual(resp.status, 200)
+                data = json.loads(resp.read().decode("utf-8"))
+                self.assertEqual(data["total_scans"], 1)
+                self.assertEqual(data["total_imported"], 1)
+
+            # 3. REST API: Processed History
+            req = urllib.request.Request(f"http://127.0.0.1:{port}/api/history")
+            with urllib.request.urlopen(req, timeout=3.0) as resp:
+                self.assertEqual(resp.status, 200)
+                items = json.loads(resp.read().decode("utf-8"))
+                self.assertEqual(len(items), 1)
+                self.assertEqual(items[0]["title"], "Test.Release.S01E01")
+
+            # 4. REST API: Health
+            req = urllib.request.Request(f"http://127.0.0.1:{port}/api/health")
+            with urllib.request.urlopen(req, timeout=3.0) as resp:
+                self.assertEqual(resp.status, 200)
+                health = json.loads(resp.read().decode("utf-8"))
+                self.assertEqual(health["status"], "ok")
+
+        finally:
+            server.stop()
 
 if __name__ == "__main__":
     unittest.main()
