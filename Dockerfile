@@ -26,7 +26,7 @@ COPY assets/ /app/assets/
 VOLUME ["/config"]
 
 # Expose Web UI & Metrics Dashboard
-EXPOSE 8990
+EXPOSE 9890
 
 # Run the service
 CMD ["python", "-m", "src.main"]

@@ -49,7 +49,7 @@ class ContainerSmokeTests(unittest.TestCase):
             self.assertTrue(config.categories.is_enabled("id_match"))
             self.assertTrue(config.extraction.enabled)
             self.assertTrue(config.web.enabled)
-            self.assertEqual(config.web.port, 8990)
+            self.assertEqual(config.web.port, 9890)
 
     def test_pydantic_model_definitions(self):
         """Verify all Pydantic models instantiate properly with default factories."""
@@ -62,7 +62,7 @@ class ContainerSmokeTests(unittest.TestCase):
         self.assertIsNotNone(config.categories)
         self.assertIsNotNone(config.extraction)
         self.assertIsNotNone(config.web)
-        self.assertEqual(config.web.port, 8990)
+        self.assertEqual(config.web.port, 9890)
         self.assertTrue(config.web.enabled)
         self.assertIsInstance(config.path_mappings, list)
 

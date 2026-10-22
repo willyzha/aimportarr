@@ -6,7 +6,7 @@ services:
     container_name: aimportarr
     restart: unless-stopped
     ports:
-      - "8990:8990" # Web UI Metrics & History Monitor
+      - "9890:9890" # Web UI Metrics & History Monitor
     volumes:
       - ./config:/config
       # Optional: Mount downloads directory matching Sonarr/Radarr's paths for secure archive extraction (replaces Unpackerr)

@@ -72,7 +72,7 @@ class ExtractionConfig(BaseModel):
 class WebConfig(BaseModel):
     enabled: bool = True
     host: str = "0.0.0.0"
-    port: int = 8990
+    port: int = 9890
 
 class PathMapping(BaseModel):
     model_config = {"populate_by_name": True}
