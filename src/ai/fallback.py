@@ -193,13 +193,15 @@ class FallbackProvider(BaseAIProvider):
         self,
         release_title: str,
         file_name: str,
-        error_messages: List[str]
+        error_messages: List[str],
+        archive_files: Optional[List[str]] = None
     ) -> MalwareEvaluationResult:
         try:
             return await self.primary.evaluate_fake_or_malware(
                 release_title=release_title,
                 file_name=file_name,
-                error_messages=error_messages
+                error_messages=error_messages,
+                archive_files=archive_files
             )
         except (AIProviderError, Exception) as e:
             if not self.fallback:
@@ -211,7 +213,8 @@ class FallbackProvider(BaseAIProvider):
                 return await self.fallback.evaluate_fake_or_malware(
                     release_title=release_title,
                     file_name=file_name,
-                    error_messages=error_messages
+                    error_messages=error_messages,
+                    archive_files=archive_files
                 )
             except Exception as fe:
                 logger.error(f"Fallback AI provider '{self.fallback.name}' also failed: {fe}")

@@ -105,13 +105,26 @@ docker run -d \
 ### Option C: Unraid
 
 1. Open the Unraid WebGUI and navigate to the **Docker** tab.
-2. Click **Add Container** at the bottom.
+2. Click **Add Container** at the bottom (or edit your existing `aimportarr` container).
 3. Configure the container:
    - **Name**: `aimportarr`
    - **Repository**: `ghcr.io/willyzha/aimportarr:beta`
    - **Path /config**: `/mnt/user/appdata/aimportarr`
+   - **Path /data/downloads** *(Optional, to replace Unpackerr)*: `/mnt/user/Media/downloads` (must match Sonarr/Radarr's internal download path)
 4. Place your configured `config.yml` in `/mnt/user/appdata/aimportarr/config.yml`.
 5. Click **Apply**.
+
+---
+
+## 📦 Secure Archive Extraction (Replaces Unpackerr)
+
+Unlike Unpackerr—which blindly extracts archives and often leaves malicious executables on your disk—AImportarr uses **Zero-Extract Inspection + AI Verification**:
+
+1. **Pre-Extraction In-Memory Inspection**: Reads archive headers (`.zip`, `.rar`, `.7z`, `.tar`) in memory without extracting anything.
+2. **AI Malware Detection**: If an archive contains executables (`.exe`, `.scr`, `.bat`) or no video streams, AI evaluates the release and automatically deletes and blocklists it in Sonarr/Radarr and your download client. Zero bytes of malware are ever written to your array.
+3. **Sandbox Extraction & Auto-Cleanup**: If valid media is verified, extracts into an isolated staging folder with strict Zip-Slip protection, triggers the Sonarr/Radarr manual import, and automatically cleans up the extracted staging folder so your disk space is never duplicated while your seeding torrent remains 100% intact.
+
+To enable extraction, mount your downloads folder to the container (matching Sonarr/Radarr's path).
 
 ---
 
@@ -121,6 +134,8 @@ docker run -d \
 | :--- | :--- | :--- |
 | `general.check_interval_seconds` | `120` | Interval between queue inspections. |
 | `general.min_confidence` | `0.85` | AI confidence required (0.0 to 1.0) before executing an import. |
+| `extraction.enabled` | `true` | Enable automated secure archive inspection and extraction. |
+| `extraction.delete_after_import` | `true` | Delete temporary extracted video files after Sonarr/Radarr import (keeps original archive seeding). |
 | `ai.provider` | `gemini` | Selected primary AI backend: `gemini` or `ollama`. |
 | `ai.fallback_enabled` | `true` | When `true`, automatically delegates to the secondary provider if the primary encounters invalid keys, rate limits (HTTP 429), token exhaustion, or network errors. |
 | `ai.gemini.api_key` | `""` | Google Gemini API key (Get a free key at [aistudio.google.com](https://aistudio.google.com/)). |
@@ -142,6 +157,7 @@ AImportarr intelligently categorizes download issues into granular categories, a
 
 | Category | Description | AI Action |
 | :--- | :--- | :--- |
+| `fake_or_malware` | Fake releases, trojans, unsupported archives masquerading as media | Verifies with AI, then deletes from download client and permanently blocklists. |
 | `id_match` | Release was matched to series/movie by ID (Sonarr/Radarr safety guardrail) | Verifies release name against candidate title/aliases. |
 | `unknown_media` | Unknown series/movie (metadata missing from queue item) | Searches your tracked library items to identify the correct media. |
 | `unknown_episode` | Series is known, but season/episode numbers could not be parsed | Extracts season and episode numbers from irregular file paths. |

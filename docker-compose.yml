@@ -7,6 +7,8 @@ services:
     restart: unless-stopped
     volumes:
       - ./config:/config
+      # Optional: Mount downloads directory matching Sonarr/Radarr's paths for secure archive extraction (replaces Unpackerr)
+      # - /mnt/user/Media/downloads:/data/downloads
     environment:
       - PUID=1000
       - PGID=1000

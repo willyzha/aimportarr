@@ -54,43 +54,62 @@ radarr:
 #   enabled: true / false (whether AImportarr attempts to resolve this issue)
 #   dry_run: true / false (set false to enable real auto-imports, true for simulation only)
 categories:
-  # 1. Release was matched to series/movie by ID (Sonarr/Radarr safety guardrail)
-  # High safety: already matched by indexer ID. Defaults to real import.
+  # 1. Fake or Malware Releases (trojans, scam archives, unsupported executables)
+  # Uses AI to verify if an unsupported archive (.7z, .exe) is a scam release,
+  # then automatically deletes it from the download client and adds it to the blocklist.
+  fake_or_malware:
+    enabled: true
+    dry_run: false
+
+  # 2. Release was matched to series/movie by ID (Sonarr/Radarr safety guardrail)
+  # Uses AI to confirm title matching before approving import.
   id_match:
     enabled: true
     dry_run: false
 
-  # 2. Unknown Series or Movie (item missing from queue metadata)
+  # 3. Unknown Series or Movie (item missing from queue metadata)
   # Uses AI to match the release name against all tracked items in your library
   unknown_media:
     enabled: true
     dry_run: true
 
-  # 3. Series is known, but episode could not be parsed ("Unknown Episode")
+  # 4. Series is known, but episode could not be parsed ("Unknown Episode")
   # Uses AI to parse season and episode numbers from irregular filenames
   unknown_episode:
     enabled: true
     dry_run: true
 
-  # 4. File flagged as sample, preview, or short video
+  # 5. File flagged as sample, preview, or short video
   # AI evaluates whether the file is disposable or a genuine release (e.g. OVA/special)
   sample_or_extra:
     enabled: true
     dry_run: true
 
-  # 5. Quality cutoff or language profile rejections
+  # 6. Quality cutoff or language profile rejections
   quality_or_language:
     enabled: true
     dry_run: true
 
-  # 6. Expected episodes missing from release (e.g. single episode labeled as a season pack)
+  # 7. Expected episodes missing from release (e.g. single episode labeled as a season pack)
   # Automatically imports any available episode files, then dismisses the remaining
   # season pack warning from the queue (without deleting the torrent from your client).
   missing_episodes:
     enabled: true
     dry_run: false
 
-  # 7. Fallback / Catch-All category for any other unclassified queue error or warning
+  # 8. Fallback / Catch-All category for any other unclassified queue error or warning
   other:
     enabled: true
     dry_run: true
+
+# ==========================================
+# Secure Archive Extraction (Replaces Unpackerr)
+# ==========================================
+# Automatically inspects archive files (.zip, .rar, .7z, .tar) in memory before extracting.
+# If malware/executables are detected, immediately deletes and blocklists the release.
+# If valid media is verified, extracts into a safe sandbox staging folder and imports.
+# Requires the download directory to be mounted in the AImportarr container.
+extraction:
+  enabled: true
+  delete_after_import: true # Clean up extracted video files once imported so disk space isn't duplicated
+  staging_suffix: "_extracted"

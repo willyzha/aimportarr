@@ -208,7 +208,8 @@ class OllamaProvider(BaseAIProvider):
         self,
         release_title: str,
         file_name: str,
-        error_messages: List[str]
+        error_messages: List[str],
+        archive_files: Optional[List[str]] = None
     ) -> MalwareEvaluationResult:
         today_str = datetime.now().strftime("%Y-%m-%d")
         system_prompt = (
@@ -216,15 +217,17 @@ class OllamaProvider(BaseAIProvider):
             "You must respond ONLY with a valid JSON object with keys: "
             "'is_fake_or_malware' (boolean), 'confidence' (float 0.0-1.0), and 'reasoning' (string)."
         )
+        archive_section = f"Archive Manifest (Files inside): {', '.join(archive_files[:25])}\n" if archive_files else ""
         user_prompt = (
             f"Release Title: {release_title}\n"
             f"File Name: {file_name}\n"
+            f"{archive_section}"
             f"Error / Status Messages: {', '.join(error_messages) if error_messages else 'None'}\n\n"
             "Task: Determine if this release is a fake, scam, trojan, or malware release pretending to be TV or Movie media.\n\n"
             "Guidelines:\n"
             "- Legitimate scene and P2P TV/movie release groups (-FLUX, -EZTV, -MeGusta, -TGx, etc.) distribute video streams in video containers (.mkv, .mp4, .avi) or multi-part scene RAR archives.\n"
             "- They NEVER package standalone TV/movie releases as '.7z' archives containing Windows executables (.exe, .scr, codec packs, crypted binaries).\n"
-            "- If a release has an unsupported extension like .7z, .exe, .scr, .bat or claims to be a video but contains no video stream or has a known malware payload pattern, classify it as fake/malware."
+            "- If an archive contains executables (.exe, .scr, .bat) and no actual video stream, or has an unsupported extension like .7z masquerading as scene video, classify it as fake/malware."
         )
         res = await self._call_ollama(system_prompt, user_prompt)
         return MalwareEvaluationResult(**res, model_name=self.name)

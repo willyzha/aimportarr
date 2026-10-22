@@ -9,6 +9,11 @@ ENV PYTHONUNBUFFERED=1 \
 
 WORKDIR /app
 
+# Install 7-Zip extraction tools
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends 7zip p7zip-full unrar-free && \
+    rm -rf /var/lib/apt/lists/*
+
 # Install dependencies
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt

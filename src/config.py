@@ -64,12 +64,18 @@ class CategoriesConfig(BaseModel):
             return rule.enabled
         return True
 
+class ExtractionConfig(BaseModel):
+    enabled: bool = True
+    delete_after_import: bool = True
+    staging_suffix: str = "_extracted"
+
 class AppConfig(BaseModel):
     general: GeneralConfig = Field(default_factory=GeneralConfig)
     ai: AIConfig = Field(default_factory=AIConfig)
     sonarr: SonarrConfig = Field(default_factory=SonarrConfig)
     radarr: RadarrConfig = Field(default_factory=RadarrConfig)
     categories: CategoriesConfig = Field(default_factory=CategoriesConfig)
+    extraction: ExtractionConfig = Field(default_factory=ExtractionConfig)
 
 def load_config(config_path: Optional[str] = None) -> AppConfig:
     """Load configuration from YAML file and apply environment variable overrides."""
@@ -165,6 +171,12 @@ def load_config(config_path: Optional[str] = None) -> AppConfig:
             rule.dry_run = env_dry.lower() in ("true", "1", "yes")
         if env_enabled := os.getenv(f"{prefix}_ENABLED"):
             rule.enabled = env_enabled.lower() in ("true", "1", "yes")
+
+    # Extraction overrides
+    if env_extraction_enabled := os.getenv("EXTRACTION_ENABLED"):
+        config.extraction.enabled = env_extraction_enabled.lower() in ("true", "1", "yes")
+    if env_delete_after_import := os.getenv("EXTRACTION_DELETE_AFTER_IMPORT"):
+        config.extraction.delete_after_import = env_delete_after_import.lower() in ("true", "1", "yes")
 
     # Normalize URLs (strip trailing slashes)
     config.sonarr.url = config.sonarr.url.rstrip("/")

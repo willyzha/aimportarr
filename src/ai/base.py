@@ -110,7 +110,8 @@ class BaseAIProvider(ABC):
         self,
         release_title: str,
         file_name: str,
-        error_messages: List[str]
+        error_messages: List[str],
+        archive_files: Optional[List[str]] = None
     ) -> MalwareEvaluationResult:
         """Determine if a release is a fake, scam, or malware/virus release."""
         pass

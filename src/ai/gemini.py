@@ -390,7 +390,8 @@ class GeminiProvider(BaseAIProvider):
         self,
         release_title: str,
         file_name: str,
-        error_messages: List[str]
+        error_messages: List[str],
+        archive_files: Optional[List[str]] = None
     ) -> MalwareEvaluationResult:
         schema = (
             "Return JSON adhering strictly to this schema:\n"
@@ -400,15 +401,17 @@ class GeminiProvider(BaseAIProvider):
             '  "reasoning": "brief explanation"\n'
             "}"
         )
+        archive_section = f"Archive Manifest (Files inside): {', '.join(archive_files[:25])}\n" if archive_files else ""
         prompt = (
             f"Release Title: {release_title}\n"
             f"File Name: {file_name}\n"
+            f"{archive_section}"
             f"Error / Status Messages: {', '.join(error_messages) if error_messages else 'None'}\n\n"
             "Task: Determine if this release is a fake, scam, trojan, or malware release pretending to be TV or Movie media.\n\n"
             "Guidelines:\n"
             "- Legitimate scene and P2P TV/movie release groups (-FLUX, -EZTV, -MeGusta, -TGx, etc.) distribute video streams in video containers (.mkv, .mp4, .avi) or multi-part scene RAR archives.\n"
             "- They NEVER package standalone TV/movie releases as '.7z' archives containing Windows executables (.exe, .scr, codec packs, crypted binaries).\n"
-            "- If a release has an unsupported extension like .7z, .exe, .scr, .bat or claims to be a video but contains no video stream or has a known malware payload pattern, classify it as fake/malware."
+            "- If an archive contains executables (.exe, .scr, .bat) and no actual video stream, or has an unsupported extension like .7z masquerading as scene video, classify it as fake/malware."
         )
         data = await self._call_gemini(prompt, schema)
         return MalwareEvaluationResult(

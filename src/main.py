@@ -73,6 +73,8 @@ async def main():
     if disabled_cats:
         logger.info(f"Disabled categories: {', '.join(disabled_cats)}")
 
+    logger.info(f"Archive Extractor: {'Enabled' if config.extraction.enabled else 'Disabled'} (Delete after import: {config.extraction.delete_after_import})")
+
     ai_provider = get_ai_provider(config.ai)
 
     # Initialize Sonarr
@@ -85,7 +87,8 @@ async def main():
                 base_url=config.sonarr.url,
                 api_key=config.sonarr.api_key,
                 min_confidence=config.general.min_confidence,
-                categories=config.categories
+                categories=config.categories,
+                extraction_config=config.extraction
             )
             logger.info(f"Sonarr client configured for: {config.sonarr.url}")
 
@@ -99,7 +102,8 @@ async def main():
                 base_url=config.radarr.url,
                 api_key=config.radarr.api_key,
                 min_confidence=config.general.min_confidence,
-                categories=config.categories
+                categories=config.categories,
+                extraction_config=config.extraction
             )
             logger.info(f"Radarr client configured for: {config.radarr.url}")
 

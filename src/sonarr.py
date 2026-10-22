@@ -1,11 +1,13 @@
 import asyncio
 import logging
+import shutil
 from pathlib import Path
 from typing import List, Dict, Any, Optional
 import httpx
 from .ai.base import BaseAIProvider, MediaMatchResult, LibraryMatchResult, MalwareEvaluationResult
 from .classifier import classify_issue, ErrorCategory
-from .config import CategoriesConfig
+from .config import CategoriesConfig, ExtractionConfig
+from .extractor import find_archive_file, inspect_archive, extract_archive
 
 logger = logging.getLogger("aimportarr.sonarr")
 
@@ -16,13 +18,15 @@ class SonarrClient:
         api_key: str,
         min_confidence: float = 0.85,
         dry_run: Optional[bool] = None,
-        categories: Optional[CategoriesConfig] = None
+        categories: Optional[CategoriesConfig] = None,
+        extraction_config: Optional[ExtractionConfig] = None
     ):
         self.base_url = base_url.rstrip("/")
         self.api_key = api_key
         self.min_confidence = min_confidence
         self.dry_run = dry_run
         self.categories = categories or CategoriesConfig()
+        self.extraction_config = extraction_config or ExtractionConfig()
         self._dismissed_downloads: set = set()
         self._attempted_items: set = set()
         self.headers = {
@@ -378,7 +382,59 @@ class SonarrClient:
         for k in item_keys:
             self._attempted_items.add(k)
 
-        # Handle fake or malware releases
+        # Check for archive files on disk if extraction is enabled
+        staging_dir_to_clean: Optional[Path] = None
+        if self.extraction_config.enabled and output_path:
+            p_local = Path(output_path)
+            archive_file = find_archive_file(p_local)
+            if archive_file:
+                logger.info(f"  🔍 Archive detected: '{archive_file.name}'. Inspecting contents in memory...")
+                inspection = await inspect_archive(archive_file)
+                if inspection:
+                    if inspection.has_suspicious_files or not inspection.has_video_files:
+                        suspicious_names = [f.path for f in inspection.suspicious_files]
+                        logger.warning(
+                            f"  Archive '{archive_file.name}' contains suspicious files or 0 video files ({suspicious_names}). Evaluating with AI..."
+                        )
+                        fake_res = await ai_provider.evaluate_fake_or_malware(
+                            release_title=title,
+                            file_name=archive_file.name,
+                            error_messages=all_messages,
+                            archive_files=[e.path for e in inspection.files]
+                        )
+                        model_label = fake_res.model_name or ai_provider.name
+                        if fake_res.is_fake_or_malware and fake_res.confidence >= self.min_confidence:
+                            logger.warning(
+                                f"  🚨 AI confirmed fake/malware archive: '{title}' | Model: {model_label} | Confidence: {fake_res.confidence:.0%}"
+                            )
+                            logger.warning(f"  Reasoning: {fake_res.reasoning}")
+                            queue_id = item.get("id")
+                            if queue_id:
+                                return await self.delete_and_blocklist(
+                                    queue_id=queue_id,
+                                    download_id=download_id,
+                                    dry_run=is_cat_dry_run,
+                                    title=title
+                                )
+                            return False
+                        else:
+                            logger.info(f"  AI did not confirm '{title}' as fake/malware: {fake_res.reasoning}")
+                    elif inspection.has_video_files and not inspection.has_suspicious_files:
+                        logger.info(f"  📦 Valid media archive detected ({len(inspection.video_files)} video file(s)). Extracting in sandbox...")
+                        staging_dir = archive_file.parent / f"{archive_file.stem}{self.extraction_config.staging_suffix}"
+                        if is_cat_dry_run:
+                            logger.info(f"  [DRY RUN] Would extract '{archive_file.name}' to sandbox '{staging_dir}'")
+                        else:
+                            extract_ok = await extract_archive(archive_file, staging_dir)
+                            if not extract_ok:
+                                logger.error(f"  Failed to extract archive '{archive_file.name}'")
+                                return False
+                            logger.info(f"  ✔ Extraction complete in sandbox: '{staging_dir}'. Scanning for import...")
+                            output_path = str(staging_dir)
+                            if self.extraction_config.delete_after_import:
+                                staging_dir_to_clean = staging_dir
+
+        # Handle fake or malware releases (from queue status messages)
         if category == ErrorCategory.FAKE_OR_MALWARE:
             file_name = Path(output_path).name if output_path else title
             logger.info(f"  Evaluating potential fake/malware release with AI: '{title}'...")
@@ -627,6 +683,13 @@ class SonarrClient:
 
         if files_to_import:
             import_ok = await self.trigger_manual_import(files_to_import, dry_run=is_cat_dry_run, category=category)
+            if import_ok and staging_dir_to_clean and not is_cat_dry_run:
+                try:
+                    shutil.rmtree(staging_dir_to_clean, ignore_errors=True)
+                    logger.info(f"  🧹 Cleaned up extracted staging folder '{staging_dir_to_clean}'. Seeding archive preserved.")
+                except Exception as ce:
+                    logger.debug(f"Failed to clean up staging folder '{staging_dir_to_clean}': {ce}")
+
             if import_ok and category == ErrorCategory.MISSING_EPISODES:
                 queue_id = item.get("id")
                 if queue_id:
