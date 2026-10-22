@@ -3,6 +3,7 @@ import logging
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
+import shutil
 import threading
 from urllib.parse import parse_qs, urlparse
 from typing import Optional, Any
@@ -681,6 +682,8 @@ DASHBOARD_HTML = """<!DOCTYPE html>
       <button id="refresh-btn" class="btn" onclick="fetchData(true)">
         <span id="refresh-icon">🔄</span> Refresh
       </button>
+
+      <a href="/logo-preview" class="btn" style="text-decoration: none;" title="Preview and select alternative logo colorways">🎨 Logo Colors</a>
     </div>
   </header>
 
@@ -1218,6 +1221,373 @@ DASHBOARD_HTML = """<!DOCTYPE html>
 </html>
 """
 
+LOGO_PREVIEW_HTML = """<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>AImportarr — Logo Colorways Selector</title>
+  <link rel="icon" type="image/png" href="/assets/logo.png">
+  <style>
+    :root {
+      --bg-base: #0b0e14;
+      --bg-card: #151921;
+      --border: #262e3d;
+      --text-main: #f1f5f9;
+      --text-muted: #94a3b8;
+      --accent: #6366f1;
+    }
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+      background-color: var(--bg-base);
+      color: var(--text-main);
+      min-height: 100vh;
+      display: flex;
+      flex-direction: column;
+    }
+    header {
+      background-color: #11151c;
+      border-bottom: 1px solid var(--border);
+      padding: 0.85rem 1.75rem;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      position: sticky;
+      top: 0;
+      z-index: 50;
+      flex-wrap: wrap;
+      gap: 1rem;
+    }
+    .brand {
+      display: flex;
+      align-items: center;
+      gap: 0.85rem;
+      text-decoration: none;
+      color: var(--text-main);
+    }
+    .brand img { width: 32px; height: 32px; border-radius: 6px; object-fit: contain; }
+    .bg-controls {
+      display: flex;
+      align-items: center;
+      gap: 0.5rem;
+      background: #181d26;
+      padding: 0.25rem 0.4rem;
+      border-radius: 8px;
+      border: 1px solid var(--border);
+    }
+    .btn-bg {
+      background: transparent;
+      border: none;
+      color: var(--text-muted);
+      padding: 0.35rem 0.65rem;
+      border-radius: 5px;
+      cursor: pointer;
+      font-size: 0.78rem;
+      font-weight: 600;
+      transition: all 0.15s ease;
+    }
+    .btn-bg.active {
+      background: var(--accent);
+      color: white;
+    }
+    .btn-nav {
+      background-color: var(--bg-card);
+      color: var(--text-main);
+      border: 1px solid var(--border);
+      padding: 0.45rem 0.85rem;
+      border-radius: 6px;
+      font-size: 0.8rem;
+      text-decoration: none;
+      display: inline-flex;
+      align-items: center;
+      gap: 0.4rem;
+    }
+    .btn-nav:hover { background: #202735; }
+    main {
+      flex: 1;
+      max-width: 1400px;
+      margin: 0 auto;
+      padding: 2rem 1.5rem;
+      width: 100%;
+    }
+    .hero {
+      text-align: center;
+      margin-bottom: 2.25rem;
+    }
+    .hero h1 { font-size: 1.85rem; font-weight: 800; margin-bottom: 0.5rem; }
+    .hero p { color: var(--text-muted); font-size: 0.95rem; max-width: 700px; margin: 0 auto; }
+    .grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
+      gap: 1.5rem;
+    }
+    .card {
+      background: var(--bg-card);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      overflow: hidden;
+      display: flex;
+      flex-direction: column;
+      transition: transform 0.15s ease, border-color 0.15s ease;
+    }
+    .card:hover {
+      transform: translateY(-3px);
+      border-color: #3b4556;
+    }
+    .canvas-wrap {
+      height: 250px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      padding: 1.5rem;
+      background: var(--test-bg, #000000);
+      transition: background 0.2s ease;
+    }
+    .canvas-wrap img {
+      max-height: 200px;
+      max-width: 200px;
+      object-fit: contain;
+    }
+    .card-content {
+      padding: 1.25rem;
+      display: flex;
+      flex-direction: column;
+      flex: 1;
+    }
+    .card-top {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      margin-bottom: 0.5rem;
+    }
+    .card-title {
+      font-size: 1.05rem;
+      font-weight: 700;
+      display: flex;
+      align-items: center;
+      gap: 0.5rem;
+    }
+    .dot {
+      width: 13px;
+      height: 13px;
+      border-radius: 50%;
+      display: inline-block;
+    }
+    .badge-contrast {
+      font-size: 0.7rem;
+      font-weight: 700;
+      padding: 0.2rem 0.5rem;
+      border-radius: 9999px;
+      background: rgba(16, 185, 129, 0.15);
+      color: #34d399;
+      border: 1px solid rgba(16, 185, 129, 0.3);
+    }
+    .card-desc {
+      font-size: 0.825rem;
+      color: var(--text-muted);
+      line-height: 1.45;
+      margin-bottom: 1.25rem;
+      flex: 1;
+    }
+    .btn-apply {
+      width: 100%;
+      background: #4f46e5;
+      color: white;
+      border: none;
+      padding: 0.65rem;
+      border-radius: 6px;
+      font-weight: 600;
+      font-size: 0.85rem;
+      cursor: pointer;
+      transition: background 0.15s ease;
+    }
+    .btn-apply:hover { background: #4338ca; }
+    .toast-box {
+      position: fixed;
+      bottom: 2rem;
+      right: 2rem;
+      z-index: 100;
+      pointer-events: none;
+    }
+    .toast-msg {
+      background: #1e2430;
+      border-left: 4px solid #10b981;
+      color: #fff;
+      padding: 0.85rem 1.25rem;
+      border-radius: 6px;
+      font-size: 0.85rem;
+      box-shadow: 0 4px 16px rgba(0,0,0,0.6);
+      animation: tIn 0.2s ease;
+      pointer-events: auto;
+    }
+    @keyframes tIn { from { opacity: 0; transform: translateY(10px); } to { opacity: 1; transform: translateY(0); } }
+  </style>
+</head>
+<body>
+  <header>
+    <a href="/" class="brand">
+      <img src="/assets/logo.png" alt="AImportarr">
+      <div>
+        <div style="font-weight: 700;">AImportarr</div>
+        <div style="font-size: 0.72rem; color: var(--text-muted);">Logo Colorways Selector</div>
+      </div>
+    </a>
+    <div style="display: flex; align-items: center; gap: 0.85rem;">
+      <span style="font-size: 0.75rem; color: var(--text-muted); font-weight: 600;">CANVAS BACKGROUND:</span>
+      <div class="bg-controls">
+        <button class="btn-bg active" onclick="setBg('#000000', this)">Pure Black</button>
+        <button class="btn-bg" onclick="setBg('#0b0e14', this)">Web UI Dark</button>
+        <button class="btn-bg" onclick="setBg('#0d1117', this)">GitHub Dark</button>
+        <button class="btn-bg" onclick="setBg('#ffffff', this)">Light Mode</button>
+      </div>
+      <a href="/" class="btn-nav">← Back to Dashboard</a>
+    </div>
+  </header>
+  <main>
+    <div class="hero">
+      <h1>AImportarr Logo Colorways</h1>
+      <p>Test each colorway across pure black, dark mode, and light mode. Click <strong>Choose This Logo</strong> to immediately apply it as your container's official logo!</p>
+    </div>
+    <div class="grid">
+      <!-- Option 0: Unified Cyber Sky Blue (Arrow + Brackets) -->
+      <div class="card" style="border-color: #0284c7; box-shadow: 0 0 15px rgba(56, 189, 248, 0.15);">
+        <div class="canvas-wrap">
+          <img src="/assets/logo_all_cyber_sky.png" alt="Unified Cyber Sky Blue">
+        </div>
+        <div class="card-content">
+          <div class="card-top">
+            <div class="card-title"><span class="dot" style="background:#38bdf8;"></span> Unified Cyber Sky Blue (#38bdf8)</div>
+            <span class="badge-contrast" style="background: rgba(56, 189, 248, 0.15); color: #38bdf8; border-color: rgba(56, 189, 248, 0.3);">Featured</span>
+          </div>
+          <div class="card-desc">Unified Sonarr Sky Blue across both the download arrow and brackets. Clean, cohesive monochromatic frame for the radiant golden AI star.</div>
+          <button class="btn-apply" style="background: #0284c7;" onclick="chooseLogo('all_cyber_sky', 'Unified Cyber Sky Blue')">✔ Choose Unified Cyber Sky Blue</button>
+        </div>
+      </div>
+      <!-- Option 1 -->
+      <div class="card">
+        <div class="canvas-wrap">
+          <img src="/assets/logo_bracket_electric_violet.png" alt="Electric Violet">
+        </div>
+        <div class="card-content">
+          <div class="card-top">
+            <div class="card-title"><span class="dot" style="background:#a855f7;"></span> Electric Violet (#a855f7)</div>
+            <span class="badge-contrast">5.1:1 Contrast</span>
+          </div>
+          <div class="card-desc">Preserves the purple theme with vivid neon luminescence that pops cleanly on black instead of blending into darkness.</div>
+          <button class="btn-apply" onclick="chooseLogo('electric_violet', 'Electric Violet')">✔ Choose Electric Violet</button>
+        </div>
+      </div>
+      <!-- Option 2 -->
+      <div class="card">
+        <div class="canvas-wrap">
+          <img src="/assets/logo_bracket_radarr_orange.png" alt="Radarr Orange">
+        </div>
+        <div class="card-content">
+          <div class="card-top">
+            <div class="card-title"><span class="dot" style="background:#f97316;"></span> Radarr Orange (#f97316)</div>
+            <span class="badge-contrast">7.7:1 Contrast</span>
+          </div>
+          <div class="card-desc">The ultimate Arr synergy: combines Sonarr Cyan (Arrow) + Radarr Orange (Brackets) + Gemini Gold (Star).</div>
+          <button class="btn-apply" onclick="chooseLogo('radarr_orange', 'Radarr Orange')">✔ Choose Radarr Orange</button>
+        </div>
+      </div>
+      <!-- Option 3 -->
+      <div class="card">
+        <div class="canvas-wrap">
+          <img src="/assets/logo_bracket_cyber_sky.png" alt="Cyber Sky Blue">
+        </div>
+        <div class="card-content">
+          <div class="card-top">
+            <div class="card-title"><span class="dot" style="background:#38bdf8;"></span> Cyber Sky Blue (#38bdf8)</div>
+            <span class="badge-contrast">10.4:1 Contrast</span>
+          </div>
+          <div class="card-desc">Sonarr signature blue creating a sleek dual-blue aesthetic, making the golden AI star the vibrant centerpiece.</div>
+          <button class="btn-apply" onclick="chooseLogo('cyber_sky', 'Cyber Sky Blue')">✔ Choose Cyber Sky Blue</button>
+        </div>
+      </div>
+      <!-- Option 4 -->
+      <div class="card">
+        <div class="canvas-wrap">
+          <img src="/assets/logo_bracket_radiant_gold.png" alt="Radiant Warm Gold">
+        </div>
+        <div class="card-content">
+          <div class="card-top">
+            <div class="card-title"><span class="dot" style="background:#f59e0b;"></span> Radiant Warm Gold (#f59e0b)</div>
+            <span class="badge-contrast">9.8:1 Contrast</span>
+          </div>
+          <div class="card-desc">Warm Amber Gold matching the perimeter of the Gemini AI star for an elegant, unified Cyan + Gold luxury palette.</div>
+          <button class="btn-apply" onclick="chooseLogo('radiant_gold', 'Radiant Gold')">✔ Choose Radiant Gold</button>
+        </div>
+      </div>
+      <!-- Option 5 -->
+      <div class="card">
+        <div class="canvas-wrap">
+          <img src="/assets/logo_bracket_titanium_silver.png" alt="Titanium Silver">
+        </div>
+        <div class="card-content">
+          <div class="card-top">
+            <div class="card-title"><span class="dot" style="background:#e2e8f0;"></span> Titanium Silver (#e2e8f0)</div>
+            <span class="badge-contrast">16.5:1 Contrast</span>
+          </div>
+          <div class="card-desc">Crisp architectural platinum white. Maximum possible contrast and legibility against pure black.</div>
+          <button class="btn-apply" onclick="chooseLogo('titanium_silver', 'Titanium Silver')">✔ Choose Titanium Silver</button>
+        </div>
+      </div>
+      <!-- Option 6 -->
+      <div class="card">
+        <div class="canvas-wrap">
+          <img src="/assets/logo_bracket_emerald_mint.png" alt="Cyber Emerald Mint">
+        </div>
+        <div class="card-content">
+          <div class="card-top">
+            <div class="card-title"><span class="dot" style="background:#10b981;"></span> Emerald Mint (#10b981)</div>
+            <span class="badge-contrast">8.4:1 Contrast</span>
+          </div>
+          <div class="card-desc">Cyber mint green representing automated import success and healthy system state.</div>
+          <button class="btn-apply" onclick="chooseLogo('emerald_mint', 'Emerald Mint')">✔ Choose Emerald Mint</button>
+        </div>
+      </div>
+    </div>
+  </main>
+  <div id="toast-box" class="toast-box"></div>
+  <script>
+    function setBg(color, btn) {
+      document.documentElement.style.setProperty('--test-bg', color);
+      document.querySelectorAll('.btn-bg').forEach(b => b.classList.remove('active'));
+      if (btn) btn.classList.add('active');
+    }
+    async function chooseLogo(variant, name) {
+      try {
+        const res = await fetch('/api/set-logo', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ variant: variant })
+        });
+        const data = await res.json();
+        if (res.ok && data.status === 'ok') {
+          showToast(`✔ Official logo set to ${name}!`);
+          setTimeout(() => location.reload(), 1200);
+        } else {
+          showToast(`Failed: ${data.message || 'error'}`);
+        }
+      } catch (e) {
+        showToast('Network error setting logo');
+      }
+    }
+    function showToast(msg) {
+      const c = document.getElementById('toast-box');
+      const el = document.createElement('div');
+      el.className = 'toast-msg';
+      el.innerText = msg;
+      c.appendChild(el);
+      setTimeout(() => el.remove(), 3200);
+    }
+  </script>
+</body>
+</html>
+"""
+
 class MetricsHTTPHandler(BaseHTTPRequestHandler):
     """HTTP Request handler for lightweight dashboard and REST metrics API."""
 
@@ -1270,8 +1640,23 @@ class MetricsHTTPHandler(BaseHTTPRequestHandler):
             self._send_html(DASHBOARD_HTML)
             return
 
+        # Logo Preview & Selector UI
+        if path in ("/logo-preview", "/logos", "/preview"):
+            self._send_html(LOGO_PREVIEW_HTML)
+            return
+
         # Assets
-        if path in ("/assets/logo.png", "/logo.png"):
+        if path.startswith("/assets/"):
+            filename = Path(path).name
+            for candidate in [Path("assets") / filename, Path("/app/assets") / filename]:
+                if candidate.exists() and candidate.is_file():
+                    content_type = "image/png" if candidate.suffix == ".png" else "application/octet-stream"
+                    self._send_file(candidate, content_type)
+                    return
+            self.send_error(HTTPStatus.NOT_FOUND, "Asset Not Found")
+            return
+
+        if path == "/logo.png":
             for candidate in [Path("assets/logo.png"), Path("/app/assets/logo.png")]:
                 if candidate.exists():
                     self._send_file(candidate, "image/png")
@@ -1368,6 +1753,44 @@ class MetricsHTTPHandler(BaseHTTPRequestHandler):
                 return
 
             self.send_error(HTTPStatus.BAD_REQUEST, "Must specify 'id' or 'all: true'")
+            return
+
+        if path == "/api/set-logo":
+            try:
+                length = int(self.headers.get("Content-Length", 0))
+                body = self.rfile.read(length).decode("utf-8") if length > 0 else "{}"
+                data = json.loads(body) if body.strip() else {}
+            except Exception as e:
+                logger.warning(f"Error parsing POST /api/set-logo payload: {e}")
+                data = {}
+
+            variant = data.get("variant", "").strip().lower()
+            if not variant:
+                self.send_error(HTTPStatus.BAD_REQUEST, "Must specify 'variant'")
+                return
+
+            candidate_srcs = [
+                Path(f"assets/logo_{variant}.png"),
+                Path(f"assets/logo_bracket_{variant}.png"),
+                Path(f"/app/assets/logo_{variant}.png"),
+                Path(f"/app/assets/logo_bracket_{variant}.png")
+            ]
+            src_file = next((f for f in candidate_srcs if f.exists()), None)
+            if not src_file:
+                self.send_error(HTTPStatus.BAD_REQUEST, f"Unknown logo variant '{variant}'")
+                return
+
+            dest_candidates = [Path("assets/logo.png"), Path("/app/assets/logo.png")]
+            for dest in dest_candidates:
+                if dest.parent.exists():
+                    shutil.copyfile(src_file, dest)
+
+            logger.info(f"Official logo set to variant '{variant}' ({src_file})")
+            self._send_json({
+                "status": "ok",
+                "message": f"Official logo successfully set to '{variant}'!",
+                "variant": variant
+            })
             return
 
         self.send_error(HTTPStatus.NOT_FOUND, "Endpoint not found")

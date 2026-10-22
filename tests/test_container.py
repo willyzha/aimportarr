@@ -283,6 +283,31 @@ class ContainerSmokeTests(unittest.TestCase):
                 self.assertEqual(res["status"], "ok")
                 self.assertIn("count", res)
 
+            # 7. Logo Preview UI & Assets
+            req = urllib.request.Request(f"http://127.0.0.1:{port}/logo-preview")
+            with urllib.request.urlopen(req, timeout=3.0) as resp:
+                self.assertEqual(resp.status, 200)
+                self.assertIn("text/html", resp.headers.get("Content-Type", ""))
+                html = resp.read().decode("utf-8")
+                self.assertIn("Logo Colorways", html)
+
+            req = urllib.request.Request(f"http://127.0.0.1:{port}/assets/logo.png")
+            with urllib.request.urlopen(req, timeout=3.0) as resp:
+                self.assertEqual(resp.status, 200)
+                self.assertEqual(resp.headers.get("Content-Type", ""), "image/png")
+
+            # 8. Logo Selector API: POST /api/set-logo
+            post_data = json.dumps({"variant": "bracket_cyber_sky"}).encode("utf-8")
+            req = urllib.request.Request(
+                f"http://127.0.0.1:{port}/api/set-logo",
+                data=post_data,
+                headers={"Content-Type": "application/json"}
+            )
+            with urllib.request.urlopen(req, timeout=3.0) as resp:
+                self.assertEqual(resp.status, 200)
+                res = json.loads(resp.read().decode("utf-8"))
+                self.assertEqual(res["status"], "ok")
+
         finally:
             server.stop()
 
