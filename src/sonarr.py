@@ -5,7 +5,7 @@ from pathlib import Path
 from typing import List, Dict, Any, Optional
 import httpx
 from .ai.base import BaseAIProvider, MediaMatchResult, LibraryMatchResult, MalwareEvaluationResult
-from .classifier import classify_issue, ErrorCategory
+from .classifier import classify_issue, ErrorCategory, QUALITY_REJECTION_KEYWORDS
 from .config import CategoriesConfig, ExtractionConfig
 from .extractor import find_archive_file, inspect_archive, extract_archive, resolve_local_path
 from .metrics import metrics
@@ -724,11 +724,30 @@ class SonarrClient:
                 else:
                     logger.debug(f"  ✔ Valid media confirmed: '{file_name}' | Model: {sample_decider} | Confidence: {sample_res.confidence:.0%}")
 
+            # Quality and upgrade rule enforcement:
+            # Rejections indicating the release is worse than on disk or not an upgrade
+            quality_rejections = [
+                r for r in rejections
+                if any(k in r.lower() for k in QUALITY_REJECTION_KEYWORDS)
+            ]
+
+            # Extracted archives must ALWAYS respect Sonarr's quality rules.
+            # Normal files respect quality rules unless explicitly overridden by QUALITY_OR_LANGUAGE category.
+            is_extracted_archive = bool(staging_dir_to_clean)
+            if quality_rejections and (is_extracted_archive or category != ErrorCategory.QUALITY_OR_LANGUAGE):
+                logger.warning(
+                    f"  ✖ Skipping file '{file_name}': Sonarr quality rule rejected import ({'; '.join(quality_rejections)})."
+                )
+                last_evaluated_model = "Sonarr (Quality Rule)"
+                last_evaluated_confidence = 1.0
+                last_evaluated_reasoning = f"Rejected by Sonarr quality rules: {'; '.join(quality_rejections)}"
+                continue
+
             # Check if Sonarr already identified episodes
             non_blocking_rejections = [
                 r for r in rejections
                 if "matched to series by id" not in r.lower()
-                and not (category == ErrorCategory.QUALITY_OR_LANGUAGE and any(k in r.lower() for k in ["language not wanted", "quality not wanted", "custom format", "cutoff unmet", "higher quality"]))
+                and not (category == ErrorCategory.QUALITY_OR_LANGUAGE and not is_extracted_archive and any(k in r.lower() for k in QUALITY_REJECTION_KEYWORDS))
             ]
 
             if curr_episodes and not non_blocking_rejections:
@@ -740,6 +759,9 @@ class SonarrClient:
                 elif series_verify_res:
                     decider = series_verify_res.model_name or "AI"
                     conf_str = f"{series_verify_res.confidence:.0%}"
+                elif is_extracted_archive:
+                    decider = "Sonarr (Extracted Archive)"
+                    conf_str = "100%"
                 elif category == ErrorCategory.MISSING_EPISODES:
                     decider = "Sonarr (Season Pack Match)"
                     conf_str = "100%"
@@ -759,8 +781,15 @@ class SonarrClient:
                 if download_id:
                     file_payload["downloadId"] = download_id
                 files_to_import.append(file_payload)
+            elif curr_episodes and non_blocking_rejections:
+                # Sonarr mapped the episode, but has other unresolved blocking rejections
+                logger.warning(f"  ✖ Skipping file '{file_name}': Sonarr reported unresolved rejections ({'; '.join(non_blocking_rejections)}).")
+                last_evaluated_model = "Sonarr (Rejection)"
+                last_evaluated_confidence = 1.0
+                last_evaluated_reasoning = f"Sonarr rejections: {'; '.join(non_blocking_rejections)}"
+                continue
             else:
-                # Need AI to parse episode number
+                # Need AI to parse episode number (curr_episodes is empty)
                 logger.info(f"  Parsing unmapped file with AI: '{file_name}'...")
                 ep_match = await ai_provider.parse_episode(
                     file_name=file_name,
@@ -827,6 +856,12 @@ class SonarrClient:
                 decider_model = last_evaluated_model
                 decider_conf = last_evaluated_confidence or 1.0
                 decider_reasoning = last_evaluated_reasoning or decider_reasoning
+            elif is_extracted_archive:
+                decider_model = "Sonarr (Extracted Archive)"
+                decider_conf = 1.0
+            else:
+                decider_model = "Sonarr (Direct Match)"
+                decider_conf = 1.0
 
             status_label = "dry_run" if is_cat_dry_run else ("imported" if import_ok else "failed")
             metrics.record_processed_item(

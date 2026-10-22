@@ -5,7 +5,7 @@ from pathlib import Path
 from typing import List, Dict, Any, Optional
 import httpx
 from .ai.base import BaseAIProvider, MediaMatchResult, LibraryMatchResult, MalwareEvaluationResult
-from .classifier import classify_issue, ErrorCategory
+from .classifier import classify_issue, ErrorCategory, QUALITY_REJECTION_KEYWORDS
 from .config import CategoriesConfig, ExtractionConfig
 from .extractor import find_archive_file, inspect_archive, extract_archive, resolve_local_path
 from .metrics import metrics
@@ -611,6 +611,10 @@ class RadarrClient:
             curr_movie = m_file.get("movie") or movie_info
             target_movie_id = curr_movie.get("id") if curr_movie else movie_id
 
+            if not target_movie_id:
+                logger.warning(f"  ✖ Skipping file '{file_name}': No movie matched in Radarr.")
+                continue
+
             # Sample or extra evaluation
             is_sample_rej = any("sample" in r.lower() or "short video" in r.lower() for r in rejections)
             if is_sample_rej or category == ErrorCategory.SAMPLE_OR_EXTRA:
@@ -632,12 +636,47 @@ class RadarrClient:
                 else:
                     logger.debug(f"  ✔ Valid media confirmed: '{file_name}' | Model: {sample_decider} | Confidence: {sample_res.confidence:.0%}")
 
+            # Quality and upgrade rule enforcement:
+            # Rejections indicating the release is worse than on disk or not an upgrade
+            quality_rejections = [
+                r for r in rejections
+                if any(k in r.lower() for k in QUALITY_REJECTION_KEYWORDS)
+            ]
+
+            # Extracted archives must ALWAYS respect Radarr's quality rules.
+            # Normal files respect quality rules unless explicitly overridden by QUALITY_OR_LANGUAGE category.
+            is_extracted_archive = bool(staging_dir_to_clean)
+            if quality_rejections and (is_extracted_archive or category != ErrorCategory.QUALITY_OR_LANGUAGE):
+                logger.warning(
+                    f"  ✖ Skipping file '{file_name}': Radarr quality rule rejected import ({'; '.join(quality_rejections)})."
+                )
+                last_evaluated_model = "Radarr (Quality Rule)"
+                last_evaluated_confidence = 1.0
+                last_evaluated_reasoning = f"Rejected by Radarr quality rules: {'; '.join(quality_rejections)}"
+                continue
+
+            non_blocking_rejections = [
+                r for r in rejections
+                if "matched to movie by id" not in r.lower()
+                and not (category == ErrorCategory.QUALITY_OR_LANGUAGE and not is_extracted_archive and any(k in r.lower() for k in QUALITY_REJECTION_KEYWORDS))
+            ]
+
+            if non_blocking_rejections:
+                logger.warning(f"  ✖ Skipping file '{file_name}': Radarr reported unresolved rejections ({'; '.join(non_blocking_rejections)}).")
+                last_evaluated_model = "Radarr (Rejection)"
+                last_evaluated_confidence = 1.0
+                last_evaluated_reasoning = f"Radarr rejections: {'; '.join(non_blocking_rejections)}"
+                continue
+
             if matched_from_library and match_res:
                 decider = match_res.model_name or "AI"
                 conf_str = f"{match_res.confidence:.0%}"
             elif movie_verify_res:
                 decider = movie_verify_res.model_name or "AI"
                 conf_str = f"{movie_verify_res.confidence:.0%}"
+            elif is_extracted_archive:
+                decider = "Radarr (Extracted Archive)"
+                conf_str = "100%"
             else:
                 decider = "Radarr (Direct Match)"
                 conf_str = "100%"
@@ -680,6 +719,12 @@ class RadarrClient:
                 decider_model = last_evaluated_model
                 decider_conf = last_evaluated_confidence or 1.0
                 decider_reasoning = last_evaluated_reasoning or decider_reasoning
+            elif is_extracted_archive:
+                decider_model = "Radarr (Extracted Archive)"
+                decider_conf = 1.0
+            else:
+                decider_model = "Radarr (Direct Match)"
+                decider_conf = 1.0
 
             status_label = "dry_run" if is_cat_dry_run else ("imported" if import_ok else "failed")
             metrics.record_processed_item(

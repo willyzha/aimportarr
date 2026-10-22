@@ -11,6 +11,21 @@ class ErrorCategory(str, Enum):
     MISSING_EPISODES = "missing_episodes"
     OTHER = "other"  # Fallback / Catch-all category
 
+QUALITY_REJECTION_KEYWORDS = [
+    "not a custom format upgrade",
+    "not an upgrade",
+    "higher quality",
+    "equal or higher quality",
+    "better quality",
+    "quality not wanted",
+    "language not wanted",
+    "cutoff unmet",
+    "meets cutoff",
+    "custom format score",
+    "custom format cutoff",
+    "quality profile",
+]
+
 def classify_issue(
     messages: List[str],
     has_media_info: bool = True,
@@ -82,14 +97,7 @@ def classify_issue(
         return ErrorCategory.SAMPLE_OR_EXTRA
 
     # 5. Quality or Language (Rejected due to quality cutoff or language profile)
-    if any(phrase in all_text for phrase in [
-        "language not wanted",
-        "quality not wanted",
-        "custom format",
-        "cutoff unmet",
-        "higher quality",
-        "equal or higher quality"
-    ]):
+    if any(phrase in all_text for phrase in QUALITY_REJECTION_KEYWORDS) or "custom format" in all_text:
         return ErrorCategory.QUALITY_OR_LANGUAGE
 
     # 6. Expected episodes missing from release (e.g. season pack with only single/subset episodes present)
