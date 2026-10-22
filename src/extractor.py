@@ -3,7 +3,7 @@ import logging
 import os
 import shutil
 from pathlib import Path
-from typing import List, Optional, Dict
+from typing import List, Optional, Dict, Any
 from pydantic import BaseModel, Field
 
 logger = logging.getLogger("aimportarr.extractor")
@@ -11,6 +11,40 @@ logger = logging.getLogger("aimportarr.extractor")
 ARCHIVE_EXTENSIONS = {".7z", ".zip", ".rar", ".tar", ".tgz", ".gz", ".bz2", ".xz", ".iso"}
 VIDEO_EXTENSIONS = {".mkv", ".mp4", ".avi", ".ts", ".m4v", ".mov", ".wmv"}
 SUSPICIOUS_EXTENSIONS = {".exe", ".scr", ".bat", ".cmd", ".vbs", ".msi", ".pif", ".com", ".crypted"}
+
+def resolve_local_path(remote_path: str, path_mappings: Optional[List[Any]] = None) -> Path:
+    """
+    Resolve a remote path reported by Sonarr/Radarr API to a local path inside AImportarr container.
+    1. Checks configured path_mappings (e.g. from /remote/downloads to /data/downloads).
+    2. Checks direct 1:1 path match.
+    3. Auto-discovers against common mount points (/data/downloads, /downloads, /data).
+    """
+    if not remote_path:
+        return Path("")
+
+    if path_mappings:
+        for mapping in path_mappings:
+            from_p = getattr(mapping, "from_path", None) or (mapping.get("from") if isinstance(mapping, dict) else None)
+            to_p = getattr(mapping, "to_path", None) or (mapping.get("to") if isinstance(mapping, dict) else None)
+            if from_p and to_p and remote_path.startswith(from_p):
+                translated = remote_path.replace(from_p, to_p, 1)
+                p_trans = Path(translated)
+                if p_trans.exists():
+                    return p_trans
+
+    p = Path(remote_path)
+    if p.exists():
+        return p
+
+    # Auto-discovery fallback: check standard container mount points for the same file/folder name
+    file_name = p.name
+    for common_dir in ["/data/downloads", "/downloads", "/data"]:
+        candidate = Path(common_dir) / file_name
+        if candidate.exists():
+            logger.debug(f"Auto-discovered local path '{candidate}' for remote path '{remote_path}'")
+            return candidate
+
+    return p
 
 class ArchiveFileInfo(BaseModel):
     path: str

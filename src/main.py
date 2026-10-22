@@ -88,7 +88,8 @@ async def main():
                 api_key=config.sonarr.api_key,
                 min_confidence=config.general.min_confidence,
                 categories=config.categories,
-                extraction_config=config.extraction
+                extraction_config=config.extraction,
+                path_mappings=config.path_mappings
             )
             logger.info(f"Sonarr client configured for: {config.sonarr.url}")
 
@@ -103,7 +104,8 @@ async def main():
                 api_key=config.radarr.api_key,
                 min_confidence=config.general.min_confidence,
                 categories=config.categories,
-                extraction_config=config.extraction
+                extraction_config=config.extraction,
+                path_mappings=config.path_mappings
             )
             logger.info(f"Radarr client configured for: {config.radarr.url}")
 

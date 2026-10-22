@@ -7,7 +7,7 @@ import httpx
 from .ai.base import BaseAIProvider, MediaMatchResult, LibraryMatchResult, MalwareEvaluationResult
 from .classifier import classify_issue, ErrorCategory
 from .config import CategoriesConfig, ExtractionConfig
-from .extractor import find_archive_file, inspect_archive, extract_archive
+from .extractor import find_archive_file, inspect_archive, extract_archive, resolve_local_path
 
 logger = logging.getLogger("aimportarr.sonarr")
 
@@ -19,7 +19,8 @@ class SonarrClient:
         min_confidence: float = 0.85,
         dry_run: Optional[bool] = None,
         categories: Optional[CategoriesConfig] = None,
-        extraction_config: Optional[ExtractionConfig] = None
+        extraction_config: Optional[ExtractionConfig] = None,
+        path_mappings: Optional[List[Any]] = None
     ):
         self.base_url = base_url.rstrip("/")
         self.api_key = api_key
@@ -27,6 +28,7 @@ class SonarrClient:
         self.dry_run = dry_run
         self.categories = categories or CategoriesConfig()
         self.extraction_config = extraction_config or ExtractionConfig()
+        self.path_mappings = path_mappings or []
         self._dismissed_downloads: set = set()
         self._attempted_items: set = set()
         self.headers = {
@@ -385,7 +387,7 @@ class SonarrClient:
         # Check for archive files on disk if extraction is enabled
         staging_dir_to_clean: Optional[Path] = None
         if self.extraction_config.enabled and output_path:
-            p_local = Path(output_path)
+            p_local = resolve_local_path(output_path, self.path_mappings)
             archive_file = find_archive_file(p_local)
             if archive_file:
                 logger.info(f"  🔍 Archive detected: '{archive_file.name}'. Inspecting contents in memory...")

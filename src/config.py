@@ -69,6 +69,11 @@ class ExtractionConfig(BaseModel):
     delete_after_import: bool = True
     staging_suffix: str = "_extracted"
 
+class PathMapping(BaseModel):
+    model_config = {"populate_by_name": True}
+    from_path: str = Field(alias="from")
+    to_path: str = Field(alias="to")
+
 class AppConfig(BaseModel):
     general: GeneralConfig = Field(default_factory=GeneralConfig)
     ai: AIConfig = Field(default_factory=AIConfig)
@@ -76,6 +81,7 @@ class AppConfig(BaseModel):
     radarr: RadarrConfig = Field(default_factory=RadarrConfig)
     categories: CategoriesConfig = Field(default_factory=CategoriesConfig)
     extraction: ExtractionConfig = Field(default_factory=ExtractionConfig)
+    path_mappings: List[PathMapping] = Field(default_factory=list)
 
 def load_config(config_path: Optional[str] = None) -> AppConfig:
     """Load configuration from YAML file and apply environment variable overrides."""
@@ -177,6 +183,16 @@ def load_config(config_path: Optional[str] = None) -> AppConfig:
         config.extraction.enabled = env_extraction_enabled.lower() in ("true", "1", "yes")
     if env_delete_after_import := os.getenv("EXTRACTION_DELETE_AFTER_IMPORT"):
         config.extraction.delete_after_import = env_delete_after_import.lower() in ("true", "1", "yes")
+
+    # Path mappings override from environment variable (e.g. PATH_MAPPINGS="/downloads:/data/downloads,/remote:/local")
+    if env_path_mappings := os.getenv("PATH_MAPPINGS"):
+        mappings = []
+        for pair in env_path_mappings.split(","):
+            if ":" in pair:
+                f, _, t = pair.partition(":")
+                mappings.append(PathMapping(**{"from": f.strip(), "to": t.strip()}))
+        if mappings:
+            config.path_mappings = mappings
 
     # Normalize URLs (strip trailing slashes)
     config.sonarr.url = config.sonarr.url.rstrip("/")

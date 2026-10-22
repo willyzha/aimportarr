@@ -113,3 +113,13 @@ extraction:
   enabled: true
   delete_after_import: true # Clean up extracted video files once imported so disk space isn't duplicated
   staging_suffix: "_extracted"
+
+# ==========================================
+# Path Mappings (Optional)
+# ==========================================
+# Only needed if Sonarr/Radarr's internal container paths differ from AImportarr's container paths.
+# If both containers use the same path (e.g. /data/downloads or /downloads), this can be omitted.
+# AImportarr also automatically checks standard mount locations (/data/downloads, /downloads, /data).
+path_mappings: []
+#  - from: "/downloads"
+#    to: "/data/downloads"

@@ -136,6 +136,7 @@ To enable extraction, mount your downloads folder to the container (matching Son
 | `general.min_confidence` | `0.85` | AI confidence required (0.0 to 1.0) before executing an import. |
 | `extraction.enabled` | `true` | Enable automated secure archive inspection and extraction. |
 | `extraction.delete_after_import` | `true` | Delete temporary extracted video files after Sonarr/Radarr import (keeps original archive seeding). |
+| `path_mappings` | `[]` | Optional: List of `{from: "/remote", to: "/local"}` path mappings if Sonarr/Radarr container paths differ from AImportarr. |
 | `ai.provider` | `gemini` | Selected primary AI backend: `gemini` or `ollama`. |
 | `ai.fallback_enabled` | `true` | When `true`, automatically delegates to the secondary provider if the primary encounters invalid keys, rate limits (HTTP 429), token exhaustion, or network errors. |
 | `ai.gemini.api_key` | `""` | Google Gemini API key (Get a free key at [aistudio.google.com](https://aistudio.google.com/)). |
