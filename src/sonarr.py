@@ -123,6 +123,13 @@ class SonarrClient:
         try:
             return await self._get("manualimport", params=params)
         except Exception as e:
+            if download_id:
+                try:
+                    logger.debug(f"Retrying Sonarr /manualimport for folder '{folder_dir}' without downloadId...")
+                    return await self._get("manualimport", params={"folder": folder_dir, "filterExistingFiles": True})
+                except Exception as fe:
+                    logger.error(f"Failed to query /manualimport for folder '{folder_dir}': {fe}")
+                    return []
             logger.error(f"Failed to query /manualimport for folder '{folder_dir}': {e}")
             return []
 
@@ -385,6 +392,11 @@ class SonarrClient:
         staging_dir_to_clean: Optional[Path] = None
         if self.extraction_config.enabled and output_path:
             p_local = resolve_local_path(output_path, self.path_mappings)
+            if not p_local.exists():
+                logger.warning(
+                    f"  ⚠️ Download directory '{output_path}' was not found inside container (resolved to '{p_local}'). "
+                    f"If this release contains archives (.rar/.zip), ensure your host download folder is mounted into the container at '{output_path}' or configure path_mappings."
+                )
             archive_file = find_archive_file(p_local)
             if archive_file:
                 logger.info(f"  🔍 Archive detected: '{archive_file.name}'. Inspecting contents in memory...")
@@ -433,17 +445,21 @@ class SonarrClient:
                         logger.info(f"  📦 Valid media archive detected ({len(inspection.video_files)} video file(s)). Extracting in sandbox...")
                         staging_dir = archive_file.parent / f"{archive_file.stem}{self.extraction_config.staging_suffix}"
                         if is_cat_dry_run:
-                            logger.info(f"  [DRY RUN] Would extract '{archive_file.name}' to sandbox '{staging_dir}'")
-                        else:
-                            extract_ok = await extract_archive(archive_file, staging_dir)
-                            if not extract_ok:
-                                logger.error(f"  Failed to extract archive '{archive_file.name}'")
-                                return False
-                            metrics.record_archive_extracted()
-                            logger.info(f"  ✔ Extraction complete in sandbox: '{staging_dir}'. Scanning for import...")
+                            logger.info(f"  [DRY RUN] Extracting '{archive_file.name}' to sandbox '{staging_dir}' to inspect and evaluate video files...")
+                        extract_ok = await extract_archive(archive_file, staging_dir)
+                        if not extract_ok:
+                            logger.error(f"  Failed to extract archive '{archive_file.name}'")
+                            return False
+                        metrics.record_archive_extracted()
+                        logger.info(f"  ✔ Extraction complete in sandbox: '{staging_dir}'. Scanning for import...")
+                        try:
+                            archive_rel_parent = archive_file.parent.relative_to(p_local)
+                            remote_staging_dir = Path(output_path) / archive_rel_parent / f"{archive_file.stem}{self.extraction_config.staging_suffix}"
+                            output_path = str(remote_staging_dir)
+                        except Exception:
                             output_path = str(staging_dir)
-                            if self.extraction_config.delete_after_import:
-                                staging_dir_to_clean = staging_dir
+                        if self.extraction_config.delete_after_import or is_cat_dry_run:
+                            staging_dir_to_clean = staging_dir
 
         # Handle fake or malware releases (from queue status messages)
         if category == ErrorCategory.FAKE_OR_MALWARE:
@@ -561,8 +577,9 @@ class SonarrClient:
         # (ID_MATCH), we will use AI below to verify that the release actually belongs to this series.
 
         # Query Sonarr manual import to inspect media files
+        query_download_id = None if staging_dir_to_clean else download_id
         manual_items = await self.get_manual_import_items(
-            folder=output_path, download_id=download_id
+            folder=output_path, download_id=query_download_id
         )
 
         if not manual_items:
@@ -760,12 +777,13 @@ class SonarrClient:
 
         if files_to_import:
             import_ok = await self.trigger_manual_import(files_to_import, dry_run=is_cat_dry_run, category=category)
-            if import_ok and staging_dir_to_clean and not is_cat_dry_run:
-                try:
-                    shutil.rmtree(staging_dir_to_clean, ignore_errors=True)
-                    logger.info(f"  🧹 Cleaned up extracted staging folder '{staging_dir_to_clean}'. Seeding archive preserved.")
-                except Exception as ce:
-                    logger.debug(f"Failed to clean up staging folder '{staging_dir_to_clean}': {ce}")
+            if staging_dir_to_clean:
+                if (import_ok and self.extraction_config.delete_after_import) or is_cat_dry_run or not import_ok:
+                    try:
+                        shutil.rmtree(staging_dir_to_clean, ignore_errors=True)
+                        logger.info(f"  🧹 Cleaned up extracted staging folder '{staging_dir_to_clean}'. Seeding archive preserved.")
+                    except Exception as ce:
+                        logger.debug(f"Failed to clean up staging folder '{staging_dir_to_clean}': {ce}")
 
             # Record metrics
             decider_model = None
@@ -826,6 +844,13 @@ class SonarrClient:
                     dry_run=is_cat_dry_run,
                     title=title
                 )
+
+        if staging_dir_to_clean and staging_dir_to_clean.exists():
+            try:
+                shutil.rmtree(staging_dir_to_clean, ignore_errors=True)
+                logger.info(f"  🧹 Cleaned up extracted staging folder '{staging_dir_to_clean}'.")
+            except Exception as ce:
+                logger.debug(f"Failed to clean up staging folder '{staging_dir_to_clean}': {ce}")
 
         metrics.record_processed_item(
             app="Sonarr",

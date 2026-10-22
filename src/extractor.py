@@ -38,11 +38,37 @@ def resolve_local_path(remote_path: str, path_mappings: Optional[List[Any]] = No
 
     # Auto-discovery fallback: check standard container mount points for the same file/folder name
     file_name = p.name
-    for common_dir in ["/data/downloads", "/downloads", "/data"]:
-        candidate = Path(common_dir) / file_name
+    common_mounts = [
+        "/data/downloads",
+        "/downloads",
+        "/data",
+        "/media/downloads",
+        "/media",
+        "/mnt/user/Media/downloads",
+        "/mnt/user/downloads",
+    ]
+    for common_dir in common_mounts:
+        p_common = Path(common_dir)
+        if not p_common.exists():
+            continue
+
+        # 1. Direct match: common_dir / file_name
+        candidate = p_common / file_name
         if candidate.exists():
-            logger.debug(f"Auto-discovered local path '{candidate}' for remote path '{remote_path}'")
+            logger.info(f"Auto-discovered local path '{candidate}' for remote path '{remote_path}'")
             return candidate
+
+        # 2. Category subfolder match (e.g. tv-sonarr/, radarr/, complete/)
+        if p_common.is_dir():
+            try:
+                for sub in p_common.iterdir():
+                    if sub.is_dir():
+                        sub_candidate = sub / file_name
+                        if sub_candidate.exists():
+                            logger.info(f"Auto-discovered local path in subfolder '{sub_candidate}' for remote path '{remote_path}'")
+                            return sub_candidate
+            except Exception:
+                pass
 
     return p
 

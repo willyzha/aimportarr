@@ -1332,7 +1332,11 @@ class MetricsHTTPHandler(BaseHTTPRequestHandler):
 
         # Assets
         if path in ("/assets/logo.png", "/logo.png"):
-            for candidate in [Path("assets/logo.png"), Path("/app/assets/logo.png")]:
+            for candidate in [
+                Path(__file__).resolve().parent.parent / "assets" / "logo.png",
+                Path("assets/logo.png"),
+                Path("/app/assets/logo.png"),
+            ]:
                 if candidate.exists():
                     self._send_file(candidate, "image/png")
                     return

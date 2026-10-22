@@ -124,6 +124,25 @@ class ContainerSmokeTests(unittest.TestCase):
             self.assertEqual(len(result.suspicious_files), 1)
             self.assertIn("vlc-win64_crypted.exe", result.suspicious_files[0].path)
 
+    def test_path_mappings_and_autodiscovery(self):
+        """Verify resolve_local_path handles path_mappings and returns original path if not found."""
+        from src.extractor import resolve_local_path
+
+        with tempfile.TemporaryDirectory() as td:
+            local_target = Path(td) / "local_downloads"
+            local_target.mkdir()
+            sample_file = local_target / "release.mkv"
+            sample_file.touch()
+
+            # Test path mapping translation
+            mappings = [{"from": "/remote/downloads", "to": str(local_target)}]
+            resolved = resolve_local_path(f"/remote/downloads/release.mkv", mappings)
+            self.assertEqual(resolved, sample_file)
+
+            # Test non-existent path fallback
+            non_existent = resolve_local_path("/non/existent/path/nowhere.mkv")
+            self.assertEqual(non_existent, Path("/non/existent/path/nowhere.mkv"))
+
     def test_metrics_tracker(self):
         """Verify MetricsTracker correctly aggregates counters, breakdowns, and bounded histories."""
         from src.metrics import MetricsTracker

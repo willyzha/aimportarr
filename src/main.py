@@ -1,5 +1,7 @@
 import asyncio
 import logging
+from logging.handlers import RotatingFileHandler
+from pathlib import Path
 import signal
 import sys
 import httpx
@@ -40,6 +42,27 @@ async def main():
     http_log_level = logging.DEBUG if log_level == logging.DEBUG else logging.WARNING
     logging.getLogger("httpx").setLevel(http_log_level)
     logging.getLogger("httpcore").setLevel(http_log_level)
+
+    # Configure rotating file logging if config directory is available
+    log_dir = Path("/config") if Path("/config").is_dir() else Path(config.database.path).parent
+    try:
+        log_dir.mkdir(parents=True, exist_ok=True)
+        log_file = log_dir / "aimportarr.log"
+        file_handler = RotatingFileHandler(
+            log_file,
+            maxBytes=10 * 1024 * 1024,
+            backupCount=5,
+            encoding="utf-8"
+        )
+        file_handler.setLevel(log_level)
+        file_handler.setFormatter(logging.Formatter(
+            "%(asctime)s [%(levelname)s] [%(name)s] %(message)s",
+            datefmt="%Y-%m-%d %H:%M:%S"
+        ))
+        logging.getLogger().addHandler(file_handler)
+        logger.info(f"File logging enabled: {log_file}")
+    except Exception as e:
+        logger.warning(f"Could not initialize file logger in '{log_dir}': {e}")
 
     logger.info(f"Configuration loaded (Check Interval: {config.general.check_interval_seconds}s)")
     metrics.init_database(
