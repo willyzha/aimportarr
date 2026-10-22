@@ -1,4 +1,4 @@
-name: Build and Publish Container
+name: Build, Test and Publish Container
 
 on:
   push:
@@ -6,6 +6,7 @@ on:
       - main
     tags:
       - 'v*'
+  pull_request:
   workflow_dispatch:
 
 env:
@@ -13,11 +14,31 @@ env:
   IMAGE_NAME: ${{ github.repository }}
 
 jobs:
+  test:
+    name: Docker Smoke Tests
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Build local Docker test image
+        run: docker build -t aimportarr:test .
+
+      - name: Run container test suite
+        run: |
+          docker run --rm \
+            -v ${{ github.workspace }}/config.example.yml:/app/config.example.yml:ro \
+            -v ${{ github.workspace }}/tests:/app/tests:ro \
+            aimportarr:test python -m unittest tests/test_container.py
+
   build-and-push:
+    name: Build & Publish Multi-Arch
+    needs: test
     runs-on: ubuntu-latest
     permissions:
       contents: read
       packages: write
+    if: github.event_name != 'pull_request'
 
     steps:
       - name: Checkout repository
