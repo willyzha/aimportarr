@@ -36,7 +36,7 @@ jobs:
     needs: test
     runs-on: ubuntu-latest
     permissions:
-      contents: read
+      contents: write
       packages: write
     if: github.event_name != 'pull_request'
 
@@ -78,3 +78,10 @@ jobs:
           labels: ${{ steps.meta.outputs.labels }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
+
+      - name: Create GitHub Release on Tag Push
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          prerelease: ${{ contains(github.ref, 'beta') || contains(github.ref, 'alpha') }}
+          generate_release_notes: true
