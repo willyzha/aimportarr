@@ -341,6 +341,133 @@ DASHBOARD_HTML = """<!DOCTYPE html>
       color: var(--text-dim);
     }
 
+    /* Automation Tasks Panel */
+    .automation-tasks-card {
+      background: linear-gradient(180deg, rgba(30, 41, 59, 0.7) 0%, rgba(15, 23, 42, 0.7) 100%);
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      padding: 0.95rem 1.15rem;
+      margin-bottom: 1.5rem;
+    }
+
+    .automation-tasks-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      margin-bottom: 0.75rem;
+      flex-wrap: wrap;
+      gap: 0.5rem;
+    }
+
+    .automation-tasks-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
+      gap: 0.9rem;
+    }
+
+    .task-card {
+      background-color: var(--bg-card);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 0.85rem 0.95rem;
+      display: flex;
+      flex-direction: column;
+      gap: 0.6rem;
+      transition: all 0.2s ease;
+    }
+
+    .task-card.running {
+      border-color: rgba(99, 102, 241, 0.6);
+      box-shadow: 0 0 16px rgba(99, 102, 241, 0.18);
+    }
+
+    .task-card-top {
+      display: flex;
+      align-items: flex-start;
+      justify-content: space-between;
+      gap: 0.75rem;
+    }
+
+    .task-title-row {
+      display: flex;
+      align-items: center;
+      gap: 0.5rem;
+      margin-bottom: 0.2rem;
+    }
+
+    .task-name {
+      font-size: 0.88rem;
+      font-weight: 700;
+      color: var(--text-main);
+    }
+
+    .task-desc {
+      font-size: 0.73rem;
+      color: var(--text-dim);
+      line-height: 1.35;
+    }
+
+    .task-badge-idle {
+      background: rgba(16, 185, 129, 0.15);
+      color: #34d399;
+      border: 1px solid rgba(16, 185, 129, 0.3);
+    }
+
+    .task-badge-running {
+      background: rgba(99, 102, 241, 0.2);
+      color: #a5b4fc;
+      border: 1px solid rgba(99, 102, 241, 0.5);
+    }
+
+    .task-badge-disabled {
+      background: rgba(148, 163, 184, 0.1);
+      color: var(--text-dim);
+      border: 1px solid rgba(148, 163, 184, 0.2);
+    }
+
+    .task-progress-box {
+      background: rgba(99, 102, 241, 0.08);
+      border: 1px dashed rgba(99, 102, 241, 0.35);
+      border-radius: 6px;
+      padding: 0.4rem 0.65rem;
+      display: flex;
+      align-items: center;
+      gap: 0.5rem;
+      font-size: 0.75rem;
+      color: #c7d2fe;
+    }
+
+    .task-spinner {
+      width: 13px;
+      height: 13px;
+      border: 2px solid rgba(99, 102, 241, 0.3);
+      border-top-color: #818cf8;
+      border-radius: 50%;
+      animation: spin 0.8s linear infinite;
+      flex-shrink: 0;
+    }
+
+    .task-meta-row {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 0.5rem;
+      padding-top: 0.4rem;
+      border-top: 1px solid rgba(255, 255, 255, 0.05);
+      font-size: 0.72rem;
+      color: var(--text-muted);
+      flex-wrap: wrap;
+    }
+
+    .task-meta-label {
+      color: var(--text-dim);
+    }
+
+    .task-meta-value {
+      font-weight: 600;
+      color: var(--text-main);
+    }
+
     /* Tabs Bar */
     .tabs-bar {
       display: flex;
@@ -961,6 +1088,70 @@ DASHBOARD_HTML = """<!DOCTYPE html>
       </div>
     </div>
 
+    <!-- Background Automation Tasks Status & Triggers -->
+    <div class="automation-tasks-card">
+      <div class="automation-tasks-header">
+        <div style="display: flex; align-items: center; gap: 0.5rem;">
+          <span style="font-size: 1rem;">⚡</span>
+          <span style="font-weight: 700; font-size: 0.88rem; color: var(--text-main);">Background Automation Tasks</span>
+        </div>
+        <div style="font-size: 0.74rem; color: var(--text-dim);">
+          Scheduled Sonarr library backfill and missing episode search runs
+        </div>
+      </div>
+      <div class="automation-tasks-grid">
+        <!-- Season Pack Backfill Task Card -->
+        <div class="task-card" id="task-backfill-card">
+          <div class="task-card-top">
+            <div class="task-info">
+              <div class="task-title-row">
+                <span class="task-name">📦 Season Pack Backfill</span>
+                <span class="badge task-badge-idle" id="task-backfill-badge">Idle</span>
+              </div>
+              <div class="task-desc">Scans completed seasons with missing episodes to grab full season packs</div>
+            </div>
+            <button class="btn btn-sm" id="btn-trigger-backfill" onclick="triggerBackfillNow()" title="Run Season Pack Backfill scan now">
+              <span>▶</span> Run Backfill
+            </button>
+          </div>
+          <div class="task-progress-box" id="task-backfill-progress-box" style="display: none;">
+            <div class="task-spinner"></div>
+            <span class="task-progress-text" id="task-backfill-progress-text">Scanning library...</span>
+          </div>
+          <div class="task-meta-row">
+            <div><span class="task-meta-label">Last Run:</span> <span class="task-meta-value" id="task-backfill-last-run">Never</span></div>
+            <div><span class="task-meta-label">Last Grabbed:</span> <span class="task-meta-value" id="task-backfill-last-grabbed">0 packs</span></div>
+            <div><span class="task-meta-label">Next Scheduled:</span> <span class="task-meta-value" id="task-backfill-next-run">--</span></div>
+          </div>
+        </div>
+
+        <!-- Missing Episode Retry Task Card -->
+        <div class="task-card" id="task-episode-retry-card">
+          <div class="task-card-top">
+            <div class="task-info">
+              <div class="task-title-row">
+                <span class="task-name">🔎 Missing Episode Retry</span>
+                <span class="badge task-badge-idle" id="task-episode-retry-badge">Idle</span>
+              </div>
+              <div class="task-desc">Bulk season tracker search + AI matching for ongoing seasons with missing aired episodes</div>
+            </div>
+            <button class="btn btn-sm" id="btn-trigger-episode-retry" onclick="triggerEpisodeRetryNow()" title="Run Missing Episode Retry scan now">
+              <span>▶</span> Retry Episodes
+            </button>
+          </div>
+          <div class="task-progress-box" id="task-episode-retry-progress-box" style="display: none;">
+            <div class="task-spinner"></div>
+            <span class="task-progress-text" id="task-episode-retry-progress-text">Scanning library...</span>
+          </div>
+          <div class="task-meta-row">
+            <div><span class="task-meta-label">Last Run:</span> <span class="task-meta-value" id="task-episode-retry-last-run">Never</span></div>
+            <div><span class="task-meta-label">Last Grabbed:</span> <span class="task-meta-value" id="task-episode-retry-last-grabbed">0 episodes</span></div>
+            <div><span class="task-meta-label">Next Scheduled:</span> <span class="task-meta-value" id="task-episode-retry-next-run">--</span></div>
+          </div>
+        </div>
+      </div>
+    </div>
+
     <!-- Navigation Tabs -->
     <div class="tabs-bar">
       <div class="tab-buttons">
@@ -996,6 +1187,8 @@ DASHBOARD_HTML = """<!DOCTYPE html>
             <div class="filter-pill" data-filter="dismissed" onclick="setFilter('dismissed')" title="Ignored/removed from *arr queue, files kept in download client">Dismissed</div>
             <div class="filter-pill" data-filter="rejected" onclick="setFilter('rejected')" title="Deleted from download client &amp; blocklisted">Rejected</div>
             <div class="filter-pill" data-filter="in_queue" onclick="setFilter('in_queue')" title="Items still sitting in the *arr queue (skipped, failed, or dry run) — eligible for retry">In Queue</div>
+            <div class="filter-pill" data-filter="season_backfill" onclick="setFilter('season_backfill')" title="Season Pack Backfill items">📦 Backfill</div>
+            <div class="filter-pill" data-filter="episode_retry" onclick="setFilter('episode_retry')" title="Missing Episode Retry items">🔎 Episode Retry</div>
           </div>
         </div>
 
@@ -1451,7 +1644,9 @@ DASHBOARD_HTML = """<!DOCTYPE html>
       const filtered = rawHistory.filter(item => {
         const normStatus = normalizeStatus(item.status);
         const matchesFilter = (currentFilter === 'all') ||
-          (currentFilter === 'in_queue' ? ['skipped', 'failed', 'dry_run'].includes(normStatus) : normStatus === currentFilter);
+          (currentFilter === 'in_queue' ? ['skipped', 'failed', 'dry_run'].includes(normStatus) :
+           (currentFilter === 'season_backfill' || currentFilter === 'episode_retry') ? (item.category === currentFilter) :
+           normStatus === currentFilter);
         const matchesSearch = !q ||
           (item.title || '').toLowerCase().includes(q) ||
           (item.category || '').toLowerCase().includes(q) ||
@@ -1705,6 +1900,132 @@ DASHBOARD_HTML = """<!DOCTYPE html>
         .replace(/'/g, '&#039;');
     }
 
+    function formatRelativeTime(isoStr) {
+      if (!isoStr) return 'Never';
+      const diffSec = Math.round((Date.now() - new Date(isoStr).getTime()) / 1000);
+      if (diffSec < 5) return 'Just now';
+      if (diffSec < 60) return `${diffSec}s ago`;
+      const diffMin = Math.round(diffSec / 60);
+      if (diffMin < 60) return `${diffMin}m ago`;
+      const diffHr = Math.round(diffMin / 60);
+      if (diffHr < 24) return `${diffHr}h ago`;
+      const diffDays = Math.round(diffHr / 24);
+      return `${diffDays}d ago`;
+    }
+
+    function formatNextRun(isoStr, state) {
+      if (state === 'disabled') return 'Disabled';
+      if (state === 'running') return 'In Progress';
+      if (!isoStr) return '--';
+      const diffSec = Math.round((new Date(isoStr).getTime() - Date.now()) / 1000);
+      if (diffSec <= 0) return 'Due now';
+      if (diffSec < 60) return `in ${diffSec}s`;
+      const diffMin = Math.round(diffSec / 60);
+      if (diffMin < 60) return `in ${diffMin}m`;
+      const diffHr = Math.floor(diffMin / 60);
+      const remMin = diffMin % 60;
+      return remMin > 0 ? `in ${diffHr}h ${remMin}m` : `in ${diffHr}h`;
+    }
+
+    function renderTasks(tasks) {
+      if (!tasks) return;
+
+      const configs = [
+        {
+          key: 'season_pack_backfill',
+          cardId: 'task-backfill-card',
+          badgeId: 'task-backfill-badge',
+          btnId: 'btn-trigger-backfill',
+          btnLabel: 'Run Backfill',
+          progressBoxId: 'task-backfill-progress-box',
+          progressTextId: 'task-backfill-progress-text',
+          lastRunId: 'task-backfill-last-run',
+          lastGrabbedId: 'task-backfill-last-grabbed',
+          nextRunId: 'task-backfill-next-run',
+          grabLabel: 'packs'
+        },
+        {
+          key: 'missing_episode_retry',
+          cardId: 'task-episode-retry-card',
+          badgeId: 'task-episode-retry-badge',
+          btnId: 'btn-trigger-episode-retry',
+          btnLabel: 'Retry Episodes',
+          progressBoxId: 'task-episode-retry-progress-box',
+          progressTextId: 'task-episode-retry-progress-text',
+          lastRunId: 'task-episode-retry-last-run',
+          lastGrabbedId: 'task-episode-retry-last-grabbed',
+          nextRunId: 'task-episode-retry-next-run',
+          grabLabel: 'episodes'
+        }
+      ];
+
+      configs.forEach(tc => {
+        const info = tasks[tc.key];
+        if (!info) return;
+
+        const card = document.getElementById(tc.cardId);
+        const badge = document.getElementById(tc.badgeId);
+        const btn = document.getElementById(tc.btnId);
+        const progressBox = document.getElementById(tc.progressBoxId);
+        const progressText = document.getElementById(tc.progressTextId);
+        const lastRun = document.getElementById(tc.lastRunId);
+        const lastGrabbed = document.getElementById(tc.lastGrabbedId);
+        const nextRun = document.getElementById(tc.nextRunId);
+
+        const state = info.state || 'idle';
+        if (card) {
+          card.classList.toggle('running', state === 'running');
+        }
+
+        if (badge) {
+          badge.className = 'badge';
+          if (state === 'running') {
+            badge.classList.add('task-badge-running');
+            badge.innerText = '⚡ Running...';
+          } else if (state === 'disabled') {
+            badge.classList.add('task-badge-disabled');
+            badge.innerText = 'Disabled';
+          } else {
+            badge.classList.add('task-badge-idle');
+            badge.innerText = 'Idle';
+          }
+        }
+
+        if (btn) {
+          btn.disabled = (state === 'running' || state === 'disabled');
+          btn.innerHTML = state === 'running'
+            ? `<div class="task-spinner" style="width:11px; height:11px; border-width:2px; display:inline-block;"></div> Running...`
+            : `<span>▶</span> ${tc.btnLabel}`;
+        }
+
+        if (progressBox && progressText) {
+          if (state === 'running' || info.current_progress) {
+            progressBox.style.display = 'flex';
+            progressText.innerText = info.current_progress || 'Scanning library and indexers...';
+          } else {
+            progressBox.style.display = 'none';
+          }
+        }
+
+        if (lastRun) {
+          let text = formatRelativeTime(info.last_run);
+          if (info.last_duration_sec) {
+            text += ` (${info.last_duration_sec}s)`;
+          }
+          lastRun.innerText = text;
+        }
+
+        if (lastGrabbed) {
+          const grabbed = info.items_grabbed_last_run || 0;
+          lastGrabbed.innerText = `${formatNumber(grabbed)} ${tc.grabLabel}`;
+        }
+
+        if (nextRun) {
+          nextRun.innerText = formatNextRun(info.next_run, state);
+        }
+      });
+    }
+
     async function fetchData(isManual = false) {
       const refreshIcon = document.getElementById('refresh-icon');
       if (isManual && refreshIcon) refreshIcon.classList.add('spin');
@@ -1737,6 +2058,7 @@ DASHBOARD_HTML = """<!DOCTYPE html>
           const outTok = formatNumber(summary.total_completion_tokens || 0);
           document.getElementById('stat-token-sub').innerText = `Prompt: ${pTok} | Thinking: ${thTok} | Output: ${outTok}`;
           renderAnalytics(summary);
+          renderTasks(summary.tasks);
         }
 
         if (histRes.ok) {
@@ -1804,34 +2126,42 @@ DASHBOARD_HTML = """<!DOCTYPE html>
     }
 
     async function triggerBackfillNow() {
+      const btn = document.getElementById('btn-trigger-backfill');
+      if (btn) btn.disabled = true;
       try {
         const res = await fetch('/api/backfill', { method: 'POST' });
         const data = await res.json();
         if (res.ok && data.status === 'ok') {
           showToast('Season Pack Backfill check started in background!', 'success');
-          setTimeout(() => fetchData(true), 1500);
+          setTimeout(() => fetchData(true), 400);
         } else {
-          showToast('Failed to trigger Season Pack Backfill', 'danger');
+          showToast(data.message || 'Failed to trigger Season Pack Backfill', 'danger');
         }
       } catch (e) {
         console.error(e);
         showToast('Network error triggering Season Pack Backfill', 'danger');
+      } finally {
+        if (btn) btn.disabled = false;
       }
     }
 
     async function triggerEpisodeRetryNow() {
+      const btn = document.getElementById('btn-trigger-episode-retry');
+      if (btn) btn.disabled = true;
       try {
         const res = await fetch('/api/episode-retry', { method: 'POST' });
         const data = await res.json();
         if (res.ok && data.status === 'ok') {
           showToast('Missing Episode Retry check started in background!', 'success');
-          setTimeout(() => fetchData(true), 1500);
+          setTimeout(() => fetchData(true), 400);
         } else {
-          showToast('Failed to trigger Missing Episode Retry', 'danger');
+          showToast(data.message || 'Failed to trigger Missing Episode Retry', 'danger');
         }
       } catch (e) {
         console.error(e);
         showToast('Network error triggering Missing Episode Retry', 'danger');
+      } finally {
+        if (btn) btn.disabled = false;
       }
     }
 

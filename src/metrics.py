@@ -39,6 +39,26 @@ class MetricsTracker:
         self.total_completion_tokens: int = 0
         self.total_tokens: int = 0
 
+        # Background scheduled tasks state
+        self.tasks_status: Dict[str, Dict[str, Any]] = {
+            "season_pack_backfill": {
+                "state": "idle",
+                "last_run": None,
+                "last_duration_sec": None,
+                "items_grabbed_last_run": 0,
+                "current_progress": None,
+                "next_run": None,
+            },
+            "missing_episode_retry": {
+                "state": "idle",
+                "last_run": None,
+                "last_duration_sec": None,
+                "items_grabbed_last_run": 0,
+                "current_progress": None,
+                "next_run": None,
+            },
+        }
+
         # Detailed breakdowns
         self.tokens_by_model: Dict[str, Dict[str, int]] = {}
         self.tokens_by_operation: Dict[str, Dict[str, int]] = {}
@@ -178,6 +198,43 @@ class MetricsTracker:
         """Record a successful extraction of a media archive."""
         with self._lock:
             self.total_archives_extracted += 1
+
+    def update_task_status(
+        self,
+        task_name: str,
+        state: Optional[str] = None,
+        progress: Optional[str] = None,
+        items_grabbed: Optional[int] = None,
+        duration_sec: Optional[float] = None,
+        last_run: Optional[str] = None,
+        next_run: Optional[str] = None,
+    ) -> None:
+        """Update live status, progress, and scheduling info for a background task."""
+        with self._lock:
+            if task_name not in self.tasks_status:
+                self.tasks_status[task_name] = {
+                    "state": "idle",
+                    "last_run": None,
+                    "last_duration_sec": None,
+                    "items_grabbed_last_run": 0,
+                    "current_progress": None,
+                    "next_run": None,
+                }
+            task = self.tasks_status[task_name]
+            if state is not None:
+                task["state"] = state
+            if progress is not None:
+                task["current_progress"] = progress
+            elif state in ("idle", "disabled"):
+                task["current_progress"] = None
+            if items_grabbed is not None:
+                task["items_grabbed_last_run"] = items_grabbed
+            if duration_sec is not None:
+                task["last_duration_sec"] = round(duration_sec, 2)
+            if last_run is not None:
+                task["last_run"] = last_run
+            if next_run is not None:
+                task["next_run"] = next_run
 
     def record_processed_item(
         self,
@@ -379,6 +436,7 @@ class MetricsTracker:
                 "tokens_by_operation": dict(self.tokens_by_operation),
                 "items_by_category": dict(self.items_by_category),
                 "items_by_status": dict(self.items_by_status),
+                "tasks": {k: dict(v) for k, v in self.tasks_status.items()},
                 "db_path": str(self.db.db_path) if self.db else None,
                 "retention_days": self.db.retention_days if self.db else 0,
             }
@@ -419,6 +477,13 @@ class MetricsTracker:
             self.processed_history.clear()
             self.token_history.clear()
             self._fallback_id_seq = 0
+            for t in self.tasks_status.values():
+                t["state"] = "idle"
+                t["last_run"] = None
+                t["last_duration_sec"] = None
+                t["items_grabbed_last_run"] = 0
+                t["current_progress"] = None
+                t["next_run"] = None
 
 # Shared singleton instance
 _tracker_instance: Optional[MetricsTracker] = None

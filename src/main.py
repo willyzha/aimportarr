@@ -1,4 +1,5 @@
 import asyncio
+from datetime import datetime, timezone, timedelta
 import logging
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
@@ -229,33 +230,75 @@ async def backfill_worker_loop(
             # 1. Completed Seasons: Season Pack Backfill
             bf_cfg = config.sonarr.season_pack_backfill
             bf_interval_sec = max(1, int(bf_cfg.interval_hours)) * 3600
+            bf_enabled = config.sonarr.enabled and bf_cfg.enabled
+            if not bf_enabled:
+                metrics.update_task_status("season_pack_backfill", state="disabled")
+            elif last_backfill_run == 0.0 and metrics.tasks_status.get("season_pack_backfill", {}).get("state") != "running":
+                metrics.update_task_status("season_pack_backfill", state="idle", next_run=datetime.now(timezone.utc).isoformat())
+
             bf_due = (
-                config.sonarr.enabled
-                and bf_cfg.enabled
+                bf_enabled
                 and (last_backfill_run == 0.0 or (now_mono - last_backfill_run) >= bf_interval_sec)
             )
-            if (manual_backfill or bf_due) and curr_sonarr and running:
+            if (manual_backfill or bf_due) and curr_sonarr and running and bf_enabled:
                 last_backfill_run = time.monotonic()
+                t0 = time.monotonic()
+                metrics.update_task_status(
+                    "season_pack_backfill",
+                    state="running",
+                    last_run=datetime.now(timezone.utc).isoformat(),
+                )
                 try:
-                    await curr_sonarr.run_season_pack_backfill(ai_provider=curr_ai)
+                    grabbed = await curr_sonarr.run_season_pack_backfill(ai_provider=curr_ai)
+                    dur = time.monotonic() - t0
+                    next_iso = (datetime.now(timezone.utc) + timedelta(seconds=bf_interval_sec)).isoformat()
+                    metrics.update_task_status(
+                        "season_pack_backfill",
+                        state="idle",
+                        duration_sec=dur,
+                        items_grabbed=grabbed,
+                        next_run=next_iso,
+                    )
                 except Exception as e:
                     logger.error(f"Error during Sonarr Season Pack Backfill: {e}")
+                    metrics.update_task_status("season_pack_backfill", state="idle", progress=f"Error: {e}")
 
             # 2. Ongoing Seasons: Missing Episode Retry
             mer_cfg = config.sonarr.missing_episode_retry
             mer_interval_sec = max(1, int(mer_cfg.interval_hours)) * 3600
             now_mono = time.monotonic()
+            mer_enabled = config.sonarr.enabled and mer_cfg.enabled
+            if not mer_enabled:
+                metrics.update_task_status("missing_episode_retry", state="disabled")
+            elif last_episode_retry_run == 0.0 and metrics.tasks_status.get("missing_episode_retry", {}).get("state") != "running":
+                metrics.update_task_status("missing_episode_retry", state="idle", next_run=datetime.now(timezone.utc).isoformat())
+
             mer_due = (
-                config.sonarr.enabled
-                and mer_cfg.enabled
+                mer_enabled
                 and (last_episode_retry_run == 0.0 or (now_mono - last_episode_retry_run) >= mer_interval_sec)
             )
-            if (manual_ep_retry or mer_due) and curr_sonarr and running:
+            if (manual_ep_retry or mer_due) and curr_sonarr and running and mer_enabled:
                 last_episode_retry_run = time.monotonic()
+                t0 = time.monotonic()
+                metrics.update_task_status(
+                    "missing_episode_retry",
+                    state="running",
+                    last_run=datetime.now(timezone.utc).isoformat(),
+                )
                 try:
-                    await curr_sonarr.run_missing_episode_retry(ai_provider=curr_ai)
+                    grabbed = await curr_sonarr.run_missing_episode_retry(ai_provider=curr_ai)
+                    dur = time.monotonic() - t0
+                    next_iso = (datetime.now(timezone.utc) + timedelta(seconds=mer_interval_sec)).isoformat()
+                    metrics.update_task_status(
+                        "missing_episode_retry",
+                        state="idle",
+                        duration_sec=dur,
+                        items_grabbed=grabbed,
+                        next_run=next_iso,
+                    )
                 except Exception as e:
                     logger.error(f"Error during Sonarr Missing Episode Retry: {e}")
+                    metrics.update_task_status("missing_episode_retry", state="idle", progress=f"Error: {e}")
 
             for _ in range(5):
                 if not running or backfill_event.is_set() or episode_retry_event.is_set():

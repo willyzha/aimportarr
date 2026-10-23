@@ -1433,6 +1433,11 @@ class SonarrClient:
         logger.info(
             f"📦 Running Sonarr Season Pack Backfill check (Max seasons: {max_seasons}, Grace period: {min_missing_days}d, Cooldown: {cooldown_days}d)..."
         )
+        metrics.update_task_status(
+            "season_pack_backfill",
+            state="running",
+            progress="Scanning Sonarr series library for completed seasons...",
+        )
 
         all_series = await self.get_all_series()
         if not all_series:
@@ -1523,6 +1528,11 @@ class SonarrClient:
 
                 seasons_searched += 1
                 season_label = f"{series_title} - Season {season_num:02d}"
+                metrics.update_task_status(
+                    "season_pack_backfill",
+                    state="running",
+                    progress=f"Searching season packs for '{season_label}' ({seasons_searched}/{max_seasons})...",
+                )
                 logger.info(
                     f"  🔎 Searching Season Packs for '{season_label}' ({missing_cnt} missing, {existing_cnt} on disk)..."
                 )
@@ -1660,6 +1670,11 @@ class SonarrClient:
                         preloaded_releases=releases,
                     )
 
+        metrics.update_task_status(
+            "season_pack_backfill",
+            progress=None,
+            items_grabbed=packs_grabbed,
+        )
         return packs_grabbed
 
     # =========================================================================
@@ -2193,6 +2208,11 @@ class SonarrClient:
             f"🔎 Running Sonarr Missing Episode Retry for ongoing seasons "
             f"(Max episodes: {max_episodes}, Air delay: {min_air_delay_hours}h, Cooldown: {cooldown_hours}h)..."
         )
+        metrics.update_task_status(
+            "missing_episode_retry",
+            state="running",
+            progress="Scanning Sonarr series library for ongoing seasons...",
+        )
 
         all_series = await self.get_all_series()
         if not all_series:
@@ -2268,6 +2288,12 @@ class SonarrClient:
                 if not missing_eps:
                     continue
 
+                metrics.update_task_status(
+                    "missing_episode_retry",
+                    state="running",
+                    progress=f"Searching missing episodes for {series_title} Season {season_num:02d} ({episodes_searched}/{max_episodes})...",
+                )
+
                 batch_searched, batch_grabbed = await self._retry_missing_episodes_batch(
                     series=series,
                     season_num=season_num,
@@ -2280,4 +2306,9 @@ class SonarrClient:
                 episodes_searched += batch_searched
                 episodes_grabbed += batch_grabbed
 
+        metrics.update_task_status(
+            "missing_episode_retry",
+            progress=None,
+            items_grabbed=episodes_grabbed,
+        )
         return episodes_grabbed

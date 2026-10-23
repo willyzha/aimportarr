@@ -558,5 +558,51 @@ class ContainerSmokeTests(unittest.TestCase):
         summary = metrics.get_summary()
         self.assertEqual(summary.get("version"), __version__)
 
+    def test_task_status_tracking_and_web_ui(self):
+        """Verify background task status tracking in metrics and its rendering in Web UI."""
+        from src.metrics import metrics
+        from src.web import RENDERED_DASHBOARD_HTML
+
+        # Initial tasks in summary
+        summary = metrics.get_summary()
+        self.assertIn("tasks", summary)
+        self.assertIn("season_pack_backfill", summary["tasks"])
+        self.assertIn("missing_episode_retry", summary["tasks"])
+
+        # Update task status
+        metrics.update_task_status(
+            "season_pack_backfill",
+            state="running",
+            progress="Searching season packs for 'Survivor - Season 47' (1/5)...",
+            last_run="2026-10-23T16:00:00Z",
+        )
+        updated = metrics.get_summary()["tasks"]["season_pack_backfill"]
+        self.assertEqual(updated["state"], "running")
+        self.assertEqual(updated["current_progress"], "Searching season packs for 'Survivor - Season 47' (1/5)...")
+        self.assertEqual(updated["last_run"], "2026-10-23T16:00:00Z")
+
+        # Complete task
+        metrics.update_task_status(
+            "season_pack_backfill",
+            state="idle",
+            items_grabbed=1,
+            duration_sec=3.456,
+            next_run="2026-10-23T22:00:00Z",
+        )
+        done = metrics.get_summary()["tasks"]["season_pack_backfill"]
+        self.assertEqual(done["state"], "idle")
+        self.assertIsNone(done["current_progress"])
+        self.assertEqual(done["items_grabbed_last_run"], 1)
+        self.assertEqual(done["last_duration_sec"], 3.46)
+        self.assertEqual(done["next_run"], "2026-10-23T22:00:00Z")
+
+        # Web UI contains automation tasks markup and filter pills
+        self.assertIn('id="task-backfill-card"', RENDERED_DASHBOARD_HTML)
+        self.assertIn('id="task-episode-retry-card"', RENDERED_DASHBOARD_HTML)
+        self.assertIn('id="btn-trigger-backfill"', RENDERED_DASHBOARD_HTML)
+        self.assertIn('id="btn-trigger-episode-retry"', RENDERED_DASHBOARD_HTML)
+        self.assertIn('data-filter="season_backfill"', RENDERED_DASHBOARD_HTML)
+        self.assertIn('data-filter="episode_retry"', RENDERED_DASHBOARD_HTML)
+
 if __name__ == "__main__":
     unittest.main()
