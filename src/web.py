@@ -1250,6 +1250,42 @@ DASHBOARD_HTML = """<!DOCTYPE html>
             </div>
           </div>
 
+          <div style="background: rgba(99, 102, 241, 0.05); border: 1px solid rgba(99, 102, 241, 0.2); border-radius: 8px; padding: 0.85rem; margin-top: 0.75rem;">
+            <div class="form-row" style="margin-bottom: 0.65rem;">
+              <div>
+                <div class="form-label" style="margin-bottom: 0; color: var(--sonarr);">🔎 Missing Episode Retry (Ongoing Seasons)</div>
+                <div class="form-hint">Periodically search and grab missing aired episodes for seasons that are still airing (includes AI fallback for 'Unknown Series' episode releases)</div>
+              </div>
+              <label class="toggle-switch">
+                <input type="checkbox" id="cfg-sonarr-ep-retry-enabled">
+                <span class="toggle-slider"></span>
+              </label>
+            </div>
+
+            <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 0.65rem;">
+              <div class="form-group" style="margin-bottom: 0.5rem;">
+                <label class="form-label" for="cfg-sonarr-ep-retry-interval">Retry Interval (hours)</label>
+                <input type="number" min="1" id="cfg-sonarr-ep-retry-interval" class="form-input" value="6">
+              </div>
+              <div class="form-group" style="margin-bottom: 0.5rem;">
+                <label class="form-label" for="cfg-sonarr-ep-retry-delay">Min Post-Air Delay (hours)</label>
+                <input type="number" min="0" id="cfg-sonarr-ep-retry-delay" class="form-input" value="6">
+              </div>
+              <div class="form-group" style="margin-bottom: 0.5rem;">
+                <label class="form-label" for="cfg-sonarr-ep-retry-max">Max Episodes / Run</label>
+                <input type="number" min="1" id="cfg-sonarr-ep-retry-max" class="form-input" value="5">
+              </div>
+              <div class="form-group" style="margin-bottom: 0.5rem;">
+                <label class="form-label" for="cfg-sonarr-ep-retry-cooldown">Episode Cooldown (hours)</label>
+                <input type="number" min="1" id="cfg-sonarr-ep-retry-cooldown" class="form-input" value="24">
+              </div>
+            </div>
+
+            <div style="margin-top: 0.35rem; display: flex; justify-content: flex-end;">
+              <button type="button" class="btn btn-sm" onclick="triggerEpisodeRetryNow()" title="Run an immediate Missing Episode Retry check for ongoing seasons">🔎 Retry Missing Episodes Now</button>
+            </div>
+          </div>
+
           <hr style="border: none; border-top: 1px solid var(--border); margin: 1rem 0;">
 
           <div class="form-row">
@@ -1763,6 +1799,22 @@ DASHBOARD_HTML = """<!DOCTYPE html>
       }
     }
 
+    async function triggerEpisodeRetryNow() {
+      try {
+        const res = await fetch('/api/episode-retry', { method: 'POST' });
+        const data = await res.json();
+        if (res.ok && data.status === 'ok') {
+          showToast('Missing Episode Retry check started in background!', 'success');
+          setTimeout(() => fetchData(true), 1500);
+        } else {
+          showToast('Failed to trigger Missing Episode Retry', 'danger');
+        }
+      } catch (e) {
+        console.error(e);
+        showToast('Network error triggering Missing Episode Retry', 'danger');
+      }
+    }
+
     async function retryItem(id) {
       try {
         const res = await fetch('/api/retry', {
@@ -1866,6 +1918,13 @@ DASHBOARD_HTML = """<!DOCTYPE html>
         document.getElementById('cfg-sonarr-backfill-max-seasons').value = spb.max_seasons_per_run ?? 3;
         document.getElementById('cfg-sonarr-backfill-cooldown').value = spb.season_cooldown_days ?? 7;
 
+        const mer = s.missing_episode_retry || {};
+        document.getElementById('cfg-sonarr-ep-retry-enabled').checked = Boolean(mer.enabled);
+        document.getElementById('cfg-sonarr-ep-retry-interval').value = mer.interval_hours ?? 6;
+        document.getElementById('cfg-sonarr-ep-retry-delay').value = mer.min_air_delay_hours ?? 6;
+        document.getElementById('cfg-sonarr-ep-retry-max').value = mer.max_episodes_per_run ?? 5;
+        document.getElementById('cfg-sonarr-ep-retry-cooldown').value = mer.episode_cooldown_hours ?? 24;
+
         document.getElementById('cfg-radarr-enabled').checked = Boolean(r.enabled);
         document.getElementById('cfg-radarr-url').value = r.url || 'http://localhost:7878';
         document.getElementById('cfg-radarr-key').value = r.api_key || '';
@@ -1925,6 +1984,13 @@ DASHBOARD_HTML = """<!DOCTYPE html>
             min_missing_days: parseInt(document.getElementById('cfg-sonarr-backfill-missing-days').value, 10) ?? 3,
             max_seasons_per_run: parseInt(document.getElementById('cfg-sonarr-backfill-max-seasons').value, 10) || 3,
             season_cooldown_days: parseInt(document.getElementById('cfg-sonarr-backfill-cooldown').value, 10) || 7
+          },
+          missing_episode_retry: {
+            enabled: document.getElementById('cfg-sonarr-ep-retry-enabled').checked,
+            interval_hours: parseInt(document.getElementById('cfg-sonarr-ep-retry-interval').value, 10) || 6,
+            min_air_delay_hours: parseInt(document.getElementById('cfg-sonarr-ep-retry-delay').value, 10) ?? 6,
+            max_episodes_per_run: parseInt(document.getElementById('cfg-sonarr-ep-retry-max').value, 10) || 5,
+            episode_cooldown_hours: parseInt(document.getElementById('cfg-sonarr-ep-retry-cooldown').value, 10) || 24
           }
         },
         radarr: {
@@ -2139,6 +2205,15 @@ class MetricsHTTPHandler(BaseHTTPRequestHandler):
             self._send_json({
                 "status": "ok",
                 "message": "Season Pack Backfill check triggered.",
+            })
+            return
+
+        if path == "/api/episode-retry":
+            if self.on_trigger_scan:
+                self.on_trigger_scan("episode_retry")
+            self._send_json({
+                "status": "ok",
+                "message": "Missing Episode Retry check triggered.",
             })
             return
 

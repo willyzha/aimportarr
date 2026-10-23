@@ -34,12 +34,21 @@ class SeasonPackBackfillConfig(BaseModel):
     season_cooldown_days: int = 7
 
 
+class MissingEpisodeRetryConfig(BaseModel):
+    enabled: bool = False
+    interval_hours: int = 6
+    min_air_delay_hours: int = 6
+    max_episodes_per_run: int = 5
+    episode_cooldown_hours: int = 24
+
+
 class SonarrConfig(BaseModel):
     model_config = {"extra": "ignore"}
     enabled: bool = True
     url: str = "http://localhost:8989"
     api_key: str = ""
     season_pack_backfill: SeasonPackBackfillConfig = Field(default_factory=SeasonPackBackfillConfig)
+    missing_episode_retry: MissingEpisodeRetryConfig = Field(default_factory=MissingEpisodeRetryConfig)
 
 class RadarrConfig(BaseModel):
     model_config = {"extra": "ignore"}
@@ -99,6 +108,8 @@ class AppConfig(BaseModel):
             s_d = dict(kwargs["sonarr"])
             if isinstance(s_d.get("season_pack_backfill"), dict):
                 s_d["season_pack_backfill"] = SeasonPackBackfillConfig(**s_d["season_pack_backfill"])
+            if isinstance(s_d.get("missing_episode_retry"), dict):
+                s_d["missing_episode_retry"] = MissingEpisodeRetryConfig(**s_d["missing_episode_retry"])
             kwargs["sonarr"] = SonarrConfig(**s_d)
         if isinstance(kwargs.get("radarr"), dict):
             kwargs["radarr"] = RadarrConfig(**kwargs["radarr"])
@@ -173,6 +184,13 @@ def config_to_dict(config: AppConfig) -> Dict[str, Any]:
                 "min_missing_days": int(config.sonarr.season_pack_backfill.min_missing_days),
                 "max_seasons_per_run": int(config.sonarr.season_pack_backfill.max_seasons_per_run),
                 "season_cooldown_days": int(config.sonarr.season_pack_backfill.season_cooldown_days),
+            },
+            "missing_episode_retry": {
+                "enabled": bool(config.sonarr.missing_episode_retry.enabled),
+                "interval_hours": int(config.sonarr.missing_episode_retry.interval_hours),
+                "min_air_delay_hours": int(config.sonarr.missing_episode_retry.min_air_delay_hours),
+                "max_episodes_per_run": int(config.sonarr.missing_episode_retry.max_episodes_per_run),
+                "episode_cooldown_hours": int(config.sonarr.missing_episode_retry.episode_cooldown_hours),
             },
         },
         "radarr": {
@@ -258,6 +276,18 @@ def update_config_from_dict(config: AppConfig, data: Dict[str, Any]) -> AppConfi
                 config.sonarr.season_pack_backfill.max_seasons_per_run = max(1, int(spb["max_seasons_per_run"]))
             if "season_cooldown_days" in spb and spb["season_cooldown_days"] is not None:
                 config.sonarr.season_pack_backfill.season_cooldown_days = max(1, int(spb["season_cooldown_days"]))
+        if "missing_episode_retry" in s and isinstance(s["missing_episode_retry"], dict):
+            mer = s["missing_episode_retry"]
+            if "enabled" in mer and mer["enabled"] is not None:
+                config.sonarr.missing_episode_retry.enabled = bool(mer["enabled"])
+            if "interval_hours" in mer and mer["interval_hours"] is not None:
+                config.sonarr.missing_episode_retry.interval_hours = max(1, int(mer["interval_hours"]))
+            if "min_air_delay_hours" in mer and mer["min_air_delay_hours"] is not None:
+                config.sonarr.missing_episode_retry.min_air_delay_hours = max(0, int(mer["min_air_delay_hours"]))
+            if "max_episodes_per_run" in mer and mer["max_episodes_per_run"] is not None:
+                config.sonarr.missing_episode_retry.max_episodes_per_run = max(1, int(mer["max_episodes_per_run"]))
+            if "episode_cooldown_hours" in mer and mer["episode_cooldown_hours"] is not None:
+                config.sonarr.missing_episode_retry.episode_cooldown_hours = max(1, int(mer["episode_cooldown_hours"]))
 
     if "radarr" in data and isinstance(data["radarr"], dict):
         r = data["radarr"]
@@ -398,6 +428,28 @@ def load_config(config_path: Optional[str] = None) -> AppConfig:
     if env_bf_cooldown := os.getenv("SONARR_BACKFILL_COOLDOWN_DAYS"):
         try:
             config.sonarr.season_pack_backfill.season_cooldown_days = max(1, int(env_bf_cooldown))
+        except ValueError:
+            pass
+    if env_mer_enabled := os.getenv("SONARR_EPISODE_RETRY_ENABLED"):
+        config.sonarr.missing_episode_retry.enabled = env_mer_enabled.lower() in ("true", "1", "yes")
+    if env_mer_interval := os.getenv("SONARR_EPISODE_RETRY_INTERVAL_HOURS"):
+        try:
+            config.sonarr.missing_episode_retry.interval_hours = max(1, int(env_mer_interval))
+        except ValueError:
+            pass
+    if env_mer_delay := os.getenv("SONARR_EPISODE_RETRY_MIN_AIR_DELAY_HOURS"):
+        try:
+            config.sonarr.missing_episode_retry.min_air_delay_hours = max(0, int(env_mer_delay))
+        except ValueError:
+            pass
+    if env_mer_max := os.getenv("SONARR_EPISODE_RETRY_MAX_EPISODES_PER_RUN"):
+        try:
+            config.sonarr.missing_episode_retry.max_episodes_per_run = max(1, int(env_mer_max))
+        except ValueError:
+            pass
+    if env_mer_cooldown := os.getenv("SONARR_EPISODE_RETRY_COOLDOWN_HOURS"):
+        try:
+            config.sonarr.missing_episode_retry.episode_cooldown_hours = max(1, int(env_mer_cooldown))
         except ValueError:
             pass
 

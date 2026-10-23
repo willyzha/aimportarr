@@ -727,6 +727,399 @@ class QualityEnforcementTests(unittest.IsolatedAsyncioTestCase):
             mock_dismiss.assert_called_once()
             mock_resolve.assert_not_called()
 
+    async def test_season_pack_already_imported_and_quality_rejected_fast_path_dismisses(self):
+        """
+        When Sonarr automatically imports needed episodes from a season pack ('Episode file already imported at ...')
+        and leaves the remaining files rejected due to higher Custom Format score on disk, Fast-Path A must
+        dismiss the leftover queue warning with 0 AI calls (removeFromClient=False, blocklist=False, skipRedownload=True).
+        """
+        manual_items = [
+            {
+                "path": "/data/downloads/Against The Current S01/Against The Current S01E01.mkv",
+                "name": "Against The Current S01E01.mkv",
+                "quality": {"quality": {"name": "WEBDL-1080p"}},
+                "customFormatScore": 0,
+                "episodes": [{"id": 23957, "seasonNumber": 1, "episodeNumber": 1}],
+                "series": {"id": 343, "title": "Against The Current"},
+                "rejections": [{"reason": "Episode file already imported at 10/23/2026 12:15:04"}],
+            },
+            {
+                "path": "/data/downloads/Against The Current S01/Against The Current S01E02.mkv",
+                "name": "Against The Current S01E02.mkv",
+                "quality": {"quality": {"name": "WEBDL-1080p"}},
+                "customFormatScore": 0,
+                "episodes": [{"id": 23958, "seasonNumber": 1, "episodeNumber": 2}],
+                "series": {"id": 343, "title": "Against The Current"},
+                "rejections": [
+                    {
+                        "reason": "Not a Custom Format upgrade for existing episode file(s). New: [] (0) do not improve on Existing: [DSNP, HD Streaming Boost] (150)"
+                    }
+                ],
+            },
+        ]
+        queue_item = {
+            "id": 9901,
+            "downloadId": "DL_ATC_S01",
+            "title": "Against The Current S01 (2026) 1080p WETV WEB-DL AAC H.264-Luvmichelle",
+            "trackedDownloadStatus": "warning",
+            "trackedDownloadState": "importPending",
+            "statusMessages": [
+                {
+                    "messages": [
+                        "Not a Custom Format upgrade for existing episode file(s). New: [] (0) do not improve on Existing: [DSNP, HD Streaming Boost] (150)"
+                    ]
+                }
+            ],
+            "series": {"id": 343, "title": "Against The Current", "year": 2026},
+            "outputPath": "/data/downloads/Against The Current S01 (2026) 1080p WETV WEB-DL AAC H.264-Luvmichelle",
+        }
+        all_episodes = [
+            {"id": 23957, "seasonNumber": 1, "episodeNumber": 1, "hasFile": True, "monitored": True},
+            {"id": 23958, "seasonNumber": 1, "episodeNumber": 2, "hasFile": True, "monitored": True},
+        ]
+
+        with patch.object(self.sonarr, "get_manual_import_items", new_callable=AsyncMock, return_value=manual_items), \
+             patch.object(self.sonarr, "get_series_episodes", new_callable=AsyncMock, return_value=all_episodes), \
+             patch.object(self.sonarr, "get_episode_files", new_callable=AsyncMock, return_value=[]), \
+             patch.object(self.sonarr, "resolve_queue_item", new_callable=AsyncMock) as mock_resolve:
+            mock_resolve.return_value = True
+            await self.sonarr.process_queue_item(item=queue_item, ai_provider=self.mock_ai)
+
+            # 0 AI calls!
+            self.mock_ai.evaluate_import_decision.assert_not_called()
+            # Dismissed without blocklisting or deleting from client
+            mock_resolve.assert_called_once()
+            self.assertFalse(mock_resolve.call_args.kwargs["remove_from_client"])
+            self.assertFalse(mock_resolve.call_args.kwargs["blocklist"])
+            self.assertTrue(mock_resolve.call_args.kwargs["skip_redownload"])
+
+    async def test_season_pack_mix_already_imported_and_clean_file_fast_path_b(self):
+        """
+        When a season pack has a mix of 'already imported', 'Not a Custom Format upgrade', and 1 clean
+        unimported episode, Fast-Path B imports only the 1 clean episode with 0 AI calls and dismisses the warning.
+        """
+        manual_items = [
+            {
+                "path": "/data/downloads/Pack/S01E01.mkv",
+                "name": "S01E01.mkv",
+                "quality": {"quality": {"name": "WEBDL-1080p"}},
+                "episodes": [{"id": 101, "seasonNumber": 1, "episodeNumber": 1}],
+                "series": {"id": 343, "title": "Show"},
+                "rejections": [{"reason": "Episode file already imported at 10/23/2026 12:15:04"}],
+            },
+            {
+                "path": "/data/downloads/Pack/S01E02.mkv",
+                "name": "S01E02.mkv",
+                "quality": {"quality": {"name": "WEBDL-1080p"}},
+                "episodes": [{"id": 102, "seasonNumber": 1, "episodeNumber": 2}],
+                "series": {"id": 343, "title": "Show"},
+                "rejections": [{"reason": "Not a Custom Format upgrade for existing episode file(s)"}],
+            },
+            {
+                "path": "/data/downloads/Pack/S01E03.mkv",
+                "name": "S01E03.mkv",
+                "quality": {"quality": {"name": "WEBDL-1080p"}},
+                "episodes": [{"id": 103, "seasonNumber": 1, "episodeNumber": 3}],
+                "series": {"id": 343, "title": "Show"},
+                "rejections": [],
+            },
+        ]
+        queue_item = {
+            "id": 9902,
+            "downloadId": "DL_PACK_MIX",
+            "title": "Show S01 1080p WEB-DL",
+            "trackedDownloadStatus": "warning",
+            "trackedDownloadState": "importPending",
+            "statusMessages": [{"messages": ["Not a Custom Format upgrade for existing episode file(s)"]}],
+            "series": {"id": 343, "title": "Show", "year": 2026},
+            "outputPath": "/data/downloads/Pack",
+        }
+
+        with patch.object(self.sonarr, "get_manual_import_items", new_callable=AsyncMock, return_value=manual_items), \
+             patch.object(self.sonarr, "get_series_episodes", new_callable=AsyncMock, return_value=[]), \
+             patch.object(self.sonarr, "get_episode_files", new_callable=AsyncMock, return_value=[]), \
+             patch.object(self.sonarr, "trigger_manual_import", new_callable=AsyncMock, return_value=True) as mock_import, \
+             patch.object(self.sonarr, "dismiss_queue_warning", new_callable=AsyncMock, return_value=True) as mock_dismiss:
+            res = await self.sonarr.process_queue_item(item=queue_item, ai_provider=self.mock_ai)
+
+            self.assertTrue(res)
+            self.mock_ai.evaluate_import_decision.assert_not_called()
+            mock_import.assert_called_once()
+            imported_files = mock_import.call_args.args[0]
+            self.assertEqual(len(imported_files), 1)
+            self.assertEqual(imported_files[0]["path"], "/data/downloads/Pack/S01E03.mkv")
+            mock_dismiss.assert_called_once()
+
+    async def test_stage3_output_interpreter_repairs_malformed_ollama_response(self):
+        """
+        Verify that when Stage 2 returns a malformed JSON object (e.g. 'action' instead of 'decision',
+        missing 'confidence', episode ID in 'matched_media_id', and string in 'files_to_import'),
+        Stage 3 AI Output Interpreter is invoked to repair it into a valid Stage2DecisionResult.
+        """
+        from src.ai.ollama import OllamaProvider
+
+        provider = OllamaProvider(base_url="http://localhost:11434", model="qwen2.5:1.5b")
+
+        # First call (Stage 2) returns the exact malformed JSON from the user's trace
+        malformed_stage2 = {
+            "action": "import",
+            "matched_media_id": 23957,
+            "files_to_import": ["Episode 1"],
+        }
+        # Second call (Stage 3 Output Interpreter) repairs it using the Reference Context
+        repaired_stage3 = {
+            "decision": "import",
+            "matched_media_id": 343,
+            "files_to_import": [
+                {
+                    "path": "/data/downloads/Against The Current S01/Against The Current S01E01.mkv",
+                    "season_number": 1,
+                    "episode_numbers": [1],
+                }
+            ],
+            "category_tag": "episode_parsed",
+            "confidence": 0.92,
+            "reasoning": "Repaired malformed Stage 2 response: matched series 343 and mapped Episode 1 path.",
+        }
+
+        with patch.object(
+            provider,
+            "_call_ollama_with_raw",
+            new_callable=AsyncMock,
+            return_value=(malformed_stage2, '{"action": "import", "matched_media_id": 23957, "files_to_import": ["Episode 1"]}', None),
+        ) as mock_stage2_call, patch.object(
+            provider,
+            "_call_ollama",
+            new_callable=AsyncMock,
+            return_value=repaired_stage3,
+        ) as mock_stage3_call:
+            result = await provider.evaluate_import_decision(
+                media_type="series",
+                release_title="Against The Current S01",
+                folder_name="Against The Current S01",
+                queue_messages=["Episode was not found"],
+                candidate_media={"id": 343, "title": "Against The Current", "year": 2026},
+                library_candidates=[],
+                manual_import_files=[
+                    {
+                        "path": "/data/downloads/Against The Current S01/Against The Current S01E01.mkv",
+                        "name": "Against The Current S01E01.mkv",
+                        "episodes": [{"id": 23957, "season": 1, "episode": 1}],
+                    }
+                ],
+                existing_disk_files=[],
+                known_episodes=[
+                    {"id": i, "season": 1, "episode": i, "title": f"Episode {i}", "hasFile": True}
+                    for i in range(1, 48)
+                ],
+            )
+
+            mock_stage2_call.assert_called_once()
+            mock_stage3_call.assert_called_once()
+            self.assertEqual(mock_stage3_call.call_args.kwargs["operation"], "stage3_output_interpreter")
+            self.assertEqual(result.decision, "import")
+            self.assertEqual(result.matched_media_id, 343)
+            self.assertEqual(result.confidence, 0.92)
+            self.assertEqual(len(result.files_to_import), 1)
+            self.assertEqual(
+                result.files_to_import[0].path,
+                "/data/downloads/Against The Current S01/Against The Current S01E01.mkv",
+            )
+
+    async def test_classify_episode_release_tiers(self):
+        """Verify episode release classification into tier1_eligible, tier2_unknown_series, and disqualified."""
+        # 1. Unrejected matching episode release -> tier1_eligible
+        self.assertEqual(
+            self.sonarr.classify_episode_release(
+                {
+                    "fullSeason": False,
+                    "seasonNumber": 2,
+                    "episodeNumbers": [5],
+                    "protocol": "usenet",
+                    "rejected": False,
+                    "rejections": [],
+                },
+                season_number=2,
+                episode_number=5,
+            ),
+            "tier1_eligible",
+        )
+
+        # 2. Unknown Series episode release -> tier2_unknown_series
+        self.assertEqual(
+            self.sonarr.classify_episode_release(
+                {
+                    "fullSeason": False,
+                    "seasonNumber": 2,
+                    "episodeNumbers": [5],
+                    "protocol": "torrent",
+                    "seeders": 8,
+                    "rejected": True,
+                    "rejections": ["Unknown Series"],
+                },
+                season_number=2,
+                episode_number=5,
+            ),
+            "tier2_unknown_series",
+        )
+
+        # 3. Full season pack -> disqualified in single-episode search
+        self.assertEqual(
+            self.sonarr.classify_episode_release(
+                {
+                    "fullSeason": True,
+                    "seasonNumber": 2,
+                    "episodeNumbers": [],
+                    "protocol": "usenet",
+                    "rejected": False,
+                    "rejections": [],
+                },
+                season_number=2,
+                episode_number=5,
+            ),
+            "disqualified",
+        )
+
+        # 4. Wrong episode number -> disqualified
+        self.assertEqual(
+            self.sonarr.classify_episode_release(
+                {
+                    "fullSeason": False,
+                    "seasonNumber": 2,
+                    "episodeNumbers": [6],
+                    "protocol": "usenet",
+                    "rejected": False,
+                    "rejections": [],
+                },
+                season_number=2,
+                episode_number=5,
+            ),
+            "disqualified",
+        )
+
+    async def test_missing_episode_retry_ongoing_season_tier1_and_tier2(self):
+        """
+        Verify Missing Episode Retry skips completed seasons, skips newly-aired episodes within
+        the 6h post-air delay, grabs the best Tier 1 release for missing aired episodes in ongoing
+        seasons, and falls back to Tier 2 AI for 'Unknown Series' episode releases.
+        """
+        from datetime import datetime, timedelta, timezone
+        from src.ai.base import BackfillPackMatchResult
+
+        now_utc = datetime.now(timezone.utc)
+        aired_2_days_ago = (now_utc - timedelta(days=2)).isoformat()
+        aired_1_hour_ago = (now_utc - timedelta(hours=1)).isoformat()
+        airs_next_week = (now_utc + timedelta(days=7)).isoformat()
+
+        series_list = [
+            {
+                "id": 20,
+                "title": "Ongoing Show",
+                "year": 2026,
+                "monitored": True,
+                "seasons": [
+                    {"seasonNumber": 1, "monitored": True},  # Completed season in 2024
+                    {"seasonNumber": 2, "monitored": True},  # Ongoing season
+                ],
+            }
+        ]
+        episodes_s20 = [
+            # Season 1: Completed in 2024 -> should be ignored by run_missing_episode_retry
+            {"id": 101, "seasonNumber": 1, "episodeNumber": 1, "monitored": True, "hasFile": False, "airDateUtc": "2024-01-01T00:00:00Z"},
+            # Season 2: Ongoing season
+            {"id": 201, "seasonNumber": 2, "episodeNumber": 1, "title": "Ep 1", "monitored": True, "hasFile": True, "airDateUtc": aired_2_days_ago},
+            {"id": 202, "seasonNumber": 2, "episodeNumber": 2, "title": "Ep 2", "monitored": True, "hasFile": False, "airDateUtc": aired_2_days_ago},
+            {"id": 203, "seasonNumber": 2, "episodeNumber": 3, "title": "Ep 3", "monitored": True, "hasFile": False, "airDateUtc": aired_1_hour_ago},
+            {"id": 204, "seasonNumber": 2, "episodeNumber": 4, "title": "Ep 4", "monitored": True, "hasFile": False, "airDateUtc": airs_next_week},
+        ]
+        releases_ep202 = [
+            {
+                "guid": "ep-guid-720p",
+                "indexerId": 1,
+                "title": "Ongoing.Show.S02E02.720p.WEB-DL",
+                "fullSeason": False,
+                "seasonNumber": 2,
+                "episodeNumbers": [2],
+                "protocol": "usenet",
+                "customFormatScore": 10,
+                "qualityWeight": 4,
+                "rejected": False,
+                "rejections": [],
+            },
+            {
+                "guid": "ep-guid-1080p",
+                "indexerId": 2,
+                "title": "Ongoing.Show.S02E02.1080p.WEB-DL",
+                "fullSeason": False,
+                "seasonNumber": 2,
+                "episodeNumbers": [2],
+                "protocol": "usenet",
+                "customFormatScore": 80,
+                "qualityWeight": 6,
+                "rejected": False,
+                "rejections": [],
+            },
+        ]
+
+        with patch.object(self.sonarr, "get_all_series", new_callable=AsyncMock, return_value=series_list), \
+             patch.object(self.sonarr, "get_queue", new_callable=AsyncMock, return_value=[]), \
+             patch.object(self.sonarr, "get_series_episodes", new_callable=AsyncMock, return_value=episodes_s20), \
+             patch.object(self.sonarr, "get_episode_releases", new_callable=AsyncMock, return_value=releases_ep202) as mock_ep_search, \
+             patch.object(self.sonarr, "grab_release", new_callable=AsyncMock, return_value=True) as mock_grab:
+
+            grabbed = await self.sonarr.run_missing_episode_retry(ai_provider=self.mock_ai)
+            self.assertEqual(grabbed, 1)
+            # Only Episode 202 (S02E02) was searched (S01 is completed; S02E01 hasFile; S02E03 aired 1h ago < 6h delay; S02E04 airs next week)
+            mock_ep_search.assert_called_once_with(202)
+            mock_grab.assert_called_once_with(
+                guid="ep-guid-1080p",
+                indexer_id=2,
+                dry_run=False,
+                title="Ongoing.Show.S02E02.1080p.WEB-DL",
+            )
+
+        # Tier 2 AI Fallback test for 'Unknown Series' episode release
+        self.sonarr._attempted_episode_retry_keys.clear()
+        releases_ep202_unknown = [
+            {
+                "guid": "ep-guid-pinyin",
+                "indexerId": 3,
+                "title": "LianZaiJu.S02E02.1080p.WEB-DL",
+                "fullSeason": False,
+                "seasonNumber": 2,
+                "episodeNumbers": [2],
+                "protocol": "usenet",
+                "customFormatScore": 40,
+                "qualityWeight": 6,
+                "rejected": True,
+                "rejections": ["Unknown Series"],
+            }
+        ]
+        self.mock_ai.evaluate_backfill_episode = AsyncMock(
+            return_value=BackfillPackMatchResult(
+                matched_guid="ep-guid-pinyin",
+                confidence=0.95,
+                reasoning="Matched Pinyin title to Ongoing Show S02E02",
+                model_name="MockAI",
+            )
+        )
+
+        with patch.object(self.sonarr, "get_all_series", new_callable=AsyncMock, return_value=series_list), \
+             patch.object(self.sonarr, "get_queue", new_callable=AsyncMock, return_value=[]), \
+             patch.object(self.sonarr, "get_series_episodes", new_callable=AsyncMock, return_value=episodes_s20), \
+             patch.object(self.sonarr, "get_episode_releases", new_callable=AsyncMock, return_value=releases_ep202_unknown), \
+             patch.object(self.sonarr, "grab_release", new_callable=AsyncMock, return_value=True) as mock_grab2:
+
+            grabbed2 = await self.sonarr.run_missing_episode_retry(ai_provider=self.mock_ai)
+            self.assertEqual(grabbed2, 1)
+            self.mock_ai.evaluate_backfill_episode.assert_called_once()
+            mock_grab2.assert_called_once_with(
+                guid="ep-guid-pinyin",
+                indexer_id=3,
+                dry_run=False,
+                title="LianZaiJu.S02E02.1080p.WEB-DL",
+            )
+
 
 if __name__ == "__main__":
     unittest.main()

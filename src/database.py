@@ -247,6 +247,40 @@ class DatabaseManager:
 
             return True
 
+    def is_item_attempted_within_hours(self, item_keys: List[str], hours: int = 24) -> bool:
+        """
+        Check if any of the given item keys have been processed within the last `hours` hours
+        and NOT marked for retry.
+        """
+        if not item_keys:
+            return False
+
+        with self._lock:
+            conn = self._get_connection()
+            placeholders = ",".join("?" for _ in item_keys)
+            query = f"""
+            SELECT p.id, p.retry_requested, p.status, p.timestamp
+            FROM processed_items p
+            JOIN processed_item_keys k ON p.id = k.processed_id
+            WHERE k.item_key IN ({placeholders})
+            ORDER BY p.id DESC
+            LIMIT 1;
+            """
+            cursor = conn.execute(query, item_keys)
+            row = cursor.fetchone()
+            if not row:
+                return False
+
+            if bool(row["retry_requested"]):
+                return False
+
+            if hours > 0 and row["timestamp"]:
+                cutoff_str = (datetime.now(timezone.utc) - timedelta(hours=hours)).isoformat()
+                if row["timestamp"] < cutoff_str:
+                    return False
+
+            return True
+
     def record_processed_item(
         self,
         app: str,

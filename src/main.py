@@ -56,6 +56,7 @@ def build_runtime_clients(config: AppConfig):
                 reject_on_low_confidence=config.general.reject_on_low_confidence,
                 extraction_config=config.extraction,
                 backfill_config=config.sonarr.season_pack_backfill,
+                episode_retry_config=config.sonarr.missing_episode_retry,
                 path_mappings=config.path_mappings,
             )
             logger.info(f"Sonarr client configured for: {config.sonarr.url}")
@@ -202,44 +203,64 @@ async def discover_and_enqueue(
 
 async def backfill_worker_loop(
     backfill_event: asyncio.Event,
+    episode_retry_event: asyncio.Event,
     state: Dict[str, Any],
     config: AppConfig,
 ):
     """
-    Background worker for Sonarr Season Pack Backfill:
-    - Runs on-demand when `backfill_event` is set (via Web UI 'Run Backfill Now' or 'Retry').
-    - Runs automatically every `interval_hours` when `config.sonarr.season_pack_backfill.enabled` is True.
+    Background worker for Sonarr Season Pack Backfill and Ongoing Season Missing Episode Retry:
+    - Runs on-demand when `backfill_event` or `episode_retry_event` is set.
+    - Runs automatically on each feature's configured `interval_hours` schedule when enabled.
     """
     last_backfill_run = 0.0
+    last_episode_retry_run = 0.0
 
     while running:
         try:
-            manual_triggered = backfill_event.is_set()
+            manual_backfill = backfill_event.is_set()
             backfill_event.clear()
+            manual_ep_retry = episode_retry_event.is_set()
+            episode_retry_event.clear()
 
-            bf_cfg = config.sonarr.season_pack_backfill
-            interval_sec = max(1, int(bf_cfg.interval_hours)) * 3600
             now_mono = time.monotonic()
-            scheduled_due = (
+            curr_sonarr: Optional[SonarrClient] = state.get("sonarr_client")
+            curr_ai = state.get("ai_provider")
+
+            # 1. Completed Seasons: Season Pack Backfill
+            bf_cfg = config.sonarr.season_pack_backfill
+            bf_interval_sec = max(1, int(bf_cfg.interval_hours)) * 3600
+            bf_due = (
                 config.sonarr.enabled
                 and bf_cfg.enabled
-                and (last_backfill_run == 0.0 or (now_mono - last_backfill_run) >= interval_sec)
+                and (last_backfill_run == 0.0 or (now_mono - last_backfill_run) >= bf_interval_sec)
             )
+            if (manual_backfill or bf_due) and curr_sonarr and running:
+                last_backfill_run = time.monotonic()
+                try:
+                    await curr_sonarr.run_season_pack_backfill(ai_provider=curr_ai)
+                except Exception as e:
+                    logger.error(f"Error during Sonarr Season Pack Backfill: {e}")
 
-            if manual_triggered or scheduled_due:
-                curr_sonarr: Optional[SonarrClient] = state.get("sonarr_client")
-                curr_ai = state.get("ai_provider")
-                if curr_sonarr and running:
-                    last_backfill_run = time.monotonic()
-                    try:
-                        await curr_sonarr.run_season_pack_backfill(ai_provider=curr_ai)
-                    except Exception as e:
-                        logger.error(f"Error during Sonarr Season Pack Backfill: {e}")
+            # 2. Ongoing Seasons: Missing Episode Retry
+            mer_cfg = config.sonarr.missing_episode_retry
+            mer_interval_sec = max(1, int(mer_cfg.interval_hours)) * 3600
+            now_mono = time.monotonic()
+            mer_due = (
+                config.sonarr.enabled
+                and mer_cfg.enabled
+                and (last_episode_retry_run == 0.0 or (now_mono - last_episode_retry_run) >= mer_interval_sec)
+            )
+            if (manual_ep_retry or mer_due) and curr_sonarr and running:
+                last_episode_retry_run = time.monotonic()
+                try:
+                    await curr_sonarr.run_missing_episode_retry(ai_provider=curr_ai)
+                except Exception as e:
+                    logger.error(f"Error during Sonarr Missing Episode Retry: {e}")
 
-            try:
-                await asyncio.wait_for(backfill_event.wait(), timeout=5.0)
-            except asyncio.TimeoutError:
-                pass
+            for _ in range(5):
+                if not running or backfill_event.is_set() or episode_retry_event.is_set():
+                    break
+                await asyncio.sleep(1.0)
         except asyncio.CancelledError:
             break
         except Exception as e:
@@ -299,6 +320,7 @@ async def main():
     loop = asyncio.get_running_loop()
     scan_event = asyncio.Event()
     backfill_event = asyncio.Event()
+    episode_retry_event = asyncio.Event()
     fifo_queue: asyncio.Queue[Tuple[str, Dict[str, Any], str]] = asyncio.Queue()
     in_flight_keys: Set[str] = set()
 
@@ -313,10 +335,17 @@ async def main():
             logger.info("Immediate Season Pack Backfill check requested from Web UI.")
             loop.call_soon_threadsafe(backfill_event.set)
             return
+        if source == "episode_retry":
+            logger.info("Immediate Missing Episode Retry check requested from Web UI.")
+            loop.call_soon_threadsafe(episode_retry_event.set)
+            return
         logger.debug(f"Immediate queue scan requested (source: {source})")
         loop.call_soon_threadsafe(scan_event.set)
-        if source.startswith("retry") and config.sonarr.season_pack_backfill.enabled:
-            loop.call_soon_threadsafe(backfill_event.set)
+        if source.startswith("retry"):
+            if config.sonarr.season_pack_backfill.enabled:
+                loop.call_soon_threadsafe(backfill_event.set)
+            if config.sonarr.missing_episode_retry.enabled:
+                loop.call_soon_threadsafe(episode_retry_event.set)
 
     def on_config_updated(updated_config: AppConfig):
         logger.info("Hot-reloading runtime clients from updated Web UI configuration...")
@@ -346,7 +375,7 @@ async def main():
         fifo_worker_loop(fifo_queue, in_flight_keys, state, config)
     )
     backfill_task = asyncio.create_task(
-        backfill_worker_loop(backfill_event, state, config)
+        backfill_worker_loop(backfill_event, episode_retry_event, state, config)
     )
 
     try:

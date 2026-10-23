@@ -28,6 +28,12 @@ QUALITY_REJECTION_KEYWORDS = [
     "quality profile",
 ]
 
+ALREADY_IMPORTED_KEYWORDS = [
+    "already imported",
+    "episode file already imported",
+    "movie file already imported",
+]
+
 def classify_issue(
     messages: List[str],
     has_media_info: bool = True,

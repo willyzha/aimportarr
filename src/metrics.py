@@ -123,6 +123,14 @@ class MetricsTracker:
             return self.db.is_item_attempted_within_days(item_keys, days=days)
         return False
 
+    def is_item_attempted_within_hours(self, item_keys: List[str], hours: int = 24) -> bool:
+        """
+        Check if any key in item_keys was attempted within the last `hours` hours and NOT marked for retry.
+        """
+        if self.db:
+            return self.db.is_item_attempted_within_hours(item_keys, hours=hours)
+        return False
+
     def mark_item_for_retry(self, item_id: int) -> bool:
         """Flag a specific retryable item (skipped, failed, or dry_run) for retry on the next queue scan cycle."""
         with self._lock:
