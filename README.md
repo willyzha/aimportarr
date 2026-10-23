@@ -5,7 +5,7 @@
 <h1 align="center">AImportarr</h1>
 
 <p align="center">
-  <strong>AI-powered media matching and automated import companion for Sonarr & Radarr</strong>
+  <strong>Hands-off AI queue companion & secure archive unpacker for Sonarr & Radarr</strong>
 </p>
 
 <p align="center">
@@ -16,35 +16,77 @@
 
 ---
 
+## ✨ Overview
+
+**AImportarr** monitors your **Sonarr** and **Radarr** download queues and automatically resolves stuck, warning, or blocked releases so your media server stays completely hands-off:
+
+- **Two-Stage Hybrid Pipeline**: Lets Sonarr/Radarr handle normal downloads first, uses zero-token fast paths whenever Sonarr/Radarr can map unpacked files or enforce quality rules directly, and invokes AI (**Google Gemini** or local **Ollama**) only when ambiguity remains.
+- **Secure Sandbox Extraction (Replaces Unpackerr)**: Inspects `.rar`, `.zip`, `.7z`, and `.tar` headers in memory before extracting. Clean video archives are unpacked into a temporary `<stem>_extracted` staging folder, imported, and automatically cleaned up so disk space is never duplicated.
+- **Seeding-Safe Rejection Policy**:
+  - **Imported**: Valid upgrades and unmapped episodes/movies are matched and imported automatically.
+  - **Dismissed (Seeding Preserved)**: Quality/Custom Format downgrades, wrong media matches, and satisfied season packs are removed from the *arr queue (and blocklisted + re-searched when appropriate) **without deleting torrents from your client**.
+  - **Rejected (Deleted from Client)**: Only confirmed **virus/malware, sample-only, or corrupt** releases are deleted from the torrent client and blocklisted.
+- **Built-in Web UI & Live Settings (`:9890`)**: View processed history, inspect AI reasoning, retry items still in the queue, track AI token usage, and edit/hot-reload your configuration directly from the browser.
+
+> 📖 **Deep Dive**: See [**Architecture & Two-Stage AI Design (`docs/ARCHITECTURE.md`)**](docs/ARCHITECTURE.md) for the complete 4-step pipeline flowchart, decision rules, and component breakdown.
+
+---
+
 ## 🚀 Quick Setup
 
-### 1. Download or Create Config
-Create a configuration folder and copy the example configuration:
+### 1. Deploy with Docker Compose (Recommended)
+
+Create a `docker-compose.yml`:
+
+```yaml
+services:
+  aimportarr:
+    image: ghcr.io/willyzha/aimportarr:beta
+    container_name: aimportarr
+    restart: unless-stopped
+    ports:
+      - "9890:9890" # Web UI, Metrics & Live Settings
+    volumes:
+      - ./config:/config
+      # Mount your downloads folder matching Sonarr/Radarr paths for archive extraction:
+      - /path/to/downloads:/data/downloads
+    environment:
+      - PUID=1000
+      - PGID=1000
+      - TZ=UTC
+```
+
+Start the container:
+
+```bash
+docker compose up -d
+```
+
+### 2. Configure via Web UI or `config.yml`
+
+Open **`http://<your-ip>:9890`** and click the **⚙️ Settings** tab to configure your API keys, connections, and policies in the browser (changes save to `/config/config.yml` and hot-reload immediately).
+
+Alternatively, create `config/config.yml` from [`config.example.yml`](config.example.yml):
 
 ```bash
 mkdir -p config
 curl -sSL https://raw.githubusercontent.com/willyzha/aimportarr/main/config.example.yml -o config/config.yml
 ```
 
-### 2. Configure `config/config.yml`
-Edit `config/config.yml` with your connection details:
-
 ```yaml
 general:
-  check_interval_seconds: 120   # How often to check queues (in seconds)
-  min_confidence: 0.85          # Confidence threshold (0.0 to 1.0)
+  dry_run: false                    # true = simulation mode, false = live execution
+  check_interval_seconds: 120       # Queue poll interval in seconds
+  min_confidence: 0.85              # Minimum AI confidence (0.0 to 1.0)
+  reject_on_low_confidence: false   # false = leave low-confidence items in queue; true = blocklist & keep seeding
   log_level: "INFO"
 
 ai:
-  provider: "gemini"            # Primary: "gemini" or "ollama"
-  fallback_enabled: true        # If Gemini throttles/fails, auto-fallback to Ollama
-
-  # Google Gemini (Free API key at https://aistudio.google.com/)
+  provider: "gemini"                # Primary: "gemini" or "ollama"
+  fallback_enabled: true            # Auto-fallback if primary provider hits rate limits or errors
   gemini:
-    api_key: "YOUR_GEMINI_API_KEY"
-    model: "auto"                 # Default: "auto" picks smallest/fastest active model
-
-  # Local Ollama (Self-hosted fallback or primary)
+    api_key: "YOUR_GEMINI_API_KEY"  # Free API key at https://aistudio.google.com/
+    model: "auto"                   # "auto" selects the fastest active Flash model
   ollama:
     base_url: "http://localhost:11434"
     model: "qwen2.5:1.5b"
@@ -58,40 +100,18 @@ radarr:
   enabled: false
   url: "http://localhost:7878"
   api_key: "YOUR_RADARR_API_KEY"
+
+extraction:
+  enabled: true
+  delete_after_import: true
+  staging_suffix: "_extracted"
 ```
 
 ---
 
-## 🐳 Docker Deployment
+## 📦 Alternative Deployments
 
-### Option A: Docker Compose (Recommended)
-
-Create a `docker-compose.yml`:
-
-```yaml
-version: "3.8"
-
-services:
-  aimportarr:
-    image: ghcr.io/willyzha/aimportarr:beta
-    container_name: aimportarr
-    restart: unless-stopped
-    ports:
-      - "9890:9890" # Web UI Metrics & History Monitor
-    volumes:
-      - ./config:/config
-    environment:
-      - TZ=UTC
-```
-
-Start the container:
-```bash
-docker compose up -d
-```
-
----
-
-### Option B: Docker CLI (`docker run`)
+### Docker CLI (`docker run`)
 
 ```bash
 docker run -d \
@@ -99,144 +119,50 @@ docker run -d \
   --restart unless-stopped \
   -p 9890:9890 \
   -v /path/to/config:/config \
+  -v /path/to/downloads:/data/downloads \
+  -e PUID=1000 \
+  -e PGID=1000 \
   -e TZ=UTC \
   ghcr.io/willyzha/aimportarr:beta
 ```
 
----
+### Unraid
 
-## 📊 Lightweight Web UI & Metrics Monitor
-
-AImportarr includes a persistent, ultra-lightweight web dashboard accessible at **`http://<your-ip>:9890`**:
-
-- **Processed History & Retry Actions**: Live feed of all scanned queue items, categorized issues, actions taken (Imported, Blocked, Dismissed, Dry Run), and expandable row drawers displaying full AI decision reasoning.
-  - **Single Item Retry**: Click **🔄 Retry** on any rejected, failed, or blocked item to allow it to be re-evaluated by AI on the next scan cycle.
-  - **Retry All Rejected**: One-click button in the toolbar to clear retry blocks on all previously rejected items.
-- **SQLite Persistence & Re-Evaluation Prevention**: Processed queue items and decisions are saved to a local SQLite database (`/config/aimportarr.db`), preventing duplicate AI evaluations across container restarts. History older than 30 days is automatically purged (configurable).
-- **Token Usage History**: Real-time log of every AI API interaction, tracking prompt tokens, completion tokens, latency (ms), and success/failure status.
-- **Model Analytics**: Aggregate breakdown of token consumption by model (`gemini-2.5-flash`, `ollama (qwen2.5)`, etc.) and operation type.
-- **Real-Time Monitoring**: Selectable auto-refresh (5s, 10s, 30s) and zero external CDN dependencies (works 100% offline in isolated homelabs).
-- **REST API Endpoints**:
-  - `GET /api/metrics`: JSON summary of uptime, counters, and token totals.
-  - `GET /api/history?limit=100`: JSON list of recently processed items.
-  - `GET /api/tokens?limit=100`: JSON list of recent token transactions.
-  - `GET /api/health`: Container healthcheck endpoint.
-  - `POST /api/retry`: Trigger re-evaluation for an item (`{"id": <id>}`) or all rejected items (`{"all": true}`).
-
----
-
-### Option C: Unraid
-
-1. Open the Unraid WebGUI and navigate to the **Docker** tab.
-2. Click **Add Container** at the bottom (or edit your existing `aimportarr` container).
-3. Configure the container:
+1. Open the Unraid WebGUI and go to the **Docker** tab → **Add Container**.
+2. Configure:
    - **Name**: `aimportarr`
    - **Repository**: `ghcr.io/willyzha/aimportarr:beta`
-   - **Path /config**: `/mnt/user/appdata/aimportarr`
-   - **Path /data/downloads** *(Optional, to replace Unpackerr)*: `/mnt/user/Media/downloads` (must match Sonarr/Radarr's internal download path)
-4. Place your configured `config.yml` in `/mnt/user/appdata/aimportarr/config.yml`.
-5. Click **Apply**.
+   - **Port**: `9890` → `9890`
+   - **Path `/config`**: `/mnt/user/appdata/aimportarr`
+   - **Path `/data/downloads`**: `/mnt/user/Media/downloads` *(match your Sonarr/Radarr download container path, or map differences under **Path Mappings** in Settings)*
+3. Click **Apply**, then open `http://<unraid-ip>:9890` → **⚙️ Settings** to enter your Sonarr, Radarr, and AI credentials.
 
 ---
 
-## 📦 Secure Archive Extraction (Replaces Unpackerr)
+## ⚙️ Configuration & Environment Variables
 
-Unlike Unpackerr—which blindly extracts archives and often leaves malicious executables on your disk—AImportarr uses **Zero-Extract Inspection + AI Verification**:
+All settings can be configured in `/config/config.yml`, via the **⚙️ Settings** Web UI tab, or overridden with environment variables:
 
-1. **Pre-Extraction In-Memory Inspection**: Reads archive headers (`.zip`, `.rar`, `.7z`, `.tar`) in memory without extracting anything.
-2. **AI Malware Detection**: If an archive contains executables (`.exe`, `.scr`, `.bat`) or no video streams, AI evaluates the release and automatically deletes and blocklists it in Sonarr/Radarr and your download client. Zero bytes of malware are ever written to your array.
-3. **Sandbox Extraction & Auto-Cleanup**: If valid media is verified, extracts into an isolated staging folder with strict Zip-Slip protection, triggers the Sonarr/Radarr manual import, and automatically cleans up the extracted staging folder so your disk space is never duplicated while your seeding torrent remains 100% intact.
-
-To enable extraction, mount your downloads folder to the container (matching Sonarr/Radarr's path).
-
----
-
-## ⚙️ Configuration Reference
-
-| Setting | Default | Description |
-| :--- | :--- | :--- |
-| `general.check_interval_seconds` | `120` | Interval between queue inspections. |
-| `general.min_confidence` | `0.85` | AI confidence required (0.0 to 1.0) before executing an import. |
-| `web.enabled` | `true` | Enable built-in web UI dashboard and REST metrics API. |
-| `web.port` | `9890` | Web UI HTTP listening port. |
-| `database.path` | `/config/aimportarr.db` | SQLite database file location for persistent history & retry prevention. |
-| `database.retention_days` | `30` | Auto-purge retention period in days (set to `0` to keep records indefinitely). |
-| `extraction.enabled` | `true` | Enable automated secure archive inspection and extraction. |
-| `extraction.delete_after_import` | `true` | Delete temporary extracted video files after Sonarr/Radarr import (keeps original archive seeding). |
-| `path_mappings` | `[]` | Optional: List of `{from: "/remote", to: "/local"}` path mappings if Sonarr/Radarr container paths differ from AImportarr. |
-| `ai.provider` | `gemini` | Selected primary AI backend: `gemini` or `ollama`. |
-| `ai.fallback_enabled` | `true` | When `true`, automatically delegates to the secondary provider if the primary encounters invalid keys, rate limits (HTTP 429), token exhaustion, or network errors. |
-| `ai.gemini.api_key` | `""` | Google Gemini API key (Get a free key at [aistudio.google.com](https://aistudio.google.com/)). |
-| `ai.gemini.model` | `auto` | Gemini model to use (`auto` dynamically selects the smallest/fastest active model, e.g. `flash-lite` / `flash`, and auto-heals on 404s). |
-| `ai.ollama.base_url` | `http://localhost:11434` | Network address of your Ollama instance. |
-| `ai.ollama.model` | `qwen2.5:3b` | Model installed in Ollama (`qwen2.5:3b`, `llama3.2`, etc.). |
-| `sonarr.enabled` | `true` | Enable or disable Sonarr queue monitoring. |
-| `sonarr.url` | `http://localhost:8989` | Base URL of your Sonarr instance. |
-| `sonarr.api_key` | `""` | Sonarr API key (*Settings → General → Security*). |
-| `radarr.enabled` | `false` | Enable or disable Radarr queue monitoring. |
-| `radarr.url` | `http://localhost:7878` | Base URL of your Radarr instance. |
-| `radarr.api_key` | `""` | Radarr API key (*Settings → General → Security*). |
-| `categories.<name>.enabled` | `true` | Enable or disable processing for specific error categories. |
-| `categories.<name>.dry_run` | `true` | Per-category dry-run toggle (`false` to execute real imports, `true` for simulation only). |
-
-### 🎯 Error & Import Failure Categories
-
-AImportarr intelligently categorizes download issues into granular categories, allowing individual toggles and independent `dry_run` control:
-
-| Category | Description | AI Action |
-| :--- | :--- | :--- |
-| `fake_or_malware` | Fake releases, trojans, unsupported archives masquerading as media | Verifies with AI, then deletes from download client and permanently blocklists. |
-| `id_match` | Release was matched to series/movie by ID (Sonarr/Radarr safety guardrail) | Verifies release name against candidate title/aliases. |
-| `unknown_media` | Unknown series/movie (metadata missing from queue item) | Searches your tracked library items to identify the correct media. |
-| `unknown_episode` | Series is known, but season/episode numbers could not be parsed | Extracts season and episode numbers from irregular file paths. |
-| `sample_or_extra` | File flagged as a sample, preview, or short video | Evaluates whether the file is disposable or a genuine OVA/special. |
-| `quality_or_language` | Rejected by quality cutoff or language profile | Overrides cutoff when enabled to import alternative releases. |
-| `missing_episodes` | Expected episodes missing from release (e.g. single episode labeled as season pack) | Imports available files, then dismisses lingering season pack warnings from queue without deleting from download client. |
-| `other` | **Fallback / Catch-All** for unclassified queue warnings or errors | Analyzes release and applies configured dry-run/import rules. |
-
-### Environment Variable Overrides
-
-All options can alternatively be passed as container environment variables:
-
-```bash
-DRY_RUN=false
-AI_PROVIDER=gemini
-AI_FALLBACK_ENABLED=true
-GEMINI_API_KEY=your_gemini_api_key
-OLLAMA_BASE_URL=http://localhost:11434
-SONARR_URL=http://localhost:8989
-SONARR_API_KEY=your_sonarr_api_key
-RADARR_URL=http://localhost:7878
-RADARR_API_KEY=your_radarr_api_key
-DATABASE_PATH=/config/aimportarr.db
-DATABASE_RETENTION_DAYS=30
-
-# Category dry-run and enabled overrides
-CATEGORY_ID_MATCH_DRY_RUN=false
-CATEGORY_UNKNOWN_MEDIA_DRY_RUN=true
-CATEGORY_OTHER_DRY_RUN=false
-CATEGORY_SAMPLE_OR_EXTRA_ENABLED=true
-```
+| Setting | Env Variable | Default | Description |
+| :--- | :--- | :--- | :--- |
+| `general.dry_run` | `DRY_RUN` | `false` | Simulate all decisions without modifying *arr or deleting files. |
+| `general.check_interval_seconds` | `CHECK_INTERVAL_SECONDS` | `120` | Seconds between Sonarr/Radarr queue scans. |
+| `general.min_confidence` | `MIN_CONFIDENCE` | `0.85` | Minimum AI confidence required (`0.0`–`1.0`) to import or delete files. |
+| `general.reject_on_low_confidence` | `REJECT_ON_LOW_CONFIDENCE` | `false` | `false` leaves low-confidence items in queue (`In Queue`); `true` dismisses & blocklists while keeping seeding. |
+| `ai.provider` | `AI_PROVIDER` | `gemini` | Primary AI backend (`gemini` or `ollama`). |
+| `ai.fallback_enabled` | `AI_FALLBACK_ENABLED` | `true` | Automatically fail over to secondary provider on rate limits or errors. |
+| `ai.gemini.api_key` | `GEMINI_API_KEY` | `""` | Google Gemini API key. |
+| `ai.gemini.model` | `GEMINI_MODEL` | `auto` | Gemini model name (`auto` resolves fastest active Flash model). |
+| `ai.ollama.base_url` | `OLLAMA_BASE_URL` | `http://localhost:11434` | Ollama server URL. |
+| `ai.ollama.model` | `OLLAMA_MODEL` | `qwen2.5:1.5b` | Ollama model tag. |
+| `sonarr.enabled` / `url` / `api_key` | `SONARR_ENABLED`, `SONARR_URL`, `SONARR_API_KEY` | — | Sonarr connection settings. |
+| `radarr.enabled` / `url` / `api_key` | `RADARR_ENABLED`, `RADARR_URL`, `RADARR_API_KEY` | — | Radarr connection settings. |
+| `extraction.enabled` | `EXTRACTION_ENABLED` | `true` | Enable in-memory archive inspection & sandbox extraction. |
+| `database.path` / `retention_days` | `DATABASE_PATH`, `DATABASE_RETENTION_DAYS` | `/config/aimportarr.db` (`30`d) | SQLite database path and history retention period. |
 
 ---
 
-## 📋 Logs & Verification
+## 📄 Documentation & License
 
-To verify that AImportarr is running and watching your queues:
-
-```bash
-docker logs -f aimportarr
-```
-
-Sample output:
-```text
-2026-10-19 23:00:00 [INFO] [aimportarr] Starting AImportarr (Sonarr & Radarr)
-2026-10-19 23:00:00 [INFO] [aimportarr] Configuration loaded (Dry Run: False, Check Interval: 120s)
-2026-10-19 23:00:00 [INFO] [aimportarr.ai] AI Provider initialized: Gemini (gemini-2.0-flash) with automatic fallback to Ollama (qwen2.5:3b)
-2026-10-19 23:00:00 [INFO] [aimportarr.sonarr] Sonarr client configured for: http://localhost:8989
-```
-
----
-
-## 📄 License
-MIT License. See [LICENSE](LICENSE) for details.
+- [**Architecture & Two-Stage AI Design (`docs/ARCHITECTURE.md`)**](docs/ARCHITECTURE.md)
+- Licensed under the [MIT License](LICENSE).
