@@ -5,6 +5,7 @@ from .base import (
     Stage1TriageResult,
     Stage2DecisionResult,
     BackfillPackMatchResult,
+    BackfillBulkEpisodesMatchResult,
     AIProviderError
 )
 
@@ -171,3 +172,36 @@ class FallbackProvider(BaseAIProvider):
             except Exception as fe:
                 logger.error(f"Fallback AI provider '{self.fallback.name}' also failed: {fe}")
                 return BackfillPackMatchResult(matched_guid=None, confidence=0.0, reasoning=f"Both primary and fallback failed: {fe}")
+
+    async def evaluate_backfill_episodes_bulk(
+        self,
+        series_info: Dict[str, Any],
+        season_number: int,
+        missing_episodes: List[Dict[str, Any]],
+        candidate_releases: List[Dict[str, Any]],
+    ) -> BackfillBulkEpisodesMatchResult:
+        try:
+            return await self.primary.evaluate_backfill_episodes_bulk(
+                series_info=series_info,
+                season_number=season_number,
+                missing_episodes=missing_episodes,
+                candidate_releases=candidate_releases,
+            )
+        except (AIProviderError, Exception) as e:
+            if not self.fallback:
+                logger.error(f"Primary AI provider '{self.primary.name}' failed: {e}. No fallback configured.")
+                return BackfillBulkEpisodesMatchResult(matches=[], model_name=self.primary.name)
+
+            logger.warning(
+                f"Primary AI provider '{self.primary.name}' failed: {e}. Automatically falling back to '{self.fallback.name}'..."
+            )
+            try:
+                return await self.fallback.evaluate_backfill_episodes_bulk(
+                    series_info=series_info,
+                    season_number=season_number,
+                    missing_episodes=missing_episodes,
+                    candidate_releases=candidate_releases,
+                )
+            except Exception as fe:
+                logger.error(f"Fallback AI provider '{self.fallback.name}' also failed: {fe}")
+                return BackfillBulkEpisodesMatchResult(matches=[], model_name=self.fallback.name)

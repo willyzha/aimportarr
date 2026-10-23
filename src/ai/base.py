@@ -237,6 +237,51 @@ def validate_backfill_payload(data: Any, candidate_releases: List[Dict[str, Any]
     return errors
 
 
+def validate_bulk_episodes_payload(
+    data: Any,
+    candidate_releases: List[Dict[str, Any]],
+    missing_episodes: List[Dict[str, Any]],
+) -> List[str]:
+    """Validate raw parsed JSON for BackfillBulkEpisodesMatchResult. Returns list of error descriptions."""
+    if not isinstance(data, dict):
+        return ["Response must be a JSON object"]
+
+    errors: List[str] = []
+    matches = data.get("matches")
+    if matches is None or not isinstance(matches, list):
+        return ["Missing or invalid 'matches' array"]
+
+    valid_guids = {str(r.get("guid")) for r in candidate_releases if isinstance(r, dict) and r.get("guid")}
+    valid_ep_nums = {
+        int(e.get("episodeNumber"))
+        for e in missing_episodes
+        if isinstance(e, dict) and e.get("episodeNumber") is not None
+    }
+
+    for idx, m in enumerate(matches):
+        if not isinstance(m, dict):
+            errors.append(f"matches[{idx}] must be an object")
+            continue
+
+        ep_num = m.get("episode_number")
+        if ep_num is None or not isinstance(ep_num, int) or isinstance(ep_num, bool):
+            errors.append(f"matches[{idx}] has missing or non-integer 'episode_number': {ep_num!r}")
+        elif valid_ep_nums and ep_num not in valid_ep_nums:
+            errors.append(f"matches[{idx}].episode_number {ep_num} is not in missing episodes {sorted(valid_ep_nums)}")
+
+        m_guid = m.get("matched_guid")
+        if m_guid is not None and valid_guids and str(m_guid) not in valid_guids:
+            errors.append(f"matches[{idx}].matched_guid {m_guid!r} is not in candidate GUIDs {sorted(valid_guids)}")
+
+        conf = m.get("confidence")
+        if conf is None or not isinstance(conf, (int, float)) or isinstance(conf, bool):
+            errors.append(f"matches[{idx}] has missing or non-numeric 'confidence': {conf!r}")
+        elif not (0.0 <= float(conf) <= 1.0):
+            errors.append(f"matches[{idx}].confidence {conf} out of range [0.0, 1.0]")
+
+    return errors
+
+
 def build_stage3_repair_prompt(
     stage_name: str,
     raw_output: str,
@@ -311,6 +356,27 @@ class BackfillPackMatchResult(BaseModel):
     model_name: Optional[str] = Field(default=None, description="Name of the model or provider that generated this result")
 
 
+class EpisodeMatchItem(BaseModel):
+    episode_number: int = Field(..., description="Episode number being matched")
+    matched_guid: Optional[str] = Field(default=None, description="GUID of the matching candidate release, or null if no valid match")
+    confidence: float = Field(default=0.0, ge=0.0, le=1.0, description="Confidence score between 0.0 and 1.0")
+    reasoning: str = Field(default="", description="Explanation of why this release matches or why no match was made")
+
+
+class BackfillBulkEpisodesMatchResult(BaseModel):
+    matches: List[EpisodeMatchItem] = Field(default_factory=list, description="Per-episode matching decisions")
+    raw_response: str = Field(default="", description="Raw response text")
+    model_name: Optional[str] = Field(default=None, description="Name of the model or provider that generated this result")
+
+    def __init__(self, **kwargs):
+        if "matches" in kwargs and isinstance(kwargs["matches"], list):
+            kwargs["matches"] = [
+                EpisodeMatchItem(**m) if isinstance(m, dict) else m
+                for m in kwargs["matches"]
+            ]
+        super().__init__(**kwargs)
+
+
 class BaseAIProvider(ABC):
     """Abstract interface for Two-Stage AI Providers (Gemini, Ollama, etc.)"""
 
@@ -378,3 +444,17 @@ class BaseAIProvider(ABC):
         'Unknown Series' episode releases from Sonarr search, identify the best matching valid episode release.
         """
         return BackfillPackMatchResult(matched_guid=None, confidence=0.0, reasoning="Not implemented")
+
+    async def evaluate_backfill_episodes_bulk(
+        self,
+        series_info: Dict[str, Any],
+        season_number: int,
+        missing_episodes: List[Dict[str, Any]],
+        candidate_releases: List[Dict[str, Any]],
+    ) -> BackfillBulkEpisodesMatchResult:
+        """
+        Tier 2 Bulk AI Fallback for Ongoing Season Missing Episodes: Given a target series + season,
+        a list of missing episodes, and a list of candidate releases from the bulk season search,
+        identify the best matching valid release for each missing episode in a single AI call.
+        """
+        return BackfillBulkEpisodesMatchResult(matches=[], model_name=self.name)

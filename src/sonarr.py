@@ -1641,14 +1641,13 @@ class SonarrClient:
                         item_keys=[backfill_key],
                     )
 
-                    # Immediate inline fallback: search up to max_episodes_per_run missing episodes with 30s delay
+                    # Immediate inline fallback: match individual missing episodes from the already-fetched season release pool!
                     season_missing_eps = [
                         e for e in season_eps
                         if e.get("monitored", True) and not e.get("hasFile", False)
                     ]
-                    fallback_max = max(1, int(self.episode_retry_config.max_episodes_per_run))
                     logger.info(
-                        f"  ↪ Falling back inline to search individual episodes for {season_label} (up to {fallback_max} eps, 30s delay)..."
+                        f"  ↪ Falling back inline to match individual episodes for {season_label} from the season release pool..."
                     )
                     await self._retry_missing_episodes_batch(
                         series=series,
@@ -1657,8 +1656,8 @@ class SonarrClient:
                         queued_episode_ids=queued_episode_ids,
                         ai_provider=ai_provider,
                         dry_run=is_dry_run,
-                        max_episodes=fallback_max,
                         delay_seconds=30.0,
+                        preloaded_releases=releases,
                     )
 
         return packs_grabbed
@@ -1802,14 +1801,18 @@ class SonarrClient:
         queued_episode_ids: Set[int],
         ai_provider: Optional[BaseAIProvider] = None,
         dry_run: Optional[bool] = None,
-        max_episodes: int = 5,
+        max_episodes: Optional[int] = None,
         delay_seconds: float = 30.0,
+        preloaded_releases: Optional[List[Dict[str, Any]]] = None,
     ) -> Tuple[int, int]:
         """
-        Iterate through missing episodes of a season in chronological order,
-        search Sonarr interactive releases (with rate-limiting delay between searches),
-        rank Tier 1 vs Tier 2 (AI), and grab winning releases.
-        If a winning release covers multiple episodes, satisfies and records all covered episodes.
+        Match and grab missing episodes for a season using bulk season search + Tier 1 in-memory matching,
+        Tier 2 bulk AI matching, and targeted episode search fallback for truncated items:
+        1. Query GET /api/v3/release?seriesId=X&seasonNumber=Y once (or reuse preloaded_releases).
+        2. Match Tier 1 eligible releases in-memory for 0 AI tokens.
+        3. For remaining unresolved episodes, evaluate against candidate releases in a single bulk AI call.
+        4. Grab all winning matches found for the season.
+        5. For any episodes still unsatisfied, fall back to targeted episode search (with 30s rate-limiting delay).
         Returns (episodes_searched, episodes_grabbed).
         """
         is_dry_run = self.dry_run if dry_run is None else dry_run
@@ -1820,19 +1823,10 @@ class SonarrClient:
         sorted_eps = sorted(missing_eps, key=lambda e: int(e.get("episodeNumber") or 0))
         ep_num_to_obj = {int(e.get("episodeNumber") or 0): e for e in sorted_eps}
 
-        episodes_searched = 0
-        episodes_grabbed = 0
-        satisfied_ep_nums: Set[int] = set()
-
+        active_missing_eps: List[Dict[str, Any]] = []
         for ep in sorted_eps:
-            if episodes_searched >= max_episodes:
-                break
-
-            ep_num = int(ep.get("episodeNumber") or 0)
-            if ep_num in satisfied_ep_nums:
-                continue
-
             ep_id = ep.get("id")
+            ep_num = int(ep.get("episodeNumber") or 0)
             if not ep_id or int(ep_id) in queued_episode_ids:
                 continue
 
@@ -1841,22 +1835,209 @@ class SonarrClient:
                 continue
             if not metrics.db and retry_key in self._attempted_episode_retry_keys:
                 continue
+            active_missing_eps.append(ep)
 
-            if episodes_searched > 0 and delay_seconds > 0:
+        if not active_missing_eps:
+            return 0, 0
+
+        # Step 1: Bulk Season Search
+        if preloaded_releases is not None:
+            season_releases = preloaded_releases
+        else:
+            logger.info(f"  🔎 Fetching bulk season releases for {series_title} Season {season_num:02d} (1 tracker query)...")
+            try:
+                season_releases = await self.get_season_releases(int(series_id), season_num)
+            except Exception as e:
+                logger.warning(f"  ⚠️ Bulk season release search failed for {series_title} S{season_num:02d}: {e}")
+                season_releases = []
+
+        episodes_searched = 1 if preloaded_releases is None and season_releases else 0
+        episodes_grabbed = 0
+        satisfied_ep_nums: Set[int] = set()
+
+        # In-memory mapping: ep_num -> (winning_rel, decider_model, confidence, reasoning)
+        ep_matches: Dict[int, Tuple[Dict[str, Any], str, float, str]] = {}
+
+        # Step 2: Tier 1 in-memory matching (0 AI tokens)
+        for ep in active_missing_eps:
+            ep_num = int(ep.get("episodeNumber") or 0)
+            if ep_num in satisfied_ep_nums:
+                continue
+
+            tier1_candidates = [
+                rel for rel in season_releases
+                if self.classify_episode_release(rel, season_num, ep_num) == "tier1_eligible"
+            ]
+            if tier1_candidates:
+                tier1_candidates.sort(key=self._rank_season_pack, reverse=True)
+                winning_rel = tier1_candidates[0]
+                reason = (
+                    f"Selected best qualifying release '{winning_rel.get('title')}' "
+                    f"for missing episode S{season_num:02d}E{ep_num:02d} from bulk season search."
+                )
+                ep_matches[ep_num] = (winning_rel, "Sonarr (Bulk Episode Match)", 1.0, reason)
+                raw_covered = winning_rel.get("episodeNumbers") or [ep_num]
+                covered_ints = [int(n) for n in raw_covered if isinstance(n, (int, str)) and str(n).isdigit()]
+                for cov in covered_ints:
+                    satisfied_ep_nums.add(cov)
+
+        # Step 3: Tier 2 bulk AI matching for remaining unresolved episodes
+        unresolved_eps = [
+            e for e in active_missing_eps
+            if int(e.get("episodeNumber") or 0) not in satisfied_ep_nums
+        ]
+        if unresolved_eps and ai_provider:
+            candidate_unknown = [
+                rel for rel in season_releases
+                if not rel.get("fullSeason")
+                and any(
+                    "unknown series" in (r.get("reason", "") if isinstance(r, dict) else str(r)).lower()
+                    for r in (rel.get("rejections") or [])
+                )
+            ]
+            # Exclude 0-seeder torrents and hard disqualifiers
+            candidate_unknown = [
+                rel for rel in candidate_unknown
+                if not (rel.get("protocol") == "torrent" and (rel.get("seeders") or 0) < 1)
+                and not any(
+                    h in (r.get("reason", "") if isinstance(r, dict) else str(r)).lower()
+                    for r in (rel.get("rejections") or [])
+                    for h in HARD_EPISODE_RELEASE_DISQUALIFIER_PATTERNS
+                )
+            ]
+
+            if candidate_unknown:
+                candidate_unknown.sort(key=self._rank_season_pack, reverse=True)
                 logger.info(
-                    f"  ⏳ Waiting {delay_seconds:.0f}s before next episode search to respect indexer rate limits..."
+                    f"  🤖 Evaluating {len(unresolved_eps)} unresolved episode(s) against "
+                    f"{len(candidate_unknown[:30])} candidate release(s) with bulk AI..."
+                )
+                ai_res = await ai_provider.evaluate_backfill_episodes_bulk(
+                    series_info={
+                        "id": series_id,
+                        "title": series_title,
+                        "year": series.get("year"),
+                        "aliases": [a.get("title") for a in (series.get("alternateTitles") or [])],
+                    },
+                    season_number=season_num,
+                    missing_episodes=unresolved_eps,
+                    candidate_releases=[
+                        {
+                            "guid": r.get("guid"),
+                            "title": r.get("title"),
+                            "quality": ((r.get("quality") or {}).get("quality") or {}).get("name"),
+                            "customFormatScore": r.get("customFormatScore", 0),
+                            "qualityWeight": r.get("qualityWeight", 0),
+                            "seeders": r.get("seeders"),
+                        }
+                        for r in candidate_unknown[:30]
+                    ],
+                )
+                guid_to_rel = {str(r.get("guid")): r for r in candidate_unknown}
+                for match_item in ai_res.matches:
+                    m_ep_num = match_item.episode_number
+                    if m_ep_num in satisfied_ep_nums:
+                        continue
+                    if match_item.matched_guid and match_item.confidence >= self.min_confidence:
+                        winning_rel = guid_to_rel.get(str(match_item.matched_guid))
+                        if winning_rel:
+                            reason = (
+                                match_item.reasoning
+                                or f"AI matched 'Unknown Series' release '{winning_rel.get('title')}' for S{season_num:02d}E{m_ep_num:02d}."
+                            )
+                            ep_matches[m_ep_num] = (
+                                winning_rel,
+                                ai_res.model_name or ai_provider.name,
+                                match_item.confidence,
+                                reason,
+                            )
+                            raw_covered = winning_rel.get("episodeNumbers") or [m_ep_num]
+                            cov_ints = [int(n) for n in raw_covered if isinstance(n, (int, str)) and str(n).isdigit()]
+                            for cov in cov_ints:
+                                satisfied_ep_nums.add(cov)
+
+        # Step 4: Grab all winning bulk matches
+        grabbed_guids: Set[str] = set()
+        for ep_num, (winning_rel, decider_model, match_conf, match_reason) in ep_matches.items():
+            guid = str(winning_rel.get("guid"))
+            rel_title = winning_rel.get("title") or f"Release {guid}"
+
+            if guid not in grabbed_guids:
+                grab_ok = await self.grab_release(
+                    guid=guid,
+                    indexer_id=int(winning_rel.get("indexerId", 0)),
+                    dry_run=is_dry_run,
+                    title=rel_title,
+                )
+                grabbed_guids.add(guid)
+                if grab_ok:
+                    episodes_grabbed += 1
+            else:
+                grab_ok = True
+
+            status_str = "dry_run" if is_dry_run else ("imported" if grab_ok else "failed")
+            raw_covered = winning_rel.get("episodeNumbers") or [ep_num]
+            covered = [int(n) for n in raw_covered if isinstance(n, (int, str)) and str(n).isdigit()]
+            if not covered or ep_num not in covered:
+                covered = [ep_num]
+
+            for cov_num in covered:
+                cov_ep = ep_num_to_obj.get(cov_num)
+                cov_title = (cov_ep.get("title") if cov_ep else None) or f"Episode {cov_num}"
+                cov_label = f"{series_title} - S{season_num:02d}E{cov_num:02d} - {cov_title}"
+                cov_key = f"ep_retry:sonarr:{series_id}:s{season_num:02d}e{cov_num:02d}"
+
+                self._attempted_episode_retry_keys.add(cov_key)
+                if cov_ep and cov_ep.get("id"):
+                    queued_episode_ids.add(int(cov_ep["id"]))
+
+                cov_details = f"{'Would grab' if is_dry_run else 'Grabbed'} episode release: {rel_title}"
+                if len(covered) > 1:
+                    cov_details += f" (multi-episode covers E{cov_num:02d})"
+
+                metrics.record_processed_item(
+                    app="Sonarr",
+                    title=cov_label,
+                    category="episode_retry",
+                    status=status_str,
+                    confidence=match_conf,
+                    model=decider_model,
+                    reasoning=match_reason,
+                    details=cov_details,
+                    item_keys=[cov_key],
+                )
+
+        # Step 5: Immediate Targeted Episode Fallback (Safety Net for episodes truncated by indexer 100-result limits)
+        still_missing = [
+            e for e in active_missing_eps
+            if int(e.get("episodeNumber") or 0) not in satisfied_ep_nums
+        ]
+        for ep in still_missing:
+            ep_num = int(ep.get("episodeNumber") or 0)
+            if ep_num in satisfied_ep_nums:
+                continue
+
+            ep_id = ep.get("id")
+            if not ep_id:
+                continue
+
+            retry_key = f"ep_retry:sonarr:{series_id}:s{season_num:02d}e{ep_num:02d}"
+            ep_title = ep.get("title") or f"Episode {ep_num}"
+            ep_label = f"{series_title} - S{season_num:02d}E{ep_num:02d} - {ep_title}"
+
+            if delay_seconds > 0:
+                logger.info(
+                    f"  ⏳ Waiting {delay_seconds:.0f}s before targeted search for '{ep_label}' to respect indexer rate limits..."
                 )
                 await asyncio.sleep(delay_seconds)
 
             episodes_searched += 1
-            ep_title = ep.get("title") or f"Episode {ep_num}"
-            ep_label = f"{series_title} - S{season_num:02d}E{ep_num:02d} - {ep_title}"
-            logger.info(f"  🔎 Searching releases for missing episode '{ep_label}'...")
+            logger.info(f"  🔎 Targeted interactive search for missing episode '{ep_label}'...")
 
             try:
                 releases = await self.get_episode_releases(int(ep_id))
             except Exception as e:
-                logger.warning(f"  ⚠️ Interactive episode search failed for '{ep_label}': {e}")
+                logger.warning(f"  ⚠️ Targeted interactive search failed for '{ep_label}': {e}")
                 continue
 
             tier1_releases: List[Dict[str, Any]] = []
@@ -1869,8 +2050,8 @@ class SonarrClient:
                 elif tier == "tier2_unknown_series":
                     tier2_releases.append(rel)
 
-            winning_rel: Optional[Dict[str, Any]] = None
-            decider_model = "Sonarr (Episode Retry)"
+            winning_rel = None
+            decider_model = "Sonarr (Targeted Episode Retry)"
             match_confidence = 1.0
             match_reasoning = ""
 
@@ -1884,9 +2065,9 @@ class SonarrClient:
             elif tier2_releases and ai_provider:
                 tier2_releases.sort(key=self._rank_season_pack, reverse=True)
                 logger.info(
-                    f"  🤖 No direct episode release matched for '{ep_label}', evaluating {len(tier2_releases)} 'Unknown Series' release(s) with AI..."
+                    f"  🤖 Evaluating {len(tier2_releases)} 'Unknown Series' release(s) with AI for '{ep_label}'..."
                 )
-                ai_res = await ai_provider.evaluate_backfill_episode(
+                ai_res_single = await ai_provider.evaluate_backfill_episode(
                     series_info={
                         "id": series_id,
                         "title": series_title,
@@ -1908,20 +2089,20 @@ class SonarrClient:
                         for r in tier2_releases[:25]
                     ],
                 )
-                decider_model = ai_res.model_name or ai_provider.name
-                match_confidence = ai_res.confidence
-                if ai_res.matched_guid and ai_res.confidence >= self.min_confidence:
+                decider_model = ai_res_single.model_name or ai_provider.name
+                match_confidence = ai_res_single.confidence
+                if ai_res_single.matched_guid and ai_res_single.confidence >= self.min_confidence:
                     winning_rel = next(
-                        (r for r in tier2_releases if str(r.get("guid")) == str(ai_res.matched_guid)),
+                        (r for r in tier2_releases if str(r.get("guid")) == str(ai_res_single.matched_guid)),
                         None,
                     )
-                    match_reasoning = ai_res.reasoning or (
-                        f"AI matched 'Unknown Series' release '{winning_rel.get('title') if winning_rel else ''}' "
-                        f"for {ep_label}."
+                    match_reasoning = (
+                        ai_res_single.reasoning
+                        or f"AI matched 'Unknown Series' release '{winning_rel.get('title') if winning_rel else ''}' for {ep_label}."
                     )
                 else:
                     match_reasoning = (
-                        ai_res.reasoning
+                        ai_res_single.reasoning
                         or "AI did not confirm any 'Unknown Series' candidate episode release."
                     )
 
@@ -1937,7 +2118,6 @@ class SonarrClient:
                 if grab_ok:
                     episodes_grabbed += 1
 
-                # Check which episodes this release covers (multi-episode support)
                 raw_covered_nums = winning_rel.get("episodeNumbers") or [ep_num]
                 covered_ints = [
                     int(n) for n in raw_covered_nums if isinstance(n, (int, str)) and str(n).isdigit()
@@ -1995,11 +2175,12 @@ class SonarrClient:
         self,
         ai_provider: Optional[BaseAIProvider] = None,
         dry_run: Optional[bool] = None,
+        delay_seconds: float = 30.0,
     ) -> int:
         """
         Scan monitored Sonarr series for ongoing/incomplete seasons with missing aired episodes,
-        search for qualifying individual episode releases via GET /api/v3/release?episodeId=X,
-        and grab the best release (using Tier 1 0-token ranking or Tier 2 AI fallback for 'Unknown Series').
+        search for qualifying episode releases using bulk season search (1 tracker query per season),
+        and grab winning releases (using Tier 1 in-memory ranking or Tier 2 bulk AI fallback).
         Returns the number of episode releases grabbed (or simulated in Dry Run).
         """
         is_dry_run = self.dry_run if dry_run is None else dry_run
@@ -2087,7 +2268,6 @@ class SonarrClient:
                 if not missing_eps:
                     continue
 
-                rem_episodes = max_episodes - episodes_searched
                 batch_searched, batch_grabbed = await self._retry_missing_episodes_batch(
                     series=series,
                     season_num=season_num,
@@ -2095,8 +2275,7 @@ class SonarrClient:
                     queued_episode_ids=queued_episode_ids,
                     ai_provider=ai_provider,
                     dry_run=is_dry_run,
-                    max_episodes=rem_episodes,
-                    delay_seconds=30.0,
+                    delay_seconds=delay_seconds,
                 )
                 episodes_searched += batch_searched
                 episodes_grabbed += batch_grabbed

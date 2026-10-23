@@ -31,7 +31,14 @@ try:
 except ImportError:
     sys.modules["httpx"] = MagicMock()
 
-from src.ai.base import Stage1TriageResult, Stage2DecisionResult, ApprovedFileItem
+from src.ai.base import (
+    Stage1TriageResult,
+    Stage2DecisionResult,
+    ApprovedFileItem,
+    BackfillPackMatchResult,
+    EpisodeMatchItem,
+    BackfillBulkEpisodesMatchResult,
+)
 from src.sonarr import SonarrClient
 from src.radarr import RadarrClient
 from src.metrics import metrics
@@ -1062,16 +1069,20 @@ class QualityEnforcementTests(unittest.IsolatedAsyncioTestCase):
             },
         ]
 
+        # 1. Tier 1 Bulk Season Search: Hits get_season_releases once, matches S02E02 directly in memory (0 AI tokens, 0 per-episode queries)
         with patch.object(self.sonarr, "get_all_series", new_callable=AsyncMock, return_value=series_list), \
              patch.object(self.sonarr, "get_queue", new_callable=AsyncMock, return_value=[]), \
              patch.object(self.sonarr, "get_series_episodes", new_callable=AsyncMock, return_value=episodes_s20), \
-             patch.object(self.sonarr, "get_episode_releases", new_callable=AsyncMock, return_value=releases_ep202) as mock_ep_search, \
+             patch.object(self.sonarr, "get_season_releases", new_callable=AsyncMock, return_value=releases_ep202) as mock_season_search, \
+             patch.object(self.sonarr, "get_episode_releases", new_callable=AsyncMock) as mock_ep_search, \
              patch.object(self.sonarr, "grab_release", new_callable=AsyncMock, return_value=True) as mock_grab:
 
-            grabbed = await self.sonarr.run_missing_episode_retry(ai_provider=self.mock_ai)
+            grabbed = await self.sonarr.run_missing_episode_retry(ai_provider=self.mock_ai, delay_seconds=0)
             self.assertEqual(grabbed, 1)
-            # Only Episode 202 (S02E02) was searched (S01 is completed; S02E01 hasFile; S02E03 aired 1h ago < 6h delay; S02E04 airs next week)
-            mock_ep_search.assert_called_once_with(202)
+            # Queried bulk season releases once (series 20, season 2)
+            mock_season_search.assert_called_once_with(20, 2)
+            # Did NOT hit individual episode search because it was matched in bulk!
+            mock_ep_search.assert_not_called()
             mock_grab.assert_called_once_with(
                 guid="ep-guid-1080p",
                 indexer_id=2,
@@ -1079,7 +1090,7 @@ class QualityEnforcementTests(unittest.IsolatedAsyncioTestCase):
                 title="Ongoing.Show.S02E02.1080p.WEB-DL",
             )
 
-        # Tier 2 AI Fallback test for 'Unknown Series' episode release
+        # 2. Tier 2 Bulk AI Fallback: Unknown Series candidate releases evaluated via evaluate_backfill_episodes_bulk
         self.sonarr._attempted_episode_retry_keys.clear()
         releases_ep202_unknown = [
             {
@@ -1096,11 +1107,16 @@ class QualityEnforcementTests(unittest.IsolatedAsyncioTestCase):
                 "rejections": ["Unknown Series"],
             }
         ]
-        self.mock_ai.evaluate_backfill_episode = AsyncMock(
-            return_value=BackfillPackMatchResult(
-                matched_guid="ep-guid-pinyin",
-                confidence=0.95,
-                reasoning="Matched Pinyin title to Ongoing Show S02E02",
+        self.mock_ai.evaluate_backfill_episodes_bulk = AsyncMock(
+            return_value=BackfillBulkEpisodesMatchResult(
+                matches=[
+                    EpisodeMatchItem(
+                        episode_number=2,
+                        matched_guid="ep-guid-pinyin",
+                        confidence=0.95,
+                        reasoning="Matched Pinyin title to Ongoing Show S02E02",
+                    )
+                ],
                 model_name="MockAI",
             )
         )
@@ -1108,17 +1124,40 @@ class QualityEnforcementTests(unittest.IsolatedAsyncioTestCase):
         with patch.object(self.sonarr, "get_all_series", new_callable=AsyncMock, return_value=series_list), \
              patch.object(self.sonarr, "get_queue", new_callable=AsyncMock, return_value=[]), \
              patch.object(self.sonarr, "get_series_episodes", new_callable=AsyncMock, return_value=episodes_s20), \
-             patch.object(self.sonarr, "get_episode_releases", new_callable=AsyncMock, return_value=releases_ep202_unknown), \
+             patch.object(self.sonarr, "get_season_releases", new_callable=AsyncMock, return_value=releases_ep202_unknown) as mock_season_search2, \
+             patch.object(self.sonarr, "get_episode_releases", new_callable=AsyncMock) as mock_ep_search2, \
              patch.object(self.sonarr, "grab_release", new_callable=AsyncMock, return_value=True) as mock_grab2:
 
-            grabbed2 = await self.sonarr.run_missing_episode_retry(ai_provider=self.mock_ai)
+            grabbed2 = await self.sonarr.run_missing_episode_retry(ai_provider=self.mock_ai, delay_seconds=0)
             self.assertEqual(grabbed2, 1)
-            self.mock_ai.evaluate_backfill_episode.assert_called_once()
+            mock_season_search2.assert_called_once_with(20, 2)
+            self.mock_ai.evaluate_backfill_episodes_bulk.assert_called_once()
+            mock_ep_search2.assert_not_called()
             mock_grab2.assert_called_once_with(
                 guid="ep-guid-pinyin",
                 indexer_id=3,
                 dry_run=False,
                 title="LianZaiJu.S02E02.1080p.WEB-DL",
+            )
+
+        # 3. Targeted Fallback Safety Net: If bulk season search returns no matches, falls back to targeted search
+        self.sonarr._attempted_episode_retry_keys.clear()
+        with patch.object(self.sonarr, "get_all_series", new_callable=AsyncMock, return_value=series_list), \
+             patch.object(self.sonarr, "get_queue", new_callable=AsyncMock, return_value=[]), \
+             patch.object(self.sonarr, "get_series_episodes", new_callable=AsyncMock, return_value=episodes_s20), \
+             patch.object(self.sonarr, "get_season_releases", new_callable=AsyncMock, return_value=[]) as mock_empty_season, \
+             patch.object(self.sonarr, "get_episode_releases", new_callable=AsyncMock, return_value=releases_ep202) as mock_targeted_ep, \
+             patch.object(self.sonarr, "grab_release", new_callable=AsyncMock, return_value=True) as mock_grab3:
+
+            grabbed3 = await self.sonarr.run_missing_episode_retry(ai_provider=self.mock_ai, delay_seconds=0)
+            self.assertEqual(grabbed3, 1)
+            mock_empty_season.assert_called_once_with(20, 2)
+            mock_targeted_ep.assert_called_once_with(202)
+            mock_grab3.assert_called_once_with(
+                guid="ep-guid-1080p",
+                indexer_id=2,
+                dry_run=False,
+                title="Ongoing.Show.S02E02.1080p.WEB-DL",
             )
 
     def test_classify_episode_release_tiers_and_rejections(self):
@@ -1250,7 +1289,8 @@ class QualityEnforcementTests(unittest.IsolatedAsyncioTestCase):
             }
         ]
 
-        with patch.object(self.sonarr, "get_episode_releases", new_callable=AsyncMock, return_value=releases) as mock_search, \
+        with patch.object(self.sonarr, "get_season_releases", new_callable=AsyncMock, return_value=releases) as mock_search, \
+             patch.object(self.sonarr, "get_episode_releases", new_callable=AsyncMock) as mock_ep_search, \
              patch.object(self.sonarr, "grab_release", new_callable=AsyncMock, return_value=True) as mock_grab:
 
             queued_ep_ids = set()
@@ -1263,11 +1303,12 @@ class QualityEnforcementTests(unittest.IsolatedAsyncioTestCase):
                 delay_seconds=0,
             )
 
-            # E01 was searched and grabbed S01E01-E02
+            # Bulk season search was queried once and grabbed S01E01-E02
             self.assertEqual(searched, 1)
             self.assertEqual(grabbed, 1)
-            # E02 should be satisfied immediately without an extra interactive search
-            mock_search.assert_called_once_with(101)
+            # Targeted episode search was NOT needed because E01 and E02 were both matched in bulk
+            mock_search.assert_called_once_with(10, 1)
+            mock_ep_search.assert_not_called()
             mock_grab.assert_called_once()
             self.assertIn(101, queued_ep_ids)
             self.assertIn(102, queued_ep_ids)
@@ -1304,6 +1345,7 @@ class QualityEnforcementTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(call_kwargs["season_num"], 1)
             self.assertEqual(len(call_kwargs["missing_eps"]), 1)
             self.assertEqual(call_kwargs["missing_eps"][0]["id"], 302)
+            self.assertEqual(call_kwargs["preloaded_releases"], [])
 
 
 if __name__ == "__main__":

@@ -11,11 +11,14 @@ from .base import (
     ApprovedFileItem,
     Stage2DecisionResult,
     BackfillPackMatchResult,
+    EpisodeMatchItem,
+    BackfillBulkEpisodesMatchResult,
     AIProviderError,
     compact_stage2_context,
     validate_stage1_payload,
     validate_stage2_payload,
     validate_backfill_payload,
+    validate_bulk_episodes_payload,
     build_stage3_repair_prompt,
 )
 
@@ -461,3 +464,85 @@ class OllamaProvider(BaseAIProvider):
             reasoning=str(res.get("reasoning", "")),
             model_name=self.name,
         )
+
+    async def evaluate_backfill_episodes_bulk(
+        self,
+        series_info: Dict[str, Any],
+        season_number: int,
+        missing_episodes: List[Dict[str, Any]],
+        candidate_releases: List[Dict[str, Any]],
+    ) -> BackfillBulkEpisodesMatchResult:
+        today_str = datetime.now().strftime("%Y-%m-%d")
+        target_schema = (
+            "{\n"
+            '  "matches": [\n'
+            '    {\n'
+            '      "episode_number": integer,\n'
+            '      "matched_guid": "exact guid from candidate_releases or null",\n'
+            '      "confidence": float (0.0 to 1.0),\n'
+            '      "reasoning": "brief explanation"\n'
+            '    }\n'
+            '  ]\n'
+            "}"
+        )
+        system_prompt = (
+            f"You are an expert TV episode release matcher for Sonarr. Current date: {today_str}. "
+            "Respond ONLY with a valid JSON object with key 'matches' containing a list of objects with: "
+            "'episode_number' (integer), 'matched_guid' (string or null), 'confidence' (float 0.0-1.0), and 'reasoning' (string)."
+        )
+        user_prompt = (
+            f"Target Series: {json.dumps(series_info, ensure_ascii=False)}\n"
+            f"Target Season: Season {season_number:02d}\n"
+            f"Missing Episodes to Match: {json.dumps([{'episode_number': e.get('episodeNumber'), 'title': e.get('title')} for e in missing_episodes], ensure_ascii=False)}\n"
+            f"Candidate Releases from Season Search:\n{json.dumps(candidate_releases[:25], ensure_ascii=False)}\n\n"
+            "Task:\n"
+            "1. For each missing episode, determine if any candidate release is a valid release for that episode of the Target Series "
+            "(accounting for aliases, Chinese Pinyin, Romaji, and foreign release titles).\n"
+            "2. Note: A multi-episode release (e.g. EP01-EP02 or S01E01-E02) may match multiple missing episodes.\n"
+            "3. If multiple releases match an episode, pick the one with highest qualityWeight / customFormatScore / seeders.\n"
+            "4. If no candidate release matches an episode, set matched_guid to null with confidence 0.0.\n\n"
+            f"REQUIRED JSON OUTPUT SCHEMA:\n{target_schema}"
+        )
+        series_label = f"{series_info.get('title', 'Series')} S{season_number:02d} Bulk ({len(missing_episodes)} eps)"
+        res, raw_text, parse_err = await self._call_ollama_with_raw(
+            system_prompt,
+            user_prompt,
+            operation="evaluate_backfill_episodes_bulk",
+            item_title=series_label,
+        )
+        val_errors = (
+            [parse_err]
+            if parse_err
+            else validate_bulk_episodes_payload(res, candidate_releases, missing_episodes)
+        )
+        if val_errors:
+            res = await self._repair_with_stage3(
+                stage_name="evaluate_backfill_episodes_bulk",
+                raw_output=raw_text,
+                validation_errors=val_errors,
+                target_schema=target_schema,
+                reference_context={
+                    "target_series": series_info,
+                    "season_number": season_number,
+                    "missing_episodes": missing_episodes,
+                    "candidate_releases": candidate_releases[:25],
+                },
+                item_title=series_label,
+            )
+            post_errors = validate_bulk_episodes_payload(res, candidate_releases, missing_episodes)
+            if post_errors:
+                raise AIProviderError(
+                    f"Stage 3 AI Output Interpreter failed to repair bulk episode retry output: {'; '.join(post_errors)}"
+                )
+        assert isinstance(res, dict)
+        matches = [
+            EpisodeMatchItem(
+                episode_number=int(m["episode_number"]),
+                matched_guid=str(m["matched_guid"]) if m.get("matched_guid") else None,
+                confidence=float(m.get("confidence", 0.0)),
+                reasoning=str(m.get("reasoning", "")),
+            )
+            for m in (res.get("matches") or [])
+            if isinstance(m, dict) and m.get("episode_number") is not None
+        ]
+        return BackfillBulkEpisodesMatchResult(matches=matches, model_name=self.name)
