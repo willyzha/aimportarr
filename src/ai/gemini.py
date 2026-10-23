@@ -12,6 +12,7 @@ from .base import (
     Stage1TriageResult,
     ApprovedFileItem,
     Stage2DecisionResult,
+    BackfillPackMatchResult,
     AIProviderError
 )
 
@@ -381,6 +382,45 @@ class GeminiProvider(BaseAIProvider):
             matched_media_id=int(data["matched_media_id"]) if data.get("matched_media_id") is not None else None,
             files_to_import=files,
             category_tag=str(data.get("category_tag", "ai_decision")),
+            confidence=float(data.get("confidence", 0.0)),
+            reasoning=str(data.get("reasoning", "")),
+            model_name=self.name,
+        )
+
+    async def evaluate_backfill_season_pack(
+        self,
+        series_info: Dict[str, Any],
+        season_number: int,
+        candidate_releases: List[Dict[str, Any]],
+    ) -> BackfillPackMatchResult:
+        schema = (
+            "Return JSON adhering strictly to this schema:\n"
+            "{\n"
+            '  "matched_guid": "exact guid from candidate_releases or null if none match",\n'
+            '  "confidence": float (0.0 to 1.0),\n'
+            '  "reasoning": "brief explanation of why the selected release matches the target series and season"\n'
+            "}"
+        )
+        prompt = (
+            f"Target Series: {json.dumps(series_info, ensure_ascii=False)}\n"
+            f"Target Season Number: Season {season_number:02d}\n"
+            f"Candidate Season Pack Releases (flagged by Sonarr as 'Unknown Series'):\n"
+            f"{json.dumps(candidate_releases[:25], ensure_ascii=False, indent=2)}\n\n"
+            "Task:\n"
+            "1. Determine if any candidate release is a genuine full-season pack for the Target Series and Target Season Number "
+            "(accounting for alternate titles, Chinese Pinyin, Romaji, foreign titles, or year variations).\n"
+            "2. If multiple candidates match the series and season, pick the one with the highest customFormatScore / qualityWeight / seeders.\n"
+            "3. If none of the candidates actually belong to this series and season, return matched_guid: null."
+        )
+        series_label = f"{series_info.get('title', 'Series')} S{season_number:02d}"
+        data = await self._call_gemini(
+            prompt,
+            schema,
+            operation="evaluate_backfill_season_pack",
+            item_title=series_label,
+        )
+        return BackfillPackMatchResult(
+            matched_guid=str(data["matched_guid"]) if data.get("matched_guid") else None,
             confidence=float(data.get("confidence", 0.0)),
             reasoning=str(data.get("reasoning", "")),
             model_name=self.name,

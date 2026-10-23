@@ -4,6 +4,7 @@ from .base import (
     BaseAIProvider,
     Stage1TriageResult,
     Stage2DecisionResult,
+    BackfillPackMatchResult,
     AIProviderError
 )
 
@@ -108,3 +109,31 @@ class FallbackProvider(BaseAIProvider):
             except Exception as fe:
                 logger.error(f"Fallback AI provider '{self.fallback.name}' also failed: {fe}")
                 return Stage2DecisionResult(decision="reject_keep_in_client", confidence=0.0, reasoning=f"Both primary and fallback failed: {fe}")
+
+    async def evaluate_backfill_season_pack(
+        self,
+        series_info: Dict[str, Any],
+        season_number: int,
+        candidate_releases: List[Dict[str, Any]],
+    ) -> BackfillPackMatchResult:
+        try:
+            return await self.primary.evaluate_backfill_season_pack(
+                series_info=series_info,
+                season_number=season_number,
+                candidate_releases=candidate_releases,
+            )
+        except (AIProviderError, Exception) as e:
+            if not self.fallback:
+                logger.error(f"Primary AI provider '{self.primary.name}' failed: {e}. No fallback configured.")
+                return BackfillPackMatchResult(matched_guid=None, confidence=0.0, reasoning=f"AI error: {e}")
+
+            logger.warning(f"Primary AI provider '{self.primary.name}' failed: {e}. Automatically falling back to '{self.fallback.name}'...")
+            try:
+                return await self.fallback.evaluate_backfill_season_pack(
+                    series_info=series_info,
+                    season_number=season_number,
+                    candidate_releases=candidate_releases,
+                )
+            except Exception as fe:
+                logger.error(f"Fallback AI provider '{self.fallback.name}' also failed: {fe}")
+                return BackfillPackMatchResult(matched_guid=None, confidence=0.0, reasoning=f"Both primary and fallback failed: {fe}")

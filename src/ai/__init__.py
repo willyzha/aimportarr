@@ -4,6 +4,7 @@ from .base import (
     Stage1TriageResult,
     ApprovedFileItem,
     Stage2DecisionResult,
+    BackfillPackMatchResult,
     AIProviderError,
 )
 from .gemini import GeminiProvider
@@ -80,6 +81,7 @@ __all__ = [
     "Stage1TriageResult",
     "ApprovedFileItem",
     "Stage2DecisionResult",
+    "BackfillPackMatchResult",
     "AIProviderError",
     "GeminiProvider",
     "OllamaProvider",

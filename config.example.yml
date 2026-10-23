@@ -51,6 +51,14 @@ sonarr:
   enabled: true
   url: "http://localhost:8989"
   api_key: "YOUR_SONARR_API_KEY"
+  # Optional: Backfill missing episodes in completed seasons using Season Packs
+  # when Sonarr rejects the pack solely because other episodes on disk have higher quality.
+  season_pack_backfill:
+    enabled: false
+    interval_hours: 12
+    min_missing_days: 3
+    max_seasons_per_run: 3
+    season_cooldown_days: 7
 
 radarr:
   enabled: false

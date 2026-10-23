@@ -496,6 +496,237 @@ class QualityEnforcementTests(unittest.IsolatedAsyncioTestCase):
             self.assertTrue(mock_resolve.call_args.kwargs["blocklist"])
             self.assertFalse(mock_resolve.call_args.kwargs["skip_redownload"])
 
+    async def test_classify_season_pack_release_tiers(self):
+        """Verify Tier 1 (existing-file quality only), Tier 2 (Unknown Series), and hard disqualifiers."""
+        # 1. Unrejected fullSeason pack -> tier1_eligible
+        self.assertEqual(
+            self.sonarr.classify_season_pack_release(
+                {"fullSeason": True, "seasonNumber": 1, "protocol": "usenet", "rejected": False, "rejections": []},
+                season_number=1,
+            ),
+            "tier1_eligible",
+        )
+
+        # 2. Rejected ONLY for existing file on disk higher quality + Custom Format -> tier1_eligible
+        self.assertEqual(
+            self.sonarr.classify_season_pack_release(
+                {
+                    "fullSeason": True,
+                    "seasonNumber": 1,
+                    "protocol": "torrent",
+                    "seeders": 12,
+                    "rejected": True,
+                    "rejections": [
+                        "Existing file on disk is of equal or higher preference: WEBDL-1080p",
+                        "Not a Custom Format upgrade for existing episode file(s)",
+                    ],
+                },
+                season_number=1,
+            ),
+            "tier1_eligible",
+        )
+
+        # 3. Rejected for Unknown Series + existing file quality -> tier2_unknown_series
+        self.assertEqual(
+            self.sonarr.classify_season_pack_release(
+                {
+                    "fullSeason": True,
+                    "seasonNumber": 1,
+                    "protocol": "torrent",
+                    "seeders": 5,
+                    "rejected": True,
+                    "rejections": [
+                        "Unknown Series",
+                        "Existing file on disk is of equal or higher preference",
+                    ],
+                },
+                season_number=1,
+            ),
+            "tier2_unknown_series",
+        )
+
+        # 4. Disqualified: 0 seeders on torrent
+        self.assertEqual(
+            self.sonarr.classify_season_pack_release(
+                {
+                    "fullSeason": True,
+                    "seasonNumber": 1,
+                    "protocol": "torrent",
+                    "seeders": 0,
+                    "rejected": True,
+                    "rejections": ["Existing file on disk is of equal or higher preference"],
+                },
+                season_number=1,
+            ),
+            "disqualified",
+        )
+
+        # 5. Disqualified: Unwanted language or unwanted quality in profile
+        self.assertEqual(
+            self.sonarr.classify_season_pack_release(
+                {
+                    "fullSeason": True,
+                    "seasonNumber": 1,
+                    "protocol": "usenet",
+                    "rejected": True,
+                    "rejections": [
+                        "Existing file on disk is of equal or higher preference",
+                        "Language German is not wanted",
+                    ],
+                },
+                season_number=1,
+            ),
+            "disqualified",
+        )
+
+    async def test_season_pack_backfill_end_to_end_tier1_and_tier2(self):
+        """Verify Season Pack Backfill skips ongoing seasons, grabs best Tier 1 pack, and falls back to Tier 2 AI."""
+        from src.ai.base import BackfillPackMatchResult
+
+        # Series 10: Season 1 is completed (aired in 2024) with 1 existing file and 1 missing file;
+        # Season 2 has an unaired/future episode (should be skipped).
+        series_list = [
+            {
+                "id": 10,
+                "title": "Test Show",
+                "year": 2024,
+                "monitored": True,
+                "seasons": [
+                    {"seasonNumber": 1, "monitored": True},
+                    {"seasonNumber": 2, "monitored": True},
+                ],
+            }
+        ]
+        episodes_s10 = [
+            {"id": 101, "seasonNumber": 1, "episodeNumber": 1, "monitored": True, "hasFile": True, "airDateUtc": "2024-01-01T00:00:00Z"},
+            {"id": 102, "seasonNumber": 1, "episodeNumber": 2, "monitored": True, "hasFile": False, "airDateUtc": "2024-01-08T00:00:00Z"},
+            {"id": 201, "seasonNumber": 2, "episodeNumber": 1, "monitored": True, "hasFile": False, "airDateUtc": "2099-01-01T00:00:00Z"},
+        ]
+        releases_s1 = [
+            {
+                "guid": "guid-low-rank",
+                "indexerId": 1,
+                "title": "Test.Show.S01.720p.BluRay",
+                "fullSeason": True,
+                "seasonNumber": 1,
+                "protocol": "usenet",
+                "customFormatScore": 10,
+                "qualityWeight": 4,
+                "rejected": True,
+                "rejections": ["Existing file on disk is of equal or higher preference"],
+            },
+            {
+                "guid": "guid-best-rank",
+                "indexerId": 2,
+                "title": "Test.Show.S01.1080p.WEB-DL",
+                "fullSeason": True,
+                "seasonNumber": 1,
+                "protocol": "usenet",
+                "customFormatScore": 50,
+                "qualityWeight": 6,
+                "rejected": True,
+                "rejections": ["Existing file on disk is of equal or higher preference"],
+            },
+        ]
+
+        with patch.object(self.sonarr, "get_all_series", new_callable=AsyncMock, return_value=series_list), \
+             patch.object(self.sonarr, "get_queue", new_callable=AsyncMock, return_value=[]), \
+             patch.object(self.sonarr, "get_series_episodes", new_callable=AsyncMock, return_value=episodes_s10), \
+             patch.object(self.sonarr, "get_season_releases", new_callable=AsyncMock, return_value=releases_s1) as mock_search, \
+             patch.object(self.sonarr, "grab_release", new_callable=AsyncMock, return_value=True) as mock_grab:
+
+            grabbed = await self.sonarr.run_season_pack_backfill(ai_provider=self.mock_ai)
+            self.assertEqual(grabbed, 1)
+            # Only Season 1 was searched (Season 2 is still airing in 2099)
+            mock_search.assert_called_once_with(10, 1)
+            mock_grab.assert_called_once_with(
+                guid="guid-best-rank",
+                indexer_id=2,
+                dry_run=False,
+                title="Test.Show.S01.1080p.WEB-DL",
+            )
+
+        # Tier 2 AI Fallback test: reset cooldown memory and return only 'Unknown Series' season pack
+        self.sonarr._attempted_backfill_keys.clear()
+        releases_unknown = [
+            {
+                "guid": "guid-pinyin-pack",
+                "indexerId": 3,
+                "title": "CeShiJu.S01.Complete.1080p.WEB-DL",
+                "fullSeason": True,
+                "seasonNumber": 1,
+                "protocol": "usenet",
+                "customFormatScore": 25,
+                "qualityWeight": 5,
+                "rejected": True,
+                "rejections": ["Unknown Series"],
+            }
+        ]
+        self.mock_ai.evaluate_backfill_season_pack = AsyncMock(
+            return_value=BackfillPackMatchResult(
+                matched_guid="guid-pinyin-pack",
+                confidence=0.94,
+                reasoning="Matched Pinyin title to Test Show Season 1",
+                model_name="MockAI",
+            )
+        )
+
+        with patch.object(self.sonarr, "get_all_series", new_callable=AsyncMock, return_value=series_list), \
+             patch.object(self.sonarr, "get_queue", new_callable=AsyncMock, return_value=[]), \
+             patch.object(self.sonarr, "get_series_episodes", new_callable=AsyncMock, return_value=episodes_s10), \
+             patch.object(self.sonarr, "get_season_releases", new_callable=AsyncMock, return_value=releases_unknown), \
+             patch.object(self.sonarr, "grab_release", new_callable=AsyncMock, return_value=True) as mock_grab2:
+
+            grabbed2 = await self.sonarr.run_season_pack_backfill(ai_provider=self.mock_ai)
+            self.assertEqual(grabbed2, 1)
+            self.mock_ai.evaluate_backfill_season_pack.assert_called_once()
+            mock_grab2.assert_called_once_with(
+                guid="guid-pinyin-pack",
+                indexer_id=3,
+                dry_run=False,
+                title="CeShiJu.S01.Complete.1080p.WEB-DL",
+            )
+
+    async def test_satisfied_season_pack_with_quality_rejection_dismisses_without_blocklist(self):
+        """When all monitored episodes in a season now have files on disk, leftover quality-rejected pack files dismiss cleanly without blocklisting."""
+        manual_items = [
+            {
+                "path": "/downloads/Show.S01/Show.S01E01.mkv",
+                "name": "Show.S01E01.mkv",
+                "rejections": [{"reason": "Existing file on disk is of equal or higher preference"}],
+                "episodes": [{"id": 101, "seasonNumber": 1, "episodeNumber": 1}],
+                "series": {"id": 5, "title": "Show"},
+            },
+            {
+                "path": "/downloads/Show.S01/Show.S01E02.mkv",
+                "name": "Show.S01E02.mkv",
+                "rejections": [{"reason": "Existing file on disk is of equal or higher preference"}],
+                "episodes": [{"id": 102, "seasonNumber": 1, "episodeNumber": 2}],
+                "series": {"id": 5, "title": "Show"},
+            },
+        ]
+        queue_item = {
+            "id": 109,
+            "title": "Show.S01.720p.BluRay",
+            "statusMessages": [{"messages": ["Existing file on disk is of equal or higher preference"]}],
+            "series": {"id": 5, "title": "Show"},
+            "outputPath": "/downloads/Show.S01",
+        }
+        all_eps_satisfied = [
+            {"id": 101, "seasonNumber": 1, "episodeNumber": 1, "monitored": True, "hasFile": True},
+            {"id": 102, "seasonNumber": 1, "episodeNumber": 2, "monitored": True, "hasFile": True},
+        ]
+
+        with patch.object(self.sonarr, "get_manual_import_items", new_callable=AsyncMock, return_value=manual_items), \
+             patch.object(self.sonarr, "get_series_episodes", new_callable=AsyncMock, return_value=all_eps_satisfied), \
+             patch.object(self.sonarr, "get_episode_files", new_callable=AsyncMock, return_value=[]), \
+             patch.object(self.sonarr, "dismiss_queue_warning", new_callable=AsyncMock) as mock_dismiss, \
+             patch.object(self.sonarr, "resolve_queue_item", new_callable=AsyncMock) as mock_resolve:
+
+            await self.sonarr.process_queue_item(item=queue_item, ai_provider=self.mock_ai)
+            mock_dismiss.assert_called_once()
+            mock_resolve.assert_not_called()
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -132,6 +132,11 @@ All settings can be configured in `/config/config.yml` (see [`config.example.yml
 | `ai.ollama.base_url` | `OLLAMA_BASE_URL` | `http://localhost:11434` | Ollama server URL. |
 | `ai.ollama.model` | `OLLAMA_MODEL` | `qwen2.5:1.5b` | Ollama model tag. |
 | `sonarr.enabled` / `url` / `api_key` | `SONARR_ENABLED`, `SONARR_URL`, `SONARR_API_KEY` | — | Sonarr connection settings. |
+| `sonarr.season_pack_backfill.enabled` | `SONARR_BACKFILL_ENABLED` | `false` | Opt-in: search and force-grab Season Packs for completed seasons with missing episodes when Sonarr rejects the pack solely because other episodes on disk have higher quality. |
+| `sonarr.season_pack_backfill.interval_hours` | `SONARR_BACKFILL_INTERVAL_HOURS` | `12` | Background check interval in hours for Season Pack Backfill. |
+| `sonarr.season_pack_backfill.min_missing_days` | `SONARR_BACKFILL_MIN_MISSING_DAYS` | `3` | Post-finale grace period in days after the season's last episode airs before backfilling with a season pack. |
+| `sonarr.season_pack_backfill.max_seasons_per_run` | `SONARR_BACKFILL_MAX_SEASONS_PER_RUN` | `3` | Maximum seasons queried via interactive search per backfill run. |
+| `sonarr.season_pack_backfill.season_cooldown_days` | `SONARR_BACKFILL_COOLDOWN_DAYS` | `7` | Per-season cooldown in days before re-searching the same season (resettable via UI Retry). |
 | `radarr.enabled` / `url` / `api_key` | `RADARR_ENABLED`, `RADARR_URL`, `RADARR_API_KEY` | — | Radarr connection settings. |
 | `extraction.enabled` | `EXTRACTION_ENABLED` | `true` | Enable archive inspection & staging extraction. |
 | `extraction.delete_after_import` | `EXTRACTION_DELETE_AFTER_IMPORT` | `true` | Clean up extracted staging folder once imported. |

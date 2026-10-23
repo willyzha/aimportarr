@@ -213,6 +213,40 @@ class DatabaseManager:
             # Already attempted and retry not requested -> skip
             return True
 
+    def is_item_attempted_within_days(self, item_keys: List[str], days: int = 7) -> bool:
+        """
+        Check if any of the given item keys have been processed within the last `days` days
+        and NOT marked for retry.
+        """
+        if not item_keys:
+            return False
+
+        with self._lock:
+            conn = self._get_connection()
+            placeholders = ",".join("?" for _ in item_keys)
+            query = f"""
+            SELECT p.id, p.retry_requested, p.status, p.timestamp
+            FROM processed_items p
+            JOIN processed_item_keys k ON p.id = k.processed_id
+            WHERE k.item_key IN ({placeholders})
+            ORDER BY p.id DESC
+            LIMIT 1;
+            """
+            cursor = conn.execute(query, item_keys)
+            row = cursor.fetchone()
+            if not row:
+                return False
+
+            if bool(row["retry_requested"]):
+                return False
+
+            if days > 0 and row["timestamp"]:
+                cutoff_str = (datetime.now(timezone.utc) - timedelta(days=days)).isoformat()
+                if row["timestamp"] < cutoff_str:
+                    return False
+
+            return True
+
     def record_processed_item(
         self,
         app: str,

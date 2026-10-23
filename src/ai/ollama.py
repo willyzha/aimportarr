@@ -10,6 +10,7 @@ from .base import (
     Stage1TriageResult,
     ApprovedFileItem,
     Stage2DecisionResult,
+    BackfillPackMatchResult,
     AIProviderError
 )
 
@@ -198,6 +199,39 @@ class OllamaProvider(BaseAIProvider):
             matched_media_id=int(res["matched_media_id"]) if res.get("matched_media_id") is not None else None,
             files_to_import=files,
             category_tag=str(res.get("category_tag", "ai_decision")),
+            confidence=float(res.get("confidence", 0.0)),
+            reasoning=str(res.get("reasoning", "")),
+            model_name=self.name,
+        )
+
+    async def evaluate_backfill_season_pack(
+        self,
+        series_info: Dict[str, Any],
+        season_number: int,
+        candidate_releases: List[Dict[str, Any]],
+    ) -> BackfillPackMatchResult:
+        today_str = datetime.now().strftime("%Y-%m-%d")
+        system_prompt = (
+            f"You are an expert TV media release matcher for Sonarr. Current date: {today_str}. "
+            "Respond ONLY with a valid JSON object with keys: "
+            "'matched_guid' (string or null), 'confidence' (float 0.0-1.0), and 'reasoning' (string)."
+        )
+        user_prompt = (
+            f"Target Series: {json.dumps(series_info, ensure_ascii=False)}\n"
+            f"Target Season Number: Season {season_number:02d}\n"
+            f"Candidate Releases: {json.dumps(candidate_releases[:20], ensure_ascii=False)}\n\n"
+            "Identify which candidate release (if any) is a valid full-season pack for the Target Series and Season "
+            "(considering aliases, Pinyin, Romaji, and foreign titles), preferring higher customFormatScore / qualityWeight / seeders."
+        )
+        series_label = f"{series_info.get('title', 'Series')} S{season_number:02d}"
+        res = await self._call_ollama(
+            system_prompt,
+            user_prompt,
+            operation="evaluate_backfill_season_pack",
+            item_title=series_label,
+        )
+        return BackfillPackMatchResult(
+            matched_guid=str(res["matched_guid"]) if res.get("matched_guid") else None,
             confidence=float(res.get("confidence", 0.0)),
             reasoning=str(res.get("reasoning", "")),
             model_name=self.name,

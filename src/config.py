@@ -26,11 +26,20 @@ class AIConfig(BaseModel):
     gemini: GeminiConfig = Field(default_factory=GeminiConfig)
     ollama: OllamaConfig = Field(default_factory=OllamaConfig)
 
+class SeasonPackBackfillConfig(BaseModel):
+    enabled: bool = False
+    interval_hours: int = 12
+    min_missing_days: int = 3
+    max_seasons_per_run: int = 3
+    season_cooldown_days: int = 7
+
+
 class SonarrConfig(BaseModel):
     model_config = {"extra": "ignore"}
     enabled: bool = True
     url: str = "http://localhost:8989"
     api_key: str = ""
+    season_pack_backfill: SeasonPackBackfillConfig = Field(default_factory=SeasonPackBackfillConfig)
 
 class RadarrConfig(BaseModel):
     model_config = {"extra": "ignore"}
@@ -87,7 +96,10 @@ class AppConfig(BaseModel):
                 ai_d["ollama"] = OllamaConfig(**ai_d["ollama"])
             kwargs["ai"] = AIConfig(**ai_d)
         if isinstance(kwargs.get("sonarr"), dict):
-            kwargs["sonarr"] = SonarrConfig(**kwargs["sonarr"])
+            s_d = dict(kwargs["sonarr"])
+            if isinstance(s_d.get("season_pack_backfill"), dict):
+                s_d["season_pack_backfill"] = SeasonPackBackfillConfig(**s_d["season_pack_backfill"])
+            kwargs["sonarr"] = SonarrConfig(**s_d)
         if isinstance(kwargs.get("radarr"), dict):
             kwargs["radarr"] = RadarrConfig(**kwargs["radarr"])
         if isinstance(kwargs.get("extraction"), dict):
@@ -155,6 +167,13 @@ def config_to_dict(config: AppConfig) -> Dict[str, Any]:
             "enabled": bool(config.sonarr.enabled),
             "url": str(config.sonarr.url),
             "api_key": str(config.sonarr.api_key),
+            "season_pack_backfill": {
+                "enabled": bool(config.sonarr.season_pack_backfill.enabled),
+                "interval_hours": int(config.sonarr.season_pack_backfill.interval_hours),
+                "min_missing_days": int(config.sonarr.season_pack_backfill.min_missing_days),
+                "max_seasons_per_run": int(config.sonarr.season_pack_backfill.max_seasons_per_run),
+                "season_cooldown_days": int(config.sonarr.season_pack_backfill.season_cooldown_days),
+            },
         },
         "radarr": {
             "enabled": bool(config.radarr.enabled),
@@ -227,6 +246,18 @@ def update_config_from_dict(config: AppConfig, data: Dict[str, Any]) -> AppConfi
             config.sonarr.url = str(s["url"]).strip().rstrip("/")
         if "api_key" in s and s["api_key"] is not None:
             config.sonarr.api_key = str(s["api_key"]).strip()
+        if "season_pack_backfill" in s and isinstance(s["season_pack_backfill"], dict):
+            spb = s["season_pack_backfill"]
+            if "enabled" in spb and spb["enabled"] is not None:
+                config.sonarr.season_pack_backfill.enabled = bool(spb["enabled"])
+            if "interval_hours" in spb and spb["interval_hours"] is not None:
+                config.sonarr.season_pack_backfill.interval_hours = max(1, int(spb["interval_hours"]))
+            if "min_missing_days" in spb and spb["min_missing_days"] is not None:
+                config.sonarr.season_pack_backfill.min_missing_days = max(0, int(spb["min_missing_days"]))
+            if "max_seasons_per_run" in spb and spb["max_seasons_per_run"] is not None:
+                config.sonarr.season_pack_backfill.max_seasons_per_run = max(1, int(spb["max_seasons_per_run"]))
+            if "season_cooldown_days" in spb and spb["season_cooldown_days"] is not None:
+                config.sonarr.season_pack_backfill.season_cooldown_days = max(1, int(spb["season_cooldown_days"]))
 
     if "radarr" in data and isinstance(data["radarr"], dict):
         r = data["radarr"]
@@ -347,6 +378,28 @@ def load_config(config_path: Optional[str] = None) -> AppConfig:
         config.sonarr.url = env_sonarr_url
     if env_sonarr_key := os.getenv("SONARR_API_KEY"):
         config.sonarr.api_key = env_sonarr_key
+    if env_bf_enabled := os.getenv("SONARR_BACKFILL_ENABLED"):
+        config.sonarr.season_pack_backfill.enabled = env_bf_enabled.lower() in ("true", "1", "yes")
+    if env_bf_interval := os.getenv("SONARR_BACKFILL_INTERVAL_HOURS"):
+        try:
+            config.sonarr.season_pack_backfill.interval_hours = max(1, int(env_bf_interval))
+        except ValueError:
+            pass
+    if env_bf_missing_days := os.getenv("SONARR_BACKFILL_MIN_MISSING_DAYS"):
+        try:
+            config.sonarr.season_pack_backfill.min_missing_days = max(0, int(env_bf_missing_days))
+        except ValueError:
+            pass
+    if env_bf_max_seasons := os.getenv("SONARR_BACKFILL_MAX_SEASONS_PER_RUN"):
+        try:
+            config.sonarr.season_pack_backfill.max_seasons_per_run = max(1, int(env_bf_max_seasons))
+        except ValueError:
+            pass
+    if env_bf_cooldown := os.getenv("SONARR_BACKFILL_COOLDOWN_DAYS"):
+        try:
+            config.sonarr.season_pack_backfill.season_cooldown_days = max(1, int(env_bf_cooldown))
+        except ValueError:
+            pass
 
     # Radarr overrides
     if env_radarr_enabled := os.getenv("RADARR_ENABLED"):

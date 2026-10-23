@@ -1214,6 +1214,42 @@ DASHBOARD_HTML = """<!DOCTYPE html>
             <input type="password" id="cfg-sonarr-key" class="form-input" placeholder="Sonarr API Key">
           </div>
 
+          <div style="background: rgba(56, 189, 248, 0.05); border: 1px solid rgba(56, 189, 248, 0.2); border-radius: 8px; padding: 0.85rem; margin-top: 0.75rem;">
+            <div class="form-row" style="margin-bottom: 0.65rem;">
+              <div>
+                <div class="form-label" style="margin-bottom: 0; color: var(--sonarr);">📦 Season Pack Backfill</div>
+                <div class="form-hint">Force-grab qualifying Season Packs for completed seasons with missing episodes when Sonarr rejects the pack solely because other episodes on disk have higher quality</div>
+              </div>
+              <label class="toggle-switch">
+                <input type="checkbox" id="cfg-sonarr-backfill-enabled">
+                <span class="toggle-slider"></span>
+              </label>
+            </div>
+
+            <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 0.65rem;">
+              <div class="form-group" style="margin-bottom: 0.5rem;">
+                <label class="form-label" for="cfg-sonarr-backfill-interval">Search Interval (hours)</label>
+                <input type="number" min="1" id="cfg-sonarr-backfill-interval" class="form-input" value="12">
+              </div>
+              <div class="form-group" style="margin-bottom: 0.5rem;">
+                <label class="form-label" for="cfg-sonarr-backfill-missing-days">Post-Finale Grace (days)</label>
+                <input type="number" min="0" id="cfg-sonarr-backfill-missing-days" class="form-input" value="3">
+              </div>
+              <div class="form-group" style="margin-bottom: 0.5rem;">
+                <label class="form-label" for="cfg-sonarr-backfill-max-seasons">Max Seasons / Run</label>
+                <input type="number" min="1" id="cfg-sonarr-backfill-max-seasons" class="form-input" value="3">
+              </div>
+              <div class="form-group" style="margin-bottom: 0.5rem;">
+                <label class="form-label" for="cfg-sonarr-backfill-cooldown">Season Cooldown (days)</label>
+                <input type="number" min="1" id="cfg-sonarr-backfill-cooldown" class="form-input" value="7">
+              </div>
+            </div>
+
+            <div style="margin-top: 0.35rem; display: flex; justify-content: flex-end;">
+              <button type="button" class="btn btn-sm" onclick="triggerBackfillNow()" title="Run an immediate Season Pack Backfill check in the background">📦 Run Backfill Now</button>
+            </div>
+          </div>
+
           <hr style="border: none; border-top: 1px solid var(--border); margin: 1rem 0;">
 
           <div class="form-row">
@@ -1711,6 +1747,22 @@ DASHBOARD_HTML = """<!DOCTYPE html>
       }
     }
 
+    async function triggerBackfillNow() {
+      try {
+        const res = await fetch('/api/backfill', { method: 'POST' });
+        const data = await res.json();
+        if (res.ok && data.status === 'ok') {
+          showToast('Season Pack Backfill check started in background!', 'success');
+          setTimeout(() => fetchData(true), 1500);
+        } else {
+          showToast('Failed to trigger Season Pack Backfill', 'danger');
+        }
+      } catch (e) {
+        console.error(e);
+        showToast('Network error triggering Season Pack Backfill', 'danger');
+      }
+    }
+
     async function retryItem(id) {
       try {
         const res = await fetch('/api/retry', {
@@ -1807,6 +1859,12 @@ DASHBOARD_HTML = """<!DOCTYPE html>
         document.getElementById('cfg-sonarr-enabled').checked = Boolean(s.enabled);
         document.getElementById('cfg-sonarr-url').value = s.url || 'http://localhost:8989';
         document.getElementById('cfg-sonarr-key').value = s.api_key || '';
+        const spb = s.season_pack_backfill || {};
+        document.getElementById('cfg-sonarr-backfill-enabled').checked = Boolean(spb.enabled);
+        document.getElementById('cfg-sonarr-backfill-interval').value = spb.interval_hours ?? 12;
+        document.getElementById('cfg-sonarr-backfill-missing-days').value = spb.min_missing_days ?? 3;
+        document.getElementById('cfg-sonarr-backfill-max-seasons').value = spb.max_seasons_per_run ?? 3;
+        document.getElementById('cfg-sonarr-backfill-cooldown').value = spb.season_cooldown_days ?? 7;
 
         document.getElementById('cfg-radarr-enabled').checked = Boolean(r.enabled);
         document.getElementById('cfg-radarr-url').value = r.url || 'http://localhost:7878';
@@ -1860,7 +1918,14 @@ DASHBOARD_HTML = """<!DOCTYPE html>
         sonarr: {
           enabled: document.getElementById('cfg-sonarr-enabled').checked,
           url: document.getElementById('cfg-sonarr-url').value.trim(),
-          api_key: document.getElementById('cfg-sonarr-key').value.trim()
+          api_key: document.getElementById('cfg-sonarr-key').value.trim(),
+          season_pack_backfill: {
+            enabled: document.getElementById('cfg-sonarr-backfill-enabled').checked,
+            interval_hours: parseInt(document.getElementById('cfg-sonarr-backfill-interval').value, 10) || 12,
+            min_missing_days: parseInt(document.getElementById('cfg-sonarr-backfill-missing-days').value, 10) ?? 3,
+            max_seasons_per_run: parseInt(document.getElementById('cfg-sonarr-backfill-max-seasons').value, 10) || 3,
+            season_cooldown_days: parseInt(document.getElementById('cfg-sonarr-backfill-cooldown').value, 10) || 7
+          }
         },
         radarr: {
           enabled: document.getElementById('cfg-radarr-enabled').checked,
@@ -2065,6 +2130,15 @@ class MetricsHTTPHandler(BaseHTTPRequestHandler):
             self._send_json({
                 "status": "ok",
                 "message": "Immediate queue scan triggered.",
+            })
+            return
+
+        if path == "/api/backfill":
+            if self.on_trigger_scan:
+                self.on_trigger_scan("backfill")
+            self._send_json({
+                "status": "ok",
+                "message": "Season Pack Backfill check triggered.",
             })
             return
 

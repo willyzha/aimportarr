@@ -360,8 +360,14 @@ class ContainerSmokeTests(unittest.TestCase):
                     self.assertEqual(res["status"], "ok")
                     self.assertIn("count", res)
 
-                # 7b. REST API: POST /api/scan and POST /api/webhook
+                # 7b. REST API: POST /api/scan, POST /api/backfill, and POST /api/webhook
                 req = urllib.request.Request(f"http://127.0.0.1:{port}/api/scan", method="POST")
+                with urllib.request.urlopen(req, timeout=3.0) as resp:
+                    self.assertEqual(resp.status, 200)
+                    res = json.loads(resp.read().decode("utf-8"))
+                    self.assertEqual(res["status"], "ok")
+
+                req = urllib.request.Request(f"http://127.0.0.1:{port}/api/backfill", method="POST")
                 with urllib.request.urlopen(req, timeout=3.0) as resp:
                     self.assertEqual(resp.status, 200)
                     res = json.loads(resp.read().decode("utf-8"))
@@ -387,6 +393,7 @@ class ContainerSmokeTests(unittest.TestCase):
 
                 self.assertIn(f"retry:{skipped_id}", triggered_sources)
                 self.assertIn("manual", triggered_sources)
+                self.assertIn("backfill", triggered_sources)
                 self.assertIn("webhook:ManualInteractionRequired", triggered_sources)
 
                 # 8. Official Logo Asset
@@ -428,6 +435,7 @@ class ContainerSmokeTests(unittest.TestCase):
             # Now is_item_attempted should be True (retry not requested)
             self.assertTrue(db.is_item_attempted(item_keys))
             self.assertTrue(db.is_item_attempted(["dl:abc123"]))
+            self.assertTrue(db.is_item_attempted_within_days(["dl:abc123"], days=7))
 
             # Mark for retry
             ok = db.mark_item_for_retry(item_id)
@@ -435,6 +443,7 @@ class ContainerSmokeTests(unittest.TestCase):
 
             # Now is_item_attempted should be False (allows re-scan!)
             self.assertFalse(db.is_item_attempted(item_keys))
+            self.assertFalse(db.is_item_attempted_within_days(["dl:abc123"], days=7))
 
             # Record again (simulating re-evaluation success)
             new_id = db.record_processed_item(

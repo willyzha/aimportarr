@@ -46,6 +46,13 @@ class Stage2DecisionResult(BaseModel):
         super().__init__(**kwargs)
 
 
+class BackfillPackMatchResult(BaseModel):
+    matched_guid: Optional[str] = Field(default=None, description="GUID of the best matching season pack candidate, or null if none match")
+    confidence: float = Field(default=0.0, ge=0.0, le=1.0, description="Confidence score between 0.0 and 1.0")
+    reasoning: str = Field(default="", description="Explanation of the season pack title match decision")
+    model_name: Optional[str] = Field(default=None, description="Name of the model or provider that generated this result")
+
+
 class BaseAIProvider(ABC):
     """Abstract interface for Two-Stage AI Providers (Gemini, Ollama, etc.)"""
 
@@ -87,3 +94,15 @@ class BaseAIProvider(ABC):
         'reject_delete' (virus/sample-only/corrupt), or 'dismiss_pack' (already satisfied season pack).
         """
         pass
+
+    async def evaluate_backfill_season_pack(
+        self,
+        series_info: Dict[str, Any],
+        season_number: int,
+        candidate_releases: List[Dict[str, Any]],
+    ) -> BackfillPackMatchResult:
+        """
+        Tier 2 AI Fallback for Season Pack Backfill: Given a target series + season and a list of
+        'Unknown Series' season pack releases from Sonarr search, identify the best matching valid pack.
+        """
+        return BackfillPackMatchResult(matched_guid=None, confidence=0.0, reasoning="Not implemented")

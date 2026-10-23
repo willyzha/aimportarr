@@ -55,6 +55,7 @@ def build_runtime_clients(config: AppConfig):
                 dry_run=config.general.dry_run,
                 reject_on_low_confidence=config.general.reject_on_low_confidence,
                 extraction_config=config.extraction,
+                backfill_config=config.sonarr.season_pack_backfill,
                 path_mappings=config.path_mappings,
             )
             logger.info(f"Sonarr client configured for: {config.sonarr.url}")
@@ -199,6 +200,53 @@ async def discover_and_enqueue(
     return enqueued_count
 
 
+async def backfill_worker_loop(
+    backfill_event: asyncio.Event,
+    state: Dict[str, Any],
+    config: AppConfig,
+):
+    """
+    Background worker for Sonarr Season Pack Backfill:
+    - Runs on-demand when `backfill_event` is set (via Web UI 'Run Backfill Now' or 'Retry').
+    - Runs automatically every `interval_hours` when `config.sonarr.season_pack_backfill.enabled` is True.
+    """
+    last_backfill_run = 0.0
+
+    while running:
+        try:
+            manual_triggered = backfill_event.is_set()
+            backfill_event.clear()
+
+            bf_cfg = config.sonarr.season_pack_backfill
+            interval_sec = max(1, int(bf_cfg.interval_hours)) * 3600
+            now_mono = time.monotonic()
+            scheduled_due = (
+                config.sonarr.enabled
+                and bf_cfg.enabled
+                and (last_backfill_run == 0.0 or (now_mono - last_backfill_run) >= interval_sec)
+            )
+
+            if manual_triggered or scheduled_due:
+                curr_sonarr: Optional[SonarrClient] = state.get("sonarr_client")
+                curr_ai = state.get("ai_provider")
+                if curr_sonarr and running:
+                    last_backfill_run = time.monotonic()
+                    try:
+                        await curr_sonarr.run_season_pack_backfill(ai_provider=curr_ai)
+                    except Exception as e:
+                        logger.error(f"Error during Sonarr Season Pack Backfill: {e}")
+
+            try:
+                await asyncio.wait_for(backfill_event.wait(), timeout=5.0)
+            except asyncio.TimeoutError:
+                pass
+        except asyncio.CancelledError:
+            break
+        except Exception as e:
+            logger.error(f"Unexpected error in backfill_worker_loop: {e}")
+            await asyncio.sleep(5.0)
+
+
 async def main():
     global running
     signal.signal(signal.SIGINT, handle_stop_signal)
@@ -250,6 +298,7 @@ async def main():
 
     loop = asyncio.get_running_loop()
     scan_event = asyncio.Event()
+    backfill_event = asyncio.Event()
     fifo_queue: asyncio.Queue[Tuple[str, Dict[str, Any], str]] = asyncio.Queue()
     in_flight_keys: Set[str] = set()
 
@@ -260,8 +309,14 @@ async def main():
     state["radarr_client"] = radarr_client
 
     def trigger_scan_threadsafe(source: str = "manual"):
+        if source == "backfill":
+            logger.info("Immediate Season Pack Backfill check requested from Web UI.")
+            loop.call_soon_threadsafe(backfill_event.set)
+            return
         logger.debug(f"Immediate queue scan requested (source: {source})")
         loop.call_soon_threadsafe(scan_event.set)
+        if source.startswith("retry") and config.sonarr.season_pack_backfill.enabled:
+            loop.call_soon_threadsafe(backfill_event.set)
 
     def on_config_updated(updated_config: AppConfig):
         logger.info("Hot-reloading runtime clients from updated Web UI configuration...")
@@ -286,9 +341,12 @@ async def main():
         except Exception as we:
             logger.error(f"Failed to start Web UI server on {config.web.host}:{config.web.port}: {we}")
 
-    # Start the single-worker FIFO consumer task
+    # Start the single-worker FIFO consumer task and Season Pack Backfill worker task
     worker_task = asyncio.create_task(
         fifo_worker_loop(fifo_queue, in_flight_keys, state, config)
+    )
+    backfill_task = asyncio.create_task(
+        backfill_worker_loop(backfill_event, state, config)
     )
 
     try:
@@ -308,8 +366,13 @@ async def main():
                     pass
     finally:
         worker_task.cancel()
+        backfill_task.cancel()
         try:
             await worker_task
+        except asyncio.CancelledError:
+            pass
+        try:
+            await backfill_task
         except asyncio.CancelledError:
             pass
         if web_server:

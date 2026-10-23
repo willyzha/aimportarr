@@ -1,8 +1,9 @@
 import asyncio
+from datetime import datetime, timedelta, timezone
 import logging
 import shutil
 from pathlib import Path
-from typing import List, Dict, Any, Optional
+from typing import List, Dict, Any, Optional, Tuple
 import httpx
 from .ai.base import (
     BaseAIProvider,
@@ -11,7 +12,7 @@ from .ai.base import (
     ApprovedFileItem,
 )
 from .classifier import classify_issue, ErrorCategory, QUALITY_REJECTION_KEYWORDS
-from .config import ExtractionConfig
+from .config import ExtractionConfig, SeasonPackBackfillConfig
 from .extractor import (
     find_archive_file,
     inspect_archive,
@@ -24,6 +25,30 @@ from .metrics import metrics
 
 logger = logging.getLogger("aimportarr.sonarr")
 
+EXISTING_FILE_QUALITY_REJECTION_PATTERNS = (
+    "existing file on disk",
+    "not an upgrade",
+    "not a custom format upgrade",
+    "cutoff already met",
+    "existing file meets cutoff",
+)
+
+HARD_RELEASE_DISQUALIFIER_PATTERNS = (
+    "not wanted",
+    "below minimum",
+    "not enough seeders",
+    "blocklist",
+    "blacklist",
+    "ignored terms",
+    "required terms",
+    "maximum size",
+    "minimum size",
+    "greater than maximum",
+    "smaller than minimum",
+    "single episode",
+    "not a full season",
+)
+
 
 class SonarrClient:
     def __init__(
@@ -34,6 +59,7 @@ class SonarrClient:
         dry_run: bool = False,
         reject_on_low_confidence: bool = False,
         extraction_config: Optional[ExtractionConfig] = None,
+        backfill_config: Optional[SeasonPackBackfillConfig] = None,
         path_mappings: Optional[List[Any]] = None,
         categories: Optional[Any] = None,  # Ignored legacy parameter if passed by external callers
     ):
@@ -43,9 +69,11 @@ class SonarrClient:
         self.dry_run = bool(dry_run)
         self.reject_on_low_confidence = bool(reject_on_low_confidence)
         self.extraction_config = extraction_config or ExtractionConfig()
+        self.backfill_config = backfill_config or SeasonPackBackfillConfig()
         self.path_mappings = path_mappings or []
         self._dismissed_downloads: set = set()
         self._attempted_items: set = set()
+        self._attempted_backfill_keys: set = set()
         self.headers = {
             "X-Api-Key": self.api_key,
             "Content-Type": "application/json",
@@ -785,7 +813,23 @@ class SonarrClient:
             # FAST-PATH A: All candidate files were rejected by Sonarr's hard quality/CF rules
             if quality_rejected_count == len(manual_items):
                 reason_str = "; ".join(sorted(set(all_rejection_reasons))) or "Existing file on disk has equal or higher quality"
-                if initial_category == ErrorCategory.MISSING_EPISODES:
+                # Check if this is a multi-episode season pack where all monitored episodes in the season are now on disk
+                pack_seasons = {
+                    ep.get("seasonNumber")
+                    for m in manual_items
+                    for ep in (m.get("episodes") or [])
+                    if ep.get("seasonNumber") is not None
+                }
+                is_satisfied_season_pack = False
+                if (len(manual_items) > 1 or bool(item.get("fullSeason"))) and pack_seasons and all_episodes:
+                    season_monitored_eps = [
+                        e for e in all_episodes
+                        if e.get("seasonNumber") in pack_seasons and e.get("monitored", True)
+                    ]
+                    if season_monitored_eps and all(e.get("hasFile", False) for e in season_monitored_eps):
+                        is_satisfied_season_pack = True
+
+                if initial_category == ErrorCategory.MISSING_EPISODES or is_satisfied_season_pack:
                     metrics.record_processed_item(
                         app="Sonarr",
                         title=title,
@@ -1160,3 +1204,377 @@ class SonarrClient:
                     )
                 except Exception as ce:
                     logger.debug(f"Failed to clean up staging folder '{staging_dir_to_clean}': {ce}")
+
+    # =========================================================================
+    # Season Pack Backfill Engine
+    # =========================================================================
+
+    async def get_season_releases(self, series_id: int, season_number: int) -> List[Dict[str, Any]]:
+        """Query Sonarr's Interactive Search endpoint for all releases of a specific series season."""
+        url = f"{self.base_url}/api/v3/release"
+        params = {"seriesId": series_id, "seasonNumber": season_number}
+        async with httpx.AsyncClient(timeout=90.0) as client:
+            resp = await client.get(url, headers=self.headers, params=params)
+            resp.raise_for_status()
+            data = resp.json()
+            return data if isinstance(data, list) else []
+
+    async def grab_release(
+        self,
+        guid: str,
+        indexer_id: int,
+        dry_run: Optional[bool] = None,
+        title: str = "",
+    ) -> bool:
+        """Force-grab a specific release via POST /api/v3/release (overriding existing-file rejections)."""
+        if not guid or indexer_id is None:
+            return False
+
+        is_dry = self.dry_run if dry_run is None else dry_run
+        if is_dry:
+            logger.info(
+                f"  [DRY RUN] Would force-grab season pack '{title}' (GUID: {guid}, Indexer: {indexer_id})"
+            )
+            return True
+
+        try:
+            await self._post("release", {"guid": guid, "indexerId": int(indexer_id)})
+            logger.info(f"  ✔ Force-grabbed season pack '{title}' (Indexer: {indexer_id})")
+            return True
+        except Exception as e:
+            logger.error(f"  ✖ Failed to force-grab season pack '{title}': {e}")
+            return False
+
+    @staticmethod
+    def classify_season_pack_release(release: Dict[str, Any], season_number: int) -> str:
+        """
+        Classify a release from GET /api/v3/release into:
+        - 'tier1_eligible': Valid fullSeason pack for `season_number` with 0 rejections OR rejected
+          solely because existing episode files on disk have equal/higher quality/Custom Format score.
+        - 'tier2_unknown_series': Valid fullSeason pack whose only non-quality rejection is 'Unknown Series'.
+        - 'disqualified': Not a full season pack, 0 seeders, or has hard profile/language/size/blocklist rejections.
+        """
+        if not release.get("fullSeason"):
+            return "disqualified"
+
+        rel_season = release.get("seasonNumber")
+        protocol = (release.get("protocol") or "").lower()
+        if protocol == "torrent" and (release.get("seeders") or 0) < 1:
+            return "disqualified"
+
+        raw_rejections = release.get("rejections") or []
+        rejections = [
+            (r.get("reason", "") if isinstance(r, dict) else str(r)).strip()
+            for r in raw_rejections
+            if r
+        ]
+
+        for r in rejections:
+            r_low = r.lower()
+            if any(h in r_low for h in HARD_RELEASE_DISQUALIFIER_PATTERNS):
+                return "disqualified"
+
+        if not release.get("rejected") or not rejections:
+            if rel_season == season_number:
+                return "tier1_eligible"
+            return "disqualified"
+
+        has_unknown_series = False
+        for r in rejections:
+            r_low = r.lower()
+            is_existing_quality = any(p in r_low for p in EXISTING_FILE_QUALITY_REJECTION_PATTERNS)
+            is_unknown_series = any(
+                u in r_low for u in ("unknown series", "no series", "not matched to any series")
+            )
+            if is_unknown_series:
+                has_unknown_series = True
+            elif not is_existing_quality:
+                return "disqualified"
+
+        if has_unknown_series:
+            if rel_season in (season_number, None, 0):
+                return "tier2_unknown_series"
+            return "disqualified"
+
+        if rel_season == season_number:
+            return "tier1_eligible"
+        return "disqualified"
+
+    @staticmethod
+    def is_season_eligible_for_backfill(
+        season_episodes: List[Dict[str, Any]],
+        min_missing_days: int = 3,
+        now_utc: Optional[datetime] = None,
+    ) -> Tuple[bool, int, int]:
+        """
+        Verify if a season is eligible for Season Pack Backfill:
+        1. Has >= 1 monitored episode.
+        2. ALL monitored episodes in the season have aired at least `min_missing_days` ago (season is finished airing).
+        3. At least 1 monitored episode is missing (`hasFile == False`).
+        Returns (is_eligible, missing_count, existing_count).
+        """
+        monitored_eps = [e for e in season_episodes if e.get("monitored", True)]
+        if not monitored_eps:
+            return False, 0, 0
+
+        now_dt = now_utc or datetime.now(timezone.utc)
+        cutoff_dt = now_dt - timedelta(days=max(0, int(min_missing_days)))
+
+        missing_count = 0
+        existing_count = 0
+
+        for ep in monitored_eps:
+            if ep.get("hasFile", False):
+                existing_count += 1
+            else:
+                missing_count += 1
+
+            air_utc_str = ep.get("airDateUtc")
+            air_date_str = ep.get("airDate")
+            if not air_utc_str and not air_date_str:
+                # Unannounced / TBA episode -> season has not finished airing
+                return False, 0, 0
+
+            try:
+                if air_utc_str:
+                    ep_dt = datetime.fromisoformat(air_utc_str.replace("Z", "+00:00"))
+                    if ep_dt.tzinfo is None:
+                        ep_dt = ep_dt.replace(tzinfo=timezone.utc)
+                else:
+                    ep_dt = datetime.fromisoformat(f"{air_date_str}T00:00:00+00:00")
+            except ValueError:
+                return False, 0, 0
+
+            if ep_dt > cutoff_dt:
+                # Episode hasn't aired yet or is within the post-finale grace period
+                return False, 0, 0
+
+        if missing_count < 1:
+            return False, 0, existing_count
+
+        return True, missing_count, existing_count
+
+    @staticmethod
+    def _rank_season_pack(release: Dict[str, Any]) -> Tuple[int, int, int, int]:
+        """Sort key for ranking qualifying season packs (highest first)."""
+        not_rejected = 0 if release.get("rejected") else 1
+        cf_score = int(release.get("customFormatScore") or 0)
+        q_weight = int(release.get("qualityWeight") or 0)
+        seeders = int(release.get("seeders") or 0)
+        return (not_rejected, cf_score, q_weight, seeders)
+
+    async def run_season_pack_backfill(
+        self,
+        ai_provider: Optional[BaseAIProvider] = None,
+        dry_run: Optional[bool] = None,
+    ) -> int:
+        """
+        Scan monitored Sonarr series for completed seasons with missing episodes,
+        search for qualifying Season Packs via GET /api/v3/release, and force-grab the best pack.
+        Returns the number of season packs grabbed (or simulated in Dry Run).
+        """
+        is_dry_run = self.dry_run if dry_run is None else dry_run
+        max_seasons = max(1, int(self.backfill_config.max_seasons_per_run))
+        min_missing_days = max(0, int(self.backfill_config.min_missing_days))
+        cooldown_days = max(1, int(self.backfill_config.season_cooldown_days))
+
+        logger.info(
+            f"📦 Running Sonarr Season Pack Backfill check (Max seasons: {max_seasons}, Grace period: {min_missing_days}d, Cooldown: {cooldown_days}d)..."
+        )
+
+        all_series = await self.get_all_series()
+        if not all_series:
+            return 0
+
+        # Identify seasons already active in the Sonarr download queue
+        queue_items = await self.get_queue()
+        queued_series_seasons = set()
+        for q in queue_items or []:
+            q_series_id = q.get("seriesId") or (q.get("series") or {}).get("id")
+            q_season = q.get("seasonNumber") or (q.get("episode") or {}).get("seasonNumber")
+            if q_series_id and q_season is not None:
+                queued_series_seasons.add((int(q_series_id), int(q_season)))
+            elif q_series_id and q.get("fullSeason"):
+                queued_series_seasons.add((int(q_series_id), -1))
+
+        seasons_searched = 0
+        packs_grabbed = 0
+
+        for series in all_series:
+            if seasons_searched >= max_seasons:
+                break
+            if not series.get("monitored", True):
+                continue
+
+            series_id = series.get("id")
+            series_title = series.get("title") or f"Series #{series_id}"
+            if not series_id:
+                continue
+
+            seasons_meta = {
+                int(s.get("seasonNumber")): s
+                for s in (series.get("seasons") or [])
+                if s.get("seasonNumber") is not None
+            }
+
+            episodes = await self.get_series_episodes(series_id)
+            if not episodes:
+                continue
+
+            eps_by_season: Dict[int, List[Dict[str, Any]]] = {}
+            for ep in episodes:
+                s_num = ep.get("seasonNumber")
+                if s_num is None or int(s_num) <= 0:
+                    continue
+                eps_by_season.setdefault(int(s_num), []).append(ep)
+
+            for season_num in sorted(eps_by_season.keys()):
+                if seasons_searched >= max_seasons:
+                    break
+
+                # Ensure season itself is monitored in Sonarr
+                s_meta = seasons_meta.get(season_num)
+                if s_meta and not s_meta.get("monitored", True):
+                    continue
+
+                # Skip if already downloading in queue
+                if (int(series_id), season_num) in queued_series_seasons or (int(series_id), -1) in queued_series_seasons:
+                    continue
+
+                season_eps = eps_by_season[season_num]
+                eligible, missing_cnt, existing_cnt = self.is_season_eligible_for_backfill(
+                    season_eps, min_missing_days=min_missing_days
+                )
+                if not eligible:
+                    continue
+
+                backfill_key = f"backfill:sonarr:{series_id}:s{season_num:02d}"
+                if metrics.is_item_attempted_within_days([backfill_key], days=cooldown_days):
+                    continue
+                if not metrics.db and backfill_key in self._attempted_backfill_keys:
+                    continue
+
+                if seasons_searched > 0:
+                    await asyncio.sleep(5.0)  # Polite pacing between indexer searches
+
+                seasons_searched += 1
+                season_label = f"{series_title} - Season {season_num:02d}"
+                logger.info(
+                    f"  🔎 Searching Season Packs for '{season_label}' ({missing_cnt} missing, {existing_cnt} on disk)..."
+                )
+
+                try:
+                    releases = await self.get_season_releases(series_id, season_num)
+                except Exception as e:
+                    logger.warning(f"  ⚠️ Interactive search failed for '{season_label}': {e}")
+                    continue
+
+                tier1_packs: List[Dict[str, Any]] = []
+                tier2_packs: List[Dict[str, Any]] = []
+
+                for rel in releases:
+                    tier = self.classify_season_pack_release(rel, season_num)
+                    if tier == "tier1_eligible":
+                        tier1_packs.append(rel)
+                    elif tier == "tier2_unknown_series":
+                        tier2_packs.append(rel)
+
+                winning_pack: Optional[Dict[str, Any]] = None
+                decider_model = "Sonarr (Season Backfill)"
+                match_confidence = 1.0
+                match_reasoning = ""
+
+                if tier1_packs:
+                    tier1_packs.sort(key=self._rank_season_pack, reverse=True)
+                    winning_pack = tier1_packs[0]
+                    rejs = [
+                        (r.get("reason", "") if isinstance(r, dict) else str(r))
+                        for r in (winning_pack.get("rejections") or [])
+                    ]
+                    rej_note = f" (Overrode existing-file rejection: {'; '.join(rejs)})" if rejs else ""
+                    match_reasoning = (
+                        f"Selected best qualifying season pack '{winning_pack.get('title')}' "
+                        f"to backfill {missing_cnt} missing episode(s) ({existing_cnt} already on disk){rej_note}."
+                    )
+                elif tier2_packs and ai_provider:
+                    tier2_packs.sort(key=self._rank_season_pack, reverse=True)
+                    logger.info(
+                        f"  🤖 No direct pack matched for '{season_label}', evaluating {len(tier2_packs)} 'Unknown Series' pack(s) with AI..."
+                    )
+                    ai_res = await ai_provider.evaluate_backfill_season_pack(
+                        series_info={
+                            "id": series_id,
+                            "title": series_title,
+                            "year": series.get("year"),
+                            "aliases": [a.get("title") for a in (series.get("alternateTitles") or [])],
+                        },
+                        season_number=season_num,
+                        candidate_releases=[
+                            {
+                                "guid": r.get("guid"),
+                                "title": r.get("title"),
+                                "quality": ((r.get("quality") or {}).get("quality") or {}).get("name"),
+                                "customFormatScore": r.get("customFormatScore", 0),
+                                "qualityWeight": r.get("qualityWeight", 0),
+                                "seeders": r.get("seeders"),
+                            }
+                            for r in tier2_packs[:25]
+                        ],
+                    )
+                    decider_model = ai_res.model_name or ai_provider.name
+                    match_confidence = ai_res.confidence
+                    if ai_res.matched_guid and ai_res.confidence >= self.min_confidence:
+                        winning_pack = next(
+                            (r for r in tier2_packs if str(r.get("guid")) == str(ai_res.matched_guid)),
+                            None,
+                        )
+                        match_reasoning = ai_res.reasoning or (
+                            f"AI matched 'Unknown Series' season pack '{winning_pack.get('title') if winning_pack else ''}' "
+                            f"for {season_label}."
+                        )
+                    else:
+                        match_reasoning = ai_res.reasoning or "AI did not confirm any 'Unknown Series' candidate season pack."
+
+                self._attempted_backfill_keys.add(backfill_key)
+
+                if winning_pack:
+                    pack_title = winning_pack.get("title") or season_label
+                    grab_ok = await self.grab_release(
+                        guid=str(winning_pack.get("guid")),
+                        indexer_id=int(winning_pack.get("indexerId", 0)),
+                        dry_run=is_dry_run,
+                        title=pack_title,
+                    )
+                    status_str = "dry_run" if is_dry_run else ("imported" if grab_ok else "failed")
+                    metrics.record_processed_item(
+                        app="Sonarr",
+                        title=season_label,
+                        category="season_backfill",
+                        status=status_str,
+                        confidence=match_confidence,
+                        model=decider_model,
+                        reasoning=match_reasoning,
+                        details=f"{'Would grab' if is_dry_run else 'Grabbed'} season pack: {pack_title} ({missing_cnt} missing ep(s))",
+                        item_keys=[backfill_key],
+                    )
+                    if grab_ok:
+                        packs_grabbed += 1
+                else:
+                    no_pack_reason = match_reasoning or (
+                        f"Searched {len(releases)} release(s) for {season_label} ({missing_cnt} missing, {existing_cnt} on disk); "
+                        "no qualifying full-season pack found."
+                    )
+                    logger.info(f"  ℹ️ {no_pack_reason}")
+                    metrics.record_processed_item(
+                        app="Sonarr",
+                        title=season_label,
+                        category="season_backfill",
+                        status="skipped",
+                        confidence=match_confidence if tier2_packs else None,
+                        model=decider_model if tier2_packs else None,
+                        reasoning=no_pack_reason,
+                        details=f"No qualifying season pack found ({missing_cnt} missing ep(s); {cooldown_days}d cooldown)",
+                        item_keys=[backfill_key],
+                    )
+
+        return packs_grabbed

@@ -16,6 +16,8 @@ QUALITY_REJECTION_KEYWORDS = [
     "not an upgrade",
     "higher quality",
     "equal or higher quality",
+    "equal or higher preference",
+    "existing file on disk",
     "better quality",
     "quality not wanted",
     "language not wanted",
