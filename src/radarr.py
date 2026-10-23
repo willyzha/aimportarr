@@ -415,6 +415,52 @@ class RadarrClient:
             model_name=model_name,
         )
 
+    def is_item_eligible(self, item: Dict[str, Any]) -> tuple[bool, str]:
+        """
+        Lightweight pre-filter to determine if a queue item is stuck and eligible to enter the FIFO queue.
+        Returns (is_eligible, dedup_key).
+        """
+        title = item.get("title", "")
+        status = (item.get("trackedDownloadStatus") or "").lower()
+        tracked_state = (item.get("trackedDownloadState") or "").lower()
+        status_messages = item.get("statusMessages", [])
+        output_path = item.get("outputPath", "")
+        download_id = item.get("downloadId", "")
+        queue_id = item.get("id")
+        movie_info = item.get("movie")
+        dedup_key = f"radarr:{download_id or queue_id or title}"
+
+        if download_id and download_id in self._dismissed_downloads:
+            return False, dedup_key
+
+        item_keys = self._get_item_keys(item)
+        if metrics.is_item_attempted(item_keys):
+            return False, dedup_key
+
+        all_messages: List[str] = []
+        for sm in status_messages:
+            all_messages.extend(sm.get("messages", []))
+
+        if tracked_state in ("downloading", "importing", "imported", "queued", "delay", "paused"):
+            return False, dedup_key
+
+        if tracked_state == "importpending" and status not in ("warning", "error") and not all_messages:
+            return False, dedup_key
+
+        if not output_path or not output_path.strip() or output_path.strip() in (".", "/"):
+            return False, dedup_key
+
+        error_msg = (item.get("errorMessage") or "").lower()
+        if "stalled" in error_msg and ("no connections" in error_msg or not all_messages):
+            return False, dedup_key
+        if any("stalled with no connections" in m.lower() for m in all_messages):
+            return False, dedup_key
+
+        if status not in ("warning", "error") and tracked_state != "importblocked" and not all_messages and movie_info:
+            return False, dedup_key
+
+        return True, dedup_key
+
     async def process_queue_item(self, item: Dict[str, Any], ai_provider: BaseAIProvider) -> bool:
         """
         4-Step / Two-Stage Pipeline for Radarr Queue Items:

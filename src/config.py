@@ -6,7 +6,8 @@ from pydantic import BaseModel, Field
 
 class GeneralConfig(BaseModel):
     dry_run: bool = False
-    check_interval_seconds: int = 120
+    check_interval_seconds: int = 30
+    ai_cooldown_seconds: float = 4.0
     min_confidence: float = 0.85
     reject_on_low_confidence: bool = False
     log_level: str = "INFO"
@@ -133,6 +134,7 @@ def config_to_dict(config: AppConfig) -> Dict[str, Any]:
         "general": {
             "dry_run": bool(config.general.dry_run),
             "check_interval_seconds": int(config.general.check_interval_seconds),
+            "ai_cooldown_seconds": float(config.general.ai_cooldown_seconds),
             "min_confidence": float(config.general.min_confidence),
             "reject_on_low_confidence": bool(config.general.reject_on_low_confidence),
             "log_level": str(config.general.log_level),
@@ -188,7 +190,9 @@ def update_config_from_dict(config: AppConfig, data: Dict[str, Any]) -> AppConfi
         if "dry_run" in g and g["dry_run"] is not None:
             config.general.dry_run = bool(g["dry_run"])
         if "check_interval_seconds" in g and g["check_interval_seconds"] is not None:
-            config.general.check_interval_seconds = max(10, int(g["check_interval_seconds"]))
+            config.general.check_interval_seconds = max(5, int(g["check_interval_seconds"]))
+        if "ai_cooldown_seconds" in g and g["ai_cooldown_seconds"] is not None:
+            config.general.ai_cooldown_seconds = max(0.0, float(g["ai_cooldown_seconds"]))
         if "min_confidence" in g and g["min_confidence"] is not None:
             config.general.min_confidence = max(0.0, min(1.0, float(g["min_confidence"])))
         if "reject_on_low_confidence" in g and g["reject_on_low_confidence"] is not None:
@@ -309,6 +313,11 @@ def load_config(config_path: Optional[str] = None) -> AppConfig:
     if env_interval := os.getenv("CHECK_INTERVAL_SECONDS"):
         try:
             config.general.check_interval_seconds = int(env_interval)
+        except ValueError:
+            pass
+    if env_cooldown := os.getenv("AI_COOLDOWN_SECONDS"):
+        try:
+            config.general.ai_cooldown_seconds = max(0.0, float(env_cooldown))
         except ValueError:
             pass
     if env_log_level := os.getenv("LOG_LEVEL"):

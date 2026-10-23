@@ -6,8 +6,11 @@ general:
   # Global dry-run toggle (set false for live execution, true for simulation only)
   dry_run: false
 
-  # Queue check interval in seconds (default: 120s = 2 minutes)
-  check_interval_seconds: 120
+  # Background local queue sync interval in seconds (default: 30s; instant triggers via Webhooks/Retry)
+  check_interval_seconds: 30
+
+  # Minimum cooldown in seconds between AI model calls in the FIFO worker (prevents rate-limit bursts)
+  ai_cooldown_seconds: 4.0
 
   # Minimum AI confidence required to auto-import or delete files (0.0 to 1.0)
   min_confidence: 0.85

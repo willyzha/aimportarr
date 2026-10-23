@@ -60,10 +60,15 @@ flowchart TD
 
 ## Detailed Walkthrough of the 4 Steps
 
-### Step 1: Queue Polling & Filtering
-Every `check_interval_seconds`, AImportarr queries `GET /api/v3/queue` on Sonarr and/or Radarr:
-- Ignores items still downloading or importing normally without errors.
-- Computes deterministic deduplication keys (`downloadId`, `outputPath`, and `queueId:title`) and checks SQLite (`processed_items`) so previously resolved items are not re-evaluated unless flagged for retry.
+### Step 1: Event-Driven Discovery & Throttled FIFO Queue
+AImportarr decouples **queue discovery** from **item processing** via a deduplicated `asyncio.Queue` (FIFO):
+- **Instant Triggers (0s Wait)**:
+  - **Sonarr/Radarr Webhooks (`POST /api/webhook`)**: Configure a Webhook in Sonarr/Radarr (*Settings → Connect → Webhook*) pointing to `http://<aimportarr-ip>:9890/api/webhook` to wake AImportarr the moment an import stalls.
+  - **UI Retry & Scan Now (`POST /api/retry`, `POST /api/scan`)**: Clicking **🔄 Retry**, **Retry All In Queue**, or **⚡ Scan Now** immediately wakes the discovery loop and enqueues eligible items.
+  - **Lightweight Local Sync (`check_interval_seconds: 30`)**: Periodically checks `GET /api/v3/queue` over the LAN (0 AI tokens), filtering out downloading or already-resolved SQLite items via `is_item_eligible()` before touching the FIFO queue.
+- **Single-Worker FIFO Consumer & AI Rate-Limiter**:
+  - Processes one release at a time in FIFO order so multiple archive extractions never compete for disk I/O.
+  - Fast-path items (0 AI tokens) run with **zero artificial delay**, while items that actually invoke Gemini/Ollama enforce `ai_cooldown_seconds` (default `4.0s`) before the next item runs to prevent HTTP 429 rate-limit bursts.
 
 ### Step 2 (Stage 1): Archive & Malware Triage
 AImportarr inspects the local download directory (resolving `path_mappings` if configured):

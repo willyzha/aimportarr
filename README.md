@@ -76,7 +76,8 @@ curl -sSL https://raw.githubusercontent.com/willyzha/aimportarr/main/config.exam
 ```yaml
 general:
   dry_run: false                    # true = simulation mode, false = live execution
-  check_interval_seconds: 120       # Queue poll interval in seconds
+  check_interval_seconds: 30        # Lightweight local queue sync interval (0 AI tokens)
+  ai_cooldown_seconds: 4.0          # Minimum seconds between AI calls in the FIFO worker
   min_confidence: 0.85              # Minimum AI confidence (0.0 to 1.0)
   reject_on_low_confidence: false   # false = leave low-confidence items in queue; true = blocklist & keep seeding
   log_level: "INFO"
@@ -146,7 +147,8 @@ All settings can be configured in `/config/config.yml`, via the **⚙️ Setting
 | Setting | Env Variable | Default | Description |
 | :--- | :--- | :--- | :--- |
 | `general.dry_run` | `DRY_RUN` | `false` | Simulate all decisions without modifying *arr or deleting files. |
-| `general.check_interval_seconds` | `CHECK_INTERVAL_SECONDS` | `120` | Seconds between Sonarr/Radarr queue scans. |
+| `general.check_interval_seconds` | `CHECK_INTERVAL_SECONDS` | `30` | Lightweight local *arr queue check interval in seconds (0 AI tokens). Webhooks & Retry trigger immediately. |
+| `general.ai_cooldown_seconds` | `AI_COOLDOWN_SECONDS` | `4.0` | Minimum cooldown in seconds between AI model calls in the FIFO worker to prevent rate-limit bursts. |
 | `general.min_confidence` | `MIN_CONFIDENCE` | `0.85` | Minimum AI confidence required (`0.0`–`1.0`) to import or delete files. |
 | `general.reject_on_low_confidence` | `REJECT_ON_LOW_CONFIDENCE` | `false` | `false` leaves low-confidence items in queue (`In Queue`); `true` dismisses & blocklists while keeping seeding. |
 | `ai.provider` | `AI_PROVIDER` | `gemini` | Primary AI backend (`gemini` or `ollama`). |

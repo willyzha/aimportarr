@@ -239,10 +239,12 @@ class ContainerSmokeTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as td:
             test_cfg_path = str(Path(td) / "test_config.yml")
             port = 18992
+            triggered_sources = []
             server = WebServerRunner(
                 host="127.0.0.1",
                 port=port,
                 metrics_instance=test_tracker,
+                on_trigger_scan=lambda src: triggered_sources.append(src),
                 config_path=test_cfg_path,
             )
             server.start()
@@ -358,6 +360,35 @@ class ContainerSmokeTests(unittest.TestCase):
                     res = json.loads(resp.read().decode("utf-8"))
                     self.assertEqual(res["status"], "ok")
                     self.assertIn("count", res)
+
+                # 7b. REST API: POST /api/scan and POST /api/webhook
+                req = urllib.request.Request(f"http://127.0.0.1:{port}/api/scan", method="POST")
+                with urllib.request.urlopen(req, timeout=3.0) as resp:
+                    self.assertEqual(resp.status, 200)
+                    res = json.loads(resp.read().decode("utf-8"))
+                    self.assertEqual(res["status"], "ok")
+
+                wh_test = json.dumps({"eventType": "Test"}).encode("utf-8")
+                req = urllib.request.Request(
+                    f"http://127.0.0.1:{port}/api/webhook",
+                    data=wh_test,
+                    headers={"Content-Type": "application/json"},
+                )
+                with urllib.request.urlopen(req, timeout=3.0) as resp:
+                    self.assertEqual(resp.status, 200)
+
+                wh_live = json.dumps({"eventType": "ManualInteractionRequired"}).encode("utf-8")
+                req = urllib.request.Request(
+                    f"http://127.0.0.1:{port}/api/webhook/sonarr",
+                    data=wh_live,
+                    headers={"Content-Type": "application/json"},
+                )
+                with urllib.request.urlopen(req, timeout=3.0) as resp:
+                    self.assertEqual(resp.status, 200)
+
+                self.assertIn(f"retry:{skipped_id}", triggered_sources)
+                self.assertIn("manual", triggered_sources)
+                self.assertIn("webhook:ManualInteractionRequired", triggered_sources)
 
                 # 8. Official Logo Asset
                 req = urllib.request.Request(f"http://127.0.0.1:{port}/assets/logo.png")

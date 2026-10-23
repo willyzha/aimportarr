@@ -23,6 +23,7 @@ class MetricsTracker:
 
         # General activity counters
         self.total_scans: int = 0
+        self.fifo_queue_size: int = 0
         self.total_items_processed: int = 0
         self.total_imported: int = 0
         self.total_dry_run: int = 0
@@ -152,6 +153,11 @@ class MetricsTracker:
         with self._lock:
             self.total_scans += 1
             self.last_scan_time = datetime.now(timezone.utc)
+
+    def set_fifo_queue_size(self, size: int) -> None:
+        """Update the current number of items waiting/processing in the FIFO work queue."""
+        with self._lock:
+            self.fifo_queue_size = max(0, int(size))
 
     def record_archive_extracted(self) -> None:
         """Record a successful extraction of a media archive."""
@@ -337,6 +343,7 @@ class MetricsTracker:
                 "started_at": self.start_time.isoformat(),
                 "last_scan_at": self.last_scan_time.isoformat() if self.last_scan_time else None,
                 "total_scans": self.total_scans,
+                "fifo_queue_size": self.fifo_queue_size,
                 "total_items_processed": self.total_items_processed,
                 "total_imported": self.total_imported,
                 "total_dry_run": self.total_dry_run,

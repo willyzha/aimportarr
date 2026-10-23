@@ -831,6 +831,10 @@ DASHBOARD_HTML = """<!DOCTYPE html>
         </select>
       </div>
 
+      <button id="scan-btn" class="btn btn-primary" onclick="triggerImmediateScan()" title="Immediately check Sonarr/Radarr queues and push stuck items into the FIFO queue">
+        <span>⚡</span> Scan Now
+      </button>
+
       <button id="refresh-btn" class="btn" onclick="fetchData(true)">
         <span id="refresh-icon">🔄</span> Refresh
       </button>
@@ -1061,8 +1065,21 @@ DASHBOARD_HTML = """<!DOCTYPE html>
           </div>
 
           <div class="form-group">
-            <label class="form-label" for="cfg-check-interval">Queue Check Interval (seconds)</label>
-            <input type="number" min="10" id="cfg-check-interval" class="form-input" value="120">
+            <label class="form-label" for="cfg-check-interval">Background Queue Sync Interval (seconds)</label>
+            <input type="number" min="5" id="cfg-check-interval" class="form-input" value="30">
+            <div class="form-hint">Lightweight local check (0 AI tokens). Webhooks &amp; Retry trigger immediately.</div>
+          </div>
+
+          <div class="form-group">
+            <label class="form-label" for="cfg-ai-cooldown">FIFO AI Rate-Limit Cooldown (seconds)</label>
+            <input type="number" step="0.5" min="0" id="cfg-ai-cooldown" class="form-input" value="4.0">
+            <div class="form-hint">Minimum pause between AI model calls in the FIFO worker to prevent rate-limit bursts</div>
+          </div>
+
+          <div class="form-group">
+            <label class="form-label">On-Demand Webhook URL (Sonarr &amp; Radarr)</label>
+            <input type="text" id="cfg-webhook-url" class="form-input" readonly onclick="this.select()" value="http://localhost:9890/api/webhook">
+            <div class="form-hint">Optional: Add in Sonarr/Radarr (Settings &rarr; Connect &rarr; Webhook) for instant 0s event-driven processing</div>
           </div>
 
           <div class="form-group">
@@ -1507,6 +1524,10 @@ DASHBOARD_HTML = """<!DOCTYPE html>
           document.getElementById('stat-uptime').innerText = summary.uptime_formatted || '--';
           document.getElementById('stat-scans').innerText = `Queue Scans: ${formatNumber(summary.total_scans)}`;
           document.getElementById('stat-processed').innerText = formatNumber(summary.total_items_processed);
+          const qSize = summary.fifo_queue_size || 0;
+          document.getElementById('stat-processed-sub').innerText = qSize > 0
+            ? `⚡ FIFO Queue: ${qSize} active`
+            : 'Scanned items (FIFO idle)';
           document.getElementById('stat-imported').innerText = formatNumber(summary.total_imported);
           document.getElementById('stat-dry-run').innerText = `${formatNumber(summary.total_dry_run)} in Dry Run`;
           const rejCount = (summary.total_rejected || 0) + (summary.total_blocked || 0);
@@ -1569,6 +1590,22 @@ DASHBOARD_HTML = """<!DOCTYPE html>
       }, 3500);
     }
 
+    async function triggerImmediateScan() {
+      try {
+        const res = await fetch('/api/scan', { method: 'POST' });
+        const data = await res.json();
+        if (res.ok && data.status === 'ok') {
+          showToast('Immediate queue scan triggered!', 'success');
+          setTimeout(() => fetchData(true), 500);
+        } else {
+          showToast('Failed to trigger queue scan', 'danger');
+        }
+      } catch (e) {
+        console.error(e);
+        showToast('Network error triggering scan', 'danger');
+      }
+    }
+
     async function retryItem(id) {
       try {
         const res = await fetch('/api/retry', {
@@ -1578,12 +1615,13 @@ DASHBOARD_HTML = """<!DOCTYPE html>
         });
         const data = await res.json();
         if (res.ok && data.status === 'ok') {
-          showToast(`Release #${id} marked for retry on next scan!`, 'success');
+          showToast(`Release #${id} queued for immediate retry!`, 'success');
           const it = rawHistory.find(x => x.id === id);
           if (it) it.retry_requested = 1;
           filterHistory();
+          setTimeout(() => fetchData(false), 1200);
         } else {
-          showToast(`Failed to retry item #${id}`, 'danger');
+          showToast(data.message || `Failed to retry item #${id}`, 'danger');
         }
       } catch (e) {
         console.error(e);
@@ -1646,8 +1684,13 @@ DASHBOARD_HTML = """<!DOCTYPE html>
         document.getElementById('cfg-dry-run').checked = Boolean(g.dry_run);
         document.getElementById('cfg-reject-low-conf').checked = Boolean(g.reject_on_low_confidence);
         document.getElementById('cfg-min-confidence').value = g.min_confidence ?? 0.85;
-        document.getElementById('cfg-check-interval').value = g.check_interval_seconds ?? 120;
+        document.getElementById('cfg-check-interval').value = g.check_interval_seconds ?? 30;
+        document.getElementById('cfg-ai-cooldown').value = g.ai_cooldown_seconds ?? 4.0;
         document.getElementById('cfg-log-level').value = g.log_level || 'INFO';
+        const whInput = document.getElementById('cfg-webhook-url');
+        if (whInput && window.location.origin) {
+          whInput.value = `${window.location.origin}/api/webhook`;
+        }
 
         document.getElementById('cfg-ai-provider').value = ai.provider || 'gemini';
         document.getElementById('cfg-ai-fallback').checked = ai.fallback_enabled !== false;
@@ -1693,7 +1736,8 @@ DASHBOARD_HTML = """<!DOCTYPE html>
           dry_run: document.getElementById('cfg-dry-run').checked,
           reject_on_low_confidence: document.getElementById('cfg-reject-low-conf').checked,
           min_confidence: parseFloat(document.getElementById('cfg-min-confidence').value) || 0.85,
-          check_interval_seconds: parseInt(document.getElementById('cfg-check-interval').value, 10) || 120,
+          check_interval_seconds: parseInt(document.getElementById('cfg-check-interval').value, 10) || 30,
+          ai_cooldown_seconds: parseFloat(document.getElementById('cfg-ai-cooldown').value) ?? 4.0,
           log_level: document.getElementById('cfg-log-level').value || 'INFO'
         },
         ai: {
@@ -1766,12 +1810,14 @@ class MetricsHTTPHandler(BaseHTTPRequestHandler):
         metrics_instance: Optional[MetricsTracker] = None,
         config_instance: Optional[AppConfig] = None,
         on_config_updated: Optional[Callable[[AppConfig], None]] = None,
+        on_trigger_scan: Optional[Callable[[str], None]] = None,
         config_path: Optional[str] = None,
         **kwargs,
     ):
         self.metrics = metrics_instance or default_metrics
         self.config = config_instance or load_config(config_path)
         self.on_config_updated = on_config_updated
+        self.on_trigger_scan = on_trigger_scan
         self.config_path = config_path
         super().__init__(*args, **kwargs)
 
@@ -1908,6 +1954,36 @@ class MetricsHTTPHandler(BaseHTTPRequestHandler):
                 self._send_json({"status": "error", "message": str(e)}, status=400)
             return
 
+        if path == "/api/scan":
+            if self.on_trigger_scan:
+                self.on_trigger_scan("manual")
+            self._send_json({
+                "status": "ok",
+                "message": "Immediate queue scan triggered.",
+            })
+            return
+
+        if path in ("/api/webhook", "/api/webhook/sonarr", "/api/webhook/radarr"):
+            try:
+                length = int(self.headers.get("Content-Length", 0))
+                body = self.rfile.read(length).decode("utf-8") if length > 0 else "{}"
+                data = json.loads(body) if body.strip() else {}
+            except Exception:
+                data = {}
+            event_type = str(data.get("eventType") or "Webhook")
+            if event_type.lower() == "test":
+                logger.info("Received Test webhook from Sonarr/Radarr.")
+                self._send_json({"status": "ok", "message": "Test webhook received successfully."})
+                return
+            logger.info(f"Received webhook event '{event_type}'; triggering immediate queue scan.")
+            if self.on_trigger_scan:
+                self.on_trigger_scan(f"webhook:{event_type}")
+            self._send_json({
+                "status": "ok",
+                "message": f"Webhook '{event_type}' received; queue scan triggered.",
+            })
+            return
+
         if path == "/api/retry":
             try:
                 length = int(self.headers.get("Content-Length", 0))
@@ -1919,9 +1995,11 @@ class MetricsHTTPHandler(BaseHTTPRequestHandler):
 
             if data.get("all"):
                 count = self.metrics.mark_all_rejected_for_retry()
+                if count > 0 and self.on_trigger_scan:
+                    self.on_trigger_scan("retry_all")
                 self._send_json({
                     "status": "ok",
-                    "message": f"Marked {count} retryable item(s) for retry on next scan.",
+                    "message": f"Queued {count} item(s) for immediate retry.",
                     "count": count
                 })
                 return
@@ -1935,9 +2013,11 @@ class MetricsHTTPHandler(BaseHTTPRequestHandler):
                     return
                 success = self.metrics.mark_item_for_retry(item_id)
                 if success:
+                    if self.on_trigger_scan:
+                        self.on_trigger_scan(f"retry:{item_id}")
                     self._send_json({
                         "status": "ok",
-                        "message": f"Item #{item_id} marked for retry on next scan.",
+                        "message": f"Item #{item_id} queued for immediate retry.",
                         "id": item_id,
                         "success": True
                     })
@@ -1963,6 +2043,7 @@ class WebServerRunner:
         metrics_instance: Optional[MetricsTracker] = None,
         config_instance: Optional[AppConfig] = None,
         on_config_updated: Optional[Callable[[AppConfig], None]] = None,
+        on_trigger_scan: Optional[Callable[[str], None]] = None,
         config_path: Optional[str] = None,
     ):
         self.host = host
@@ -1970,6 +2051,7 @@ class WebServerRunner:
         self.metrics = metrics_instance or default_metrics
         self.config = config_instance or load_config(config_path)
         self.on_config_updated = on_config_updated
+        self.on_trigger_scan = on_trigger_scan
         self.config_path = config_path
         self.httpd: Optional[ThreadingHTTPServer] = None
         self._thread: Optional[threading.Thread] = None
@@ -1980,6 +2062,7 @@ class WebServerRunner:
             metrics_instance=self.metrics,
             config_instance=self.config,
             on_config_updated=self.on_config_updated,
+            on_trigger_scan=self.on_trigger_scan,
             config_path=self.config_path,
             **kwargs,
         )

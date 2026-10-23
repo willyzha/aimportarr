@@ -3,7 +3,8 @@ import logging
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
 import signal
-from typing import Optional
+import time
+from typing import Any, Dict, Optional, Set, Tuple
 import httpx
 from .config import load_config, AppConfig
 from .ai import get_ai_provider
@@ -77,6 +78,127 @@ def build_runtime_clients(config: AppConfig):
     return ai_provider, sonarr_client, radarr_client
 
 
+async def fifo_worker_loop(
+    fifo_queue: "asyncio.Queue[Tuple[str, Dict[str, Any], str]]",
+    in_flight_keys: Set[str],
+    state: Dict[str, Any],
+    config: AppConfig,
+):
+    """
+    Single-worker FIFO consumer that processes stuck queue items one at a time.
+    - Prevents concurrent archive extractions from competing for disk I/O.
+    - Enforces `ai_cooldown_seconds` spacing only when an item actually invokes the AI model,
+      allowing 0-token fast-path items to complete at full speed without artificial delay.
+    """
+    last_ai_call_finished_at = 0.0
+
+    while running:
+        try:
+            app_name, item, dedup_key = await asyncio.wait_for(fifo_queue.get(), timeout=1.0)
+        except asyncio.TimeoutError:
+            continue
+        except asyncio.CancelledError:
+            break
+
+        try:
+            curr_ai = state.get("ai_provider")
+            client = state.get("sonarr_client") if app_name == "sonarr" else state.get("radarr_client")
+            if not curr_ai or not client or not running:
+                continue
+
+            # If the previous item invoked AI, ensure cooldown has elapsed before starting the next item
+            cooldown = max(0.0, float(config.general.ai_cooldown_seconds))
+            if last_ai_call_finished_at > 0 and cooldown > 0:
+                elapsed = time.monotonic() - last_ai_call_finished_at
+                if elapsed < cooldown:
+                    wait_rem = cooldown - elapsed
+                    logger.debug(f"FIFO Throttler: Waiting {wait_rem:.1f}s before processing '{item.get('title', '')}'...")
+                    await asyncio.sleep(wait_rem)
+
+            ai_calls_before = metrics.total_ai_calls
+            await client.process_queue_item(item, curr_ai)
+            if metrics.total_ai_calls > ai_calls_before:
+                last_ai_call_finished_at = time.monotonic()
+
+        except Exception as e:
+            logger.error(f"Error in FIFO worker processing {app_name} item '{item.get('title', '')}': {e}")
+        finally:
+            in_flight_keys.discard(dedup_key)
+            fifo_queue.task_done()
+            metrics.set_fifo_queue_size(len(in_flight_keys))
+
+
+async def discover_and_enqueue(
+    fifo_queue: "asyncio.Queue[Tuple[str, Dict[str, Any], str]]",
+    in_flight_keys: Set[str],
+    state: Dict[str, Any],
+    config: AppConfig,
+) -> int:
+    """
+    Poll local Sonarr/Radarr queues and push any newly stuck/eligible items into the FIFO work queue.
+    Costs 0 AI tokens and skips items already in-flight or previously resolved in SQLite.
+    """
+    metrics.record_scan()
+    curr_ai = state.get("ai_provider")
+    curr_sonarr: Optional[SonarrClient] = state.get("sonarr_client")
+    curr_radarr: Optional[RadarrClient] = state.get("radarr_client")
+    enqueued_count = 0
+
+    if not curr_ai:
+        return 0
+
+    # 1. Discover stuck Sonarr items
+    if curr_sonarr and running:
+        try:
+            queue_items = await curr_sonarr.get_queue()
+            seen_downloads = set()
+            for item in queue_items or []:
+                dl_id = item.get("downloadId")
+                if dl_id:
+                    if dl_id in seen_downloads:
+                        continue
+                    seen_downloads.add(dl_id)
+                eligible, dedup_key = curr_sonarr.is_item_eligible(item)
+                if eligible and dedup_key not in in_flight_keys:
+                    in_flight_keys.add(dedup_key)
+                    await fifo_queue.put(("sonarr", item, dedup_key))
+                    enqueued_count += 1
+        except (httpx.ConnectError, httpx.ConnectTimeout):
+            logger.warning(
+                f"Could not connect to Sonarr at '{config.sonarr.url}': connection refused or timed out."
+            )
+        except Exception as e:
+            logger.error(f"Error polling Sonarr queue: {e}")
+
+    # 2. Discover stuck Radarr items
+    if curr_radarr and running:
+        try:
+            queue_items = await curr_radarr.get_queue()
+            seen_downloads = set()
+            for item in queue_items or []:
+                dl_id = item.get("downloadId")
+                if dl_id:
+                    if dl_id in seen_downloads:
+                        continue
+                    seen_downloads.add(dl_id)
+                eligible, dedup_key = curr_radarr.is_item_eligible(item)
+                if eligible and dedup_key not in in_flight_keys:
+                    in_flight_keys.add(dedup_key)
+                    await fifo_queue.put(("radarr", item, dedup_key))
+                    enqueued_count += 1
+        except (httpx.ConnectError, httpx.ConnectTimeout):
+            logger.warning(
+                f"Could not connect to Radarr at '{config.radarr.url}': connection refused or timed out."
+            )
+        except Exception as e:
+            logger.error(f"Error polling Radarr queue: {e}")
+
+    metrics.set_fifo_queue_size(len(in_flight_keys))
+    if enqueued_count > 0:
+        logger.info(f"Enqueued {enqueued_count} item(s) into FIFO worker queue (Active queue depth: {len(in_flight_keys)})")
+    return enqueued_count
+
+
 async def main():
     global running
     signal.signal(signal.SIGINT, handle_stop_signal)
@@ -115,7 +237,7 @@ async def main():
         else "Conservative (Leave in Queue)"
     )
     logger.info(
-        f"Configuration loaded | Mode: {mode_str} | Low-Confidence Policy: {low_conf_str} | Check Interval: {config.general.check_interval_seconds}s"
+        f"Configuration loaded | Mode: {mode_str} | Low-Confidence Policy: {low_conf_str} | Sync Interval: {config.general.check_interval_seconds}s | AI Cooldown: {config.general.ai_cooldown_seconds}s"
     )
     logger.info(
         f"Archive Extractor: {'Enabled' if config.extraction.enabled else 'Disabled'} (Delete after import: {config.extraction.delete_after_import})"
@@ -126,11 +248,20 @@ async def main():
         retention_days=config.database.retention_days,
     )
 
-    state = {}
+    loop = asyncio.get_running_loop()
+    scan_event = asyncio.Event()
+    fifo_queue: asyncio.Queue[Tuple[str, Dict[str, Any], str]] = asyncio.Queue()
+    in_flight_keys: Set[str] = set()
+
+    state: Dict[str, Any] = {}
     ai_provider, sonarr_client, radarr_client = build_runtime_clients(config)
     state["ai_provider"] = ai_provider
     state["sonarr_client"] = sonarr_client
     state["radarr_client"] = radarr_client
+
+    def trigger_scan_threadsafe(source: str = "manual"):
+        logger.debug(f"Immediate queue scan requested (source: {source})")
+        loop.call_soon_threadsafe(scan_event.set)
 
     def on_config_updated(updated_config: AppConfig):
         logger.info("Hot-reloading runtime clients from updated Web UI configuration...")
@@ -138,6 +269,7 @@ async def main():
         state["ai_provider"] = new_ai
         state["sonarr_client"] = new_sonarr
         state["radarr_client"] = new_radarr
+        trigger_scan_threadsafe("config_updated")
 
     web_server = None
     if config.web.enabled:
@@ -148,68 +280,40 @@ async def main():
                 metrics_instance=metrics,
                 config_instance=config,
                 on_config_updated=on_config_updated,
+                on_trigger_scan=trigger_scan_threadsafe,
             )
             web_server.start()
         except Exception as we:
             logger.error(f"Failed to start Web UI server on {config.web.host}:{config.web.port}: {we}")
 
-    while running:
-        metrics.record_scan()
-        curr_ai = state.get("ai_provider")
-        curr_sonarr = state.get("sonarr_client")
-        curr_radarr = state.get("radarr_client")
+    # Start the single-worker FIFO consumer task
+    worker_task = asyncio.create_task(
+        fifo_worker_loop(fifo_queue, in_flight_keys, state, config)
+    )
 
-        # 1. Scan Sonarr queue
-        if curr_sonarr and curr_ai and running:
-            try:
-                queue_items = await curr_sonarr.get_queue()
-                if queue_items:
-                    seen_downloads = set()
-                    for item in queue_items:
-                        if not running:
-                            break
-                        dl_id = item.get("downloadId")
-                        if dl_id:
-                            if dl_id in seen_downloads:
-                                continue
-                            seen_downloads.add(dl_id)
-                        await curr_sonarr.process_queue_item(item, curr_ai)
-            except (httpx.ConnectError, httpx.ConnectTimeout):
-                logger.warning(
-                    f"Could not connect to Sonarr at '{config.sonarr.url}': connection refused or timed out. Please verify host and port."
-                )
-            except Exception as e:
-                logger.error(f"Error during Sonarr scan: {e}")
+    try:
+        while running:
+            scan_event.clear()
+            await discover_and_enqueue(fifo_queue, in_flight_keys, state, config)
 
-        # 2. Scan Radarr queue
-        if curr_radarr and curr_ai and running:
-            try:
-                queue_items = await curr_radarr.get_queue()
-                if queue_items:
-                    seen_downloads = set()
-                    for item in queue_items:
-                        if not running:
-                            break
-                        dl_id = item.get("downloadId")
-                        if dl_id:
-                            if dl_id in seen_downloads:
-                                continue
-                            seen_downloads.add(dl_id)
-                        await curr_radarr.process_queue_item(item, curr_ai)
-            except (httpx.ConnectError, httpx.ConnectTimeout):
-                logger.warning(
-                    f"Could not connect to Radarr at '{config.radarr.url}': connection refused or timed out. Please verify host and port."
-                )
-            except Exception as e:
-                logger.error(f"Error during Radarr scan: {e}")
-
-        for _ in range(config.general.check_interval_seconds):
-            if not running:
-                break
-            await asyncio.sleep(1)
-
-    if web_server:
-        web_server.stop()
+            # Wait until either check_interval_seconds elapses OR an instant trigger (Webhook / Retry / Scan Now) fires
+            interval = max(5, int(config.general.check_interval_seconds))
+            for _ in range(interval):
+                if not running or scan_event.is_set():
+                    break
+                try:
+                    await asyncio.wait_for(scan_event.wait(), timeout=1.0)
+                    break
+                except asyncio.TimeoutError:
+                    pass
+    finally:
+        worker_task.cancel()
+        try:
+            await worker_task
+        except asyncio.CancelledError:
+            pass
+        if web_server:
+            web_server.stop()
 
     logger.info("AImportarr has stopped.")
 
