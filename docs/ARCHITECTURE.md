@@ -98,6 +98,55 @@ AImportarr queries `GET /api/v3/manualimport` (pointing at the staging folder if
 
 ---
 
+## Sonarr Season Pack Backfill & Ongoing Season Episode Retry
+
+Beyond stuck queue processing, AImportarr features autonomous background engines for resolving missing episodes across both completed and actively broadcasting seasons:
+
+```mermaid
+flowchart TD
+    A["Check Missing Episodes in Season"] --> B{"Season Finished Airing past Grace Period?"}
+    
+    B -- "Yes (Completed Season)" --> C["Season Pack Backfill Engine"]
+    C --> D["Query Season Releases (GET /api/v3/release?seriesId=X&seasonNumber=Y)"]
+    D --> E{"Qualifying Full Season Pack Found?"}
+    E -- "Yes (Tier 1 or Tier 2 AI)" --> F["Force-Grab Season Pack (POST /api/v3/release)"]
+    E -- "No" --> G["Inline Fallback: Reuse Already-Fetched Releases (0 Extra Tracker Calls)"]
+
+    B -- "No (Ongoing / Continuing Series)" --> H["Ongoing Missing Episode Retry Engine"]
+    H --> I["Fetch Bulk Season Releases (1 Tracker Call per Season)"]
+    I --> G
+
+    G --> J["Tier 1: In-Memory Rule Matcher (0 AI Tokens)"]
+    J --> K{"Matches Found?"}
+    K -- "Yes" --> L["Greedy Multi-Episode Satisfaction (e.g. E01-E02 satisfies both)"]
+    K -- "Remaining Unresolved Episodes" --> M["Tier 2: Single Bulk AI Evaluation (evaluate_backfill_episodes_bulk)"]
+    
+    L --> N["Batch Grab Matched Releases"]
+    M --> N
+
+    N --> O{"Any Missing Episodes Still Unsatisfied?"}
+    O -- "Yes (Safety Net: Truncated by 100-limit)" --> P["Targeted Episode Search (GET /api/v3/release?episodeId=E with 30s delay)"]
+    O -- "No" --> Q["Done"]
+```
+
+### 1. Completed Seasons: Season Pack Backfill
+- **Eligibility**: Verified via `is_season_eligible_for_backfill()`. All monitored episodes must have aired at least `min_missing_days` ago (default: 3 days), at least 1 monitored episode must be missing (`hasFile == False`), and the season must not be the latest season of an actively continuing series.
+- **Two-Tier Pack Classification**:
+  - **Tier 1 (0 AI Tokens)**: Approves `fullSeason: true` packs with zero non-quality rejections (tolerates equal/higher quality existing files on disk), sorted by Custom Format score and seeders.
+  - **Tier 2 (AI Fallback)**: Evaluates `fullSeason: true` packs whose only non-quality rejection is `"Unknown Series"` (common with foreign, Pinyin, or non-standard indexer naming).
+- **Inline Fallback**: If 0 qualifying full season packs exist, AImportarr immediately falls back inline in the same run to match individual missing episodes using the **already-fetched release pool—requiring zero additional tracker queries**.
+
+### 2. Ongoing Seasons: Missing Episode Retry Engine
+- **Ongoing Season Detection**: A season is treated as ongoing if it has future or TBA air dates, or if it is the latest season of a series with `status == "continuing"` or `"upcoming"`.
+- **Bulk Season-Level Search (1 Tracker Query)**: Instead of querying trackers once for each missing episode ($N$ queries with rate-limiting pauses), AImportarr hits `GET /api/v3/release?seriesId=X&seasonNumber=Y` once per season. This reduces tracker query volume by **80–90%** and eliminates rate-limiting delays between episodes of the same season.
+- **Tier 1 In-Memory Matching (0 AI Tokens)**: Matches clean single and multi-episode releases directly from the season pool using Sonarr's metadata, quality weights, and Custom Format scores.
+- **Greedy Multi-Episode Satisfaction**: When a grabbed release covers multiple episodes (e.g. `S01E02-E03`), all covered episodes are immediately satisfied and recorded in processed history, skipping redundant searches and downloads.
+- **Quality Rejection Tolerance**: Single and multi-episode releases rejected only for existing-file quality on an already-downloaded companion episode are accepted as Tier 1, since AImportarr skips the existing files while importing the missing ones.
+- **Tier 2 Single Bulk AI Evaluation**: If any missing episodes remain unresolved (e.g., Pinyin / Chinese / non-standard naming), AImportarr evaluates them against candidate releases in a **single bulk AI prompt** (`evaluate_backfill_episodes_bulk`).
+- **Immediate Targeted Fallback (Safety Net)**: If an older episode was pushed out of the 100-result season pool by indexer pagination, AImportarr immediately falls back to a targeted `GET /api/v3/release?episodeId=E` search with a strict **30-second delay** between targeted calls to protect indexers.
+
+---
+
 ## Statuses, Filters, and Retry Lifecycle
 
 | Status | Meaning | Download Client | *arr Queue | Retryable in UI? | UI Filter Pill |
@@ -137,6 +186,11 @@ All settings can be configured in `/config/config.yml` (see [`config.example.yml
 | `sonarr.season_pack_backfill.min_missing_days` | `SONARR_BACKFILL_MIN_MISSING_DAYS` | `3` | Post-finale grace period in days after the season's last episode airs before backfilling with a season pack. |
 | `sonarr.season_pack_backfill.max_seasons_per_run` | `SONARR_BACKFILL_MAX_SEASONS_PER_RUN` | `3` | Maximum seasons queried via interactive search per backfill run. |
 | `sonarr.season_pack_backfill.season_cooldown_days` | `SONARR_BACKFILL_COOLDOWN_DAYS` | `7` | Per-season cooldown in days before re-searching the same season (resettable via UI Retry). |
+| `sonarr.missing_episode_retry.enabled` | `SONARR_EPISODE_RETRY_ENABLED` | `false` | Opt-in: periodically retry individual missing aired episodes for ongoing/incomplete seasons using bulk season search and single bulk AI evaluation. |
+| `sonarr.missing_episode_retry.interval_hours` | `SONARR_EPISODE_RETRY_INTERVAL_HOURS` | `6` | Background check interval in hours for ongoing missing episode retries. |
+| `sonarr.missing_episode_retry.min_air_delay_hours` | `SONARR_EPISODE_RETRY_MIN_AIR_DELAY_HOURS` | `6` | Minimum delay in hours after an episode's broadcast air time before attempting interactive search. |
+| `sonarr.missing_episode_retry.max_episodes_per_run` | `SONARR_EPISODE_RETRY_MAX_EPISODES_PER_RUN` | `5` | Maximum number of episodes queried via targeted fallback search per run. |
+| `sonarr.missing_episode_retry.episode_cooldown_hours` | `SONARR_EPISODE_RETRY_COOLDOWN_HOURS` | `24` | Cooldown in hours before re-attempting search for an unfulfilled episode release. |
 | `radarr.enabled` / `url` / `api_key` | `RADARR_ENABLED`, `RADARR_URL`, `RADARR_API_KEY` | — | Radarr connection settings. |
 | `extraction.enabled` | `EXTRACTION_ENABLED` | `true` | Enable archive inspection & staging extraction. |
 | `extraction.delete_after_import` | `EXTRACTION_DELETE_AFTER_IMPORT` | `true` | Clean up extracted staging folder once imported. |
@@ -148,14 +202,14 @@ All settings can be configured in `/config/config.yml` (see [`config.example.yml
 
 ## Component Map
 
-- [`src/main.py`](../src/main.py): Async polling loop, hot-reload callback handler, and startup initialization.
+- [`src/main.py`](../src/main.py): Async queue polling worker, backfill worker, ongoing episode retry scheduler, hot-reload callback handler, and startup initialization.
 - [`src/config.py`](../src/config.py): Pydantic configuration models, YAML loader/saver, and environment variable overrides.
-- [`src/sonarr.py`](../src/sonarr.py) & [`src/radarr.py`](../src/radarr.py): *arr REST API clients and the 4-step queue processing state machine.
+- [`src/sonarr.py`](../src/sonarr.py) & [`src/radarr.py`](../src/radarr.py): *arr REST API clients, the 4-step queue processing state machine, Season Pack Backfill, and Bulk Missing Episode Retry engines.
 - [`src/extractor.py`](../src/extractor.py): Archive header inspector (`7z l -slt`) and staging folder extractor.
 - [`src/ai/`](../src/ai/):
-  - [`base.py`](../src/ai/base.py): `AIProvider` interface, `Stage1TriageResult`, and `Stage2DecisionResult` schemas.
-  - [`gemini.py`](../src/ai/gemini.py): Google Gemini provider with automatic fastest-model discovery and 404 self-healing.
-  - [`ollama.py`](../src/ai/ollama.py): Local Ollama JSON-schema provider.
+  - [`base.py`](../src/ai/base.py): `AIProvider` interface, `Stage1TriageResult`, `Stage2DecisionResult`, `BackfillPackMatchResult`, and `BackfillBulkEpisodesMatchResult` schemas.
+  - [`gemini.py`](../src/ai/gemini.py): Google Gemini provider with automatic fastest-model discovery, 404 self-healing, and bulk episode matching.
+  - [`ollama.py`](../src/ai/ollama.py): Local Ollama JSON-schema provider with bulk episode matching.
   - [`fallback.py`](../src/ai/fallback.py): Automatic failover wrapper between primary and secondary AI providers.
-- [`src/database.py`](../src/database.py) & [`src/metrics.py`](../src/metrics.py): SQLite WAL persistence, retention purging, token analytics, and retry state management.
-- [`src/web.py`](../src/web.py): Zero-dependency embedded Web UI dashboard and REST API (`/api/metrics`, `/api/history`, `/api/tokens`, `/api/retry`, `/api/config`).
+- [`src/database.py`](../src/database.py) & [`src/metrics.py`](../src/metrics.py): SQLite WAL persistence, retention purging, token analytics, cooldown tracking, and retry state management.
+- [`src/web.py`](../src/web.py): Zero-dependency embedded Web UI dashboard and REST API (`/api/metrics`, `/api/history`, `/api/tokens`, `/api/retry`, `/api/backfill`, `/api/episode-retry`, `/api/config`).
