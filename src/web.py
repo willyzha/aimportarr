@@ -928,8 +928,8 @@ DASHBOARD_HTML = """<!DOCTYPE html>
           <div class="filter-pills">
             <div class="filter-pill active" data-filter="all" onclick="setFilter('all')">All</div>
             <div class="filter-pill" data-filter="imported" onclick="setFilter('imported')" title="Imported into Sonarr/Radarr media library">Imported</div>
-            <div class="filter-pill" data-filter="dismissed" onclick="setFilter('dismissed')" title="Ignored/removed from *arr queue, still seeding in torrent client">Dismissed</div>
-            <div class="filter-pill" data-filter="rejected" onclick="setFilter('rejected')" title="Deleted from torrent client &amp; blocklisted">Rejected</div>
+            <div class="filter-pill" data-filter="dismissed" onclick="setFilter('dismissed')" title="Ignored/removed from *arr queue, files kept in download client">Dismissed</div>
+            <div class="filter-pill" data-filter="rejected" onclick="setFilter('rejected')" title="Deleted from download client &amp; blocklisted">Rejected</div>
             <div class="filter-pill" data-filter="in_queue" onclick="setFilter('in_queue')" title="Items still sitting in the *arr queue (skipped, failed, or dry run) — eligible for retry">In Queue</div>
           </div>
         </div>
@@ -1293,8 +1293,8 @@ DASHBOARD_HTML = """<!DOCTYPE html>
     function getStatusTooltip(status) {
       const s = normalizeStatus(status);
       if (s === 'imported') return 'Imported into Sonarr/Radarr media library';
-      if (s === 'rejected') return 'Deleted from torrent client & blocklisted (malware, sample, or corrupt)';
-      if (s === 'dismissed') return 'Ignored/removed from *arr queue, still seeding in torrent client';
+      if (s === 'rejected') return 'Deleted from download client & blocklisted (malware, sample, or corrupt)';
+      if (s === 'dismissed') return 'Ignored/removed from *arr queue, files kept in download client';
       if (s === 'skipped') return 'Left in queue without action (eligible for retry)';
       if (s === 'failed') return 'Manual import failed, still in queue (eligible for retry)';
       if (s === 'dry_run') return 'Simulated in Dry Run mode, still in queue (eligible for retry)';

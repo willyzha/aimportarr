@@ -304,7 +304,7 @@ class SonarrClient:
         dry_run: bool = False,
         title: str = "",
     ) -> bool:
-        """Dismiss a stuck queue warning while keeping the torrent seeding and without blocklisting."""
+        """Dismiss a stuck queue warning while keeping the download in the client and without blocklisting."""
         return await self.resolve_queue_item(
             queue_id=queue_id,
             download_id=download_id,
@@ -675,7 +675,7 @@ class SonarrClient:
                                 confidence=triage.confidence,
                                 model=model_label,
                                 reasoning=triage.reasoning,
-                                details=f"Deleted from torrent & blocklisted ({archive_file.name})",
+                                details=f"Deleted from client & blocklisted ({archive_file.name})",
                                 item_keys=item_keys,
                             )
                             return await self.delete_and_blocklist(
@@ -718,7 +718,7 @@ class SonarrClient:
                         confidence=triage.confidence,
                         model=model_label,
                         reasoning=triage.reasoning,
-                        details="Deleted from torrent & blocklisted",
+                        details="Deleted from client & blocklisted",
                         item_keys=item_keys,
                     )
                     return await self.delete_and_blocklist(
@@ -835,7 +835,7 @@ class SonarrClient:
                         confidence=triage.confidence,
                         model=model_label,
                         reasoning=triage.reasoning,
-                        details="0 valid videos; deleted from torrent & blocklisted",
+                        details="0 valid videos; deleted from client & blocklisted",
                         item_keys=item_keys,
                     )
                     return await self.delete_and_blocklist(

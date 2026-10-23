@@ -588,7 +588,7 @@ class RadarrClient:
                                 confidence=triage.confidence,
                                 model=model_label,
                                 reasoning=triage.reasoning,
-                                details=f"Deleted from torrent & blocklisted ({archive_file.name})",
+                                details=f"Deleted from client & blocklisted ({archive_file.name})",
                                 item_keys=item_keys,
                             )
                             return await self.delete_and_blocklist(
@@ -631,7 +631,7 @@ class RadarrClient:
                         confidence=triage.confidence,
                         model=model_label,
                         reasoning=triage.reasoning,
-                        details="Deleted from torrent & blocklisted",
+                        details="Deleted from client & blocklisted",
                         item_keys=item_keys,
                     )
                     return await self.delete_and_blocklist(
@@ -723,7 +723,7 @@ class RadarrClient:
                         confidence=triage.confidence,
                         model=model_label,
                         reasoning=triage.reasoning,
-                        details="0 valid videos; deleted from torrent & blocklisted",
+                        details="0 valid videos; deleted from client & blocklisted",
                         item_keys=item_keys,
                     )
                     return await self.delete_and_blocklist(

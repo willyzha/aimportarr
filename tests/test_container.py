@@ -343,7 +343,7 @@ class ContainerSmokeTests(unittest.TestCase):
                     title="Deleted.Malware.2024",
                     category="malware_or_corrupt",
                     status="rejected",
-                    details="Deleted from torrent & blocklisted"
+                    details="Deleted from client & blocklisted"
                 )
                 rejected_id = test_tracker.get_processed_history()[0]["id"]
                 self.assertFalse(test_tracker.mark_item_for_retry(rejected_id))

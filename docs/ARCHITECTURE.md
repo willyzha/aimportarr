@@ -11,9 +11,9 @@ AImportarr is an autonomous queue companion for **Sonarr** and **Radarr**. It mo
    - Clean archives (`.rar`, `.zip`, `.7z`, `.tar` containing video files and zero suspicious files) are unpacked into an isolated `<stem>_extracted` sandbox and passed back to Sonarr/Radarr's `/api/v3/manualimport` endpoint—using **0 AI tokens** when Sonarr/Radarr can map the unpacked video cleanly.
 
 2. **Strict Seeding Preservation & Client Deletion Policy**
-   - **Rejected (`removeFromClient=true`, `blocklist=true`, `skipRedownload=false`)**: Files are deleted from the torrent/download client **only** when confirmed to be **virus/malware, sample-only, or corrupt/unusable**.
-   - **Dismissed (`removeFromClient=false`, `blocklist=true`, `skipRedownload=false`)**: Used for **quality/Custom Format downgrades** and **wrong/mismatched media**. The item is removed from the Sonarr/Radarr queue, blocklisted, and re-searched natively via `skipRedownload=false`, while the torrent **continues seeding** in your client.
-   - **Dismissed Season Pack (`removeFromClient=false`, `blocklist=false`, `skipRedownload=true`)**: Used when a season pack's needed episodes have been imported and remaining files are already satisfied on disk. Clears the queue warning while keeping the torrent seeding.
+   - **Rejected (`removeFromClient=true`, `blocklist=true`, `skipRedownload=false`)**: Files are deleted from the download client **only** when confirmed to be **virus/malware, sample-only, or corrupt/unusable**.
+   - **Dismissed (`removeFromClient=false`, `blocklist=true`, `skipRedownload=false`)**: Used for **quality/Custom Format downgrades** and **wrong/mismatched media**. The item is removed from the Sonarr/Radarr queue, blocklisted, and re-searched natively via `skipRedownload=false`, while files **remain intact** in your download client.
+   - **Dismissed Season Pack (`removeFromClient=false`, `blocklist=false`, `skipRedownload=true`)**: Used when a season pack's needed episodes have been imported and remaining files are already satisfied on disk. Clears the queue warning while keeping the release in your download client.
 
 3. **Dual Quality & Upgrade Enforcement**
    - Before importing any file, AImportarr checks both Sonarr/Radarr's native quality/Custom Format rejections **and** fetches existing on-disk file metadata (`episodefile` / `movieFile`) so Stage 2 AI can verify whether newly mapped episodes or movies are genuine upgrades or downgrades.
@@ -38,7 +38,7 @@ flowchart TD
 
     C_AI -- "extract" --> D
     C_AI -- "no_extraction" --> E
-    C_AI -- "reject_delete (>= min_confidence)" --> R_DEL["Status: rejected\nDelete from Torrent & Blocklist\n(removeFromClient=true, blocklist=true)"]
+    C_AI -- "reject_delete (>= min_confidence)" --> R_DEL["Status: rejected\nDelete from Client & Blocklist\n(removeFromClient=true, blocklist=true)"]
 
     D --> E
     E --> FP{"Step 4: Fast-Path Check"}
@@ -93,14 +93,14 @@ AImportarr queries `GET /api/v3/manualimport` (pointing at the sandbox folder if
    - Evaluates candidate files, library candidates, episode lists, and existing on-disk quality to return one of:
      - `import` — Maps exact `seriesId`/`movieId` and `episodeIds` and executes `ManualImport`.
      - `reject_keep_seeding` — Quality downgrade or wrong media (`status="dismissed"`, keeps seeding, blocklists, and triggers re-search).
-     - `reject_delete` — Confirmed virus/malware, sample-only, or corrupt release (`status="rejected"`, deletes from torrent client and blocklists).
-     - `dismiss_pack` — Season pack whose remaining files are already on disk (`status="dismissed"`, removes queue warning while keeping seeding).
+     - `reject_delete` — Confirmed virus/malware, sample-only, or corrupt release (`status="rejected"`, deletes from download client and blocklists).
+     - `dismiss_pack` — Season pack whose remaining files are already on disk (`status="dismissed"`, removes queue warning while keeping files in client).
 
 ---
 
 ## Statuses, Filters, and Retry Lifecycle
 
-| Status | Meaning | Torrent Client | *arr Queue | Retryable in UI? | UI Filter Pill |
+| Status | Meaning | Download Client | *arr Queue | Retryable in UI? | UI Filter Pill |
 | :--- | :--- | :--- | :--- | :--- | :--- |
 | **`imported`** | Imported into media library | Untouched (seeding) | Imported & removed | No | `Imported` |
 | **`dismissed`** | Ignored (quality downgrade, wrong media, or satisfied pack) | Untouched (seeding) | Removed (and blocklisted if bad match/downgrade) | No | `Dismissed` |

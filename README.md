@@ -24,8 +24,8 @@
 - **Secure Sandbox Extraction**: Inspects `.rar`, `.zip`, `.7z`, and `.tar` headers in memory before extracting. Clean video archives are unpacked into a temporary `<stem>_extracted` staging folder, imported, and automatically cleaned up so disk space is never duplicated.
 - **Seeding-Safe Rejection Policy**:
   - **Imported**: Valid upgrades and unmapped episodes/movies are matched and imported automatically.
-  - **Dismissed (Seeding Preserved)**: Quality/Custom Format downgrades, wrong media matches, and satisfied season packs are removed from the *arr queue (and blocklisted + re-searched when appropriate) **without deleting torrents from your client**.
-  - **Rejected (Deleted from Client)**: Only confirmed **virus/malware, sample-only, or corrupt** releases are deleted from the torrent client and blocklisted.
+  - **Dismissed (Files Preserved)**: Quality/Custom Format downgrades, wrong media matches, and satisfied season packs are removed from the *arr queue (and blocklisted + re-searched when appropriate) **without deleting files from your download client**.
+  - **Rejected (Deleted from Client)**: Only confirmed **virus/malware, sample-only, or corrupt** releases are deleted from the download client and blocklisted.
 - **Built-in Web UI & Live Settings (`:9890`)**: View processed history, inspect AI reasoning, retry items still in the queue, track AI token usage, and edit/hot-reload your configuration directly from the browser.
 
 > 📖 **Deep Dive**: See [**Architecture & Two-Stage AI Design (`docs/ARCHITECTURE.md`)**](docs/ARCHITECTURE.md) for the complete 4-step pipeline flowchart, decision rules, and component breakdown.
