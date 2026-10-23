@@ -1207,7 +1207,7 @@ class SonarrClient:
                     confidence=stage2.confidence,
                     model=model_label,
                     reasoning=stage2.reasoning,
-                    details="Deleted from torrent & blocklisted",
+                    details="Deleted from client & blocklisted",
                     item_keys=item_keys,
                 )
                 await self.delete_and_blocklist(
