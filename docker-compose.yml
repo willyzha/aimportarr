@@ -9,7 +9,7 @@ services:
       - "9890:9890" # Web UI Metrics & History Monitor
     volumes:
       - ./config:/config
-      # Optional: Mount downloads directory matching Sonarr/Radarr's paths for secure archive extraction (replaces Unpackerr)
+      # Optional: Mount downloads directory matching Sonarr/Radarr's paths for secure archive extraction
       # - /mnt/user/Media/downloads:/data/downloads
     environment:
       - PUID=1000

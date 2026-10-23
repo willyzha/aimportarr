@@ -58,7 +58,7 @@ radarr:
   api_key: "YOUR_RADARR_API_KEY"
 
 # ==========================================
-# Secure Archive Extraction (Replaces Unpackerr)
+# Secure Archive Extraction
 # ==========================================
 # Automatically inspects archive files (.zip, .rar, .7z, .tar) in memory before extracting.
 # If malware/executables are detected, immediately deletes from client and blocklists the release.

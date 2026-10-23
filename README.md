@@ -21,7 +21,7 @@
 **AImportarr** monitors your **Sonarr** and **Radarr** download queues and automatically resolves stuck, warning, or blocked releases so your media server stays completely hands-off:
 
 - **Two-Stage Hybrid Pipeline**: Lets Sonarr/Radarr handle normal downloads first, uses zero-token fast paths whenever Sonarr/Radarr can map unpacked files or enforce quality rules directly, and invokes AI (**Google Gemini** or local **Ollama**) only when ambiguity remains.
-- **Secure Sandbox Extraction (Replaces Unpackerr)**: Inspects `.rar`, `.zip`, `.7z`, and `.tar` headers in memory before extracting. Clean video archives are unpacked into a temporary `<stem>_extracted` staging folder, imported, and automatically cleaned up so disk space is never duplicated.
+- **Secure Sandbox Extraction**: Inspects `.rar`, `.zip`, `.7z`, and `.tar` headers in memory before extracting. Clean video archives are unpacked into a temporary `<stem>_extracted` staging folder, imported, and automatically cleaned up so disk space is never duplicated.
 - **Seeding-Safe Rejection Policy**:
   - **Imported**: Valid upgrades and unmapped episodes/movies are matched and imported automatically.
   - **Dismissed (Seeding Preserved)**: Quality/Custom Format downgrades, wrong media matches, and satisfied season packs are removed from the *arr queue (and blocklisted + re-searched when appropriate) **without deleting torrents from your client**.
