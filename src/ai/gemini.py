@@ -4,7 +4,7 @@ import logging
 import re
 import time
 from datetime import datetime
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Any
 import httpx
 from ..metrics import metrics
 from .base import (
@@ -14,6 +14,9 @@ from .base import (
     SampleEvaluationResult,
     LibraryMatchResult,
     MalwareEvaluationResult,
+    Stage1TriageResult,
+    ApprovedFileItem,
+    Stage2DecisionResult,
     AIProviderError
 )
 
@@ -491,4 +494,127 @@ class GeminiProvider(BaseAIProvider):
             confidence=float(data.get("confidence", 0.0)),
             reasoning=data.get("reasoning", ""),
             model_name=self.name
+        )
+
+    async def evaluate_stage1_triage(
+        self,
+        release_title: str,
+        error_messages: List[str],
+        disk_files: List[str],
+        archive_name: Optional[str] = None,
+        archive_files: Optional[List[str]] = None,
+    ) -> Stage1TriageResult:
+        schema = (
+            "Return JSON adhering strictly to this schema:\n"
+            "{\n"
+            '  "action": "extract" | "no_extraction" | "reject_delete",\n'
+            '  "category_tag": "malware_or_corrupt" | "sample_only" | "archive_extracted" | "triage_passed",\n'
+            '  "confidence": float (0.0 to 1.0),\n'
+            '  "reasoning": "brief explanation"\n'
+            "}"
+        )
+        prompt = (
+            f"Release Title: {release_title}\n"
+            f"Queue Error / Warning Messages: {json.dumps(error_messages, ensure_ascii=False)}\n"
+            f"Files on Disk: {json.dumps(disk_files[:30], ensure_ascii=False)}\n"
+            f"Archive Detected: {archive_name or 'None'}\n"
+            f"Files Inside Archive: {json.dumps((archive_files or [])[:30], ensure_ascii=False)}\n\n"
+            "Stage 1 Triage Task:\n"
+            "1. Choose 'reject_delete' ONLY if the release is a fake/malware/virus release (e.g. .exe, .scr, .bat, .lnk, .iso, crypted binaries, password-protected scam archive), corrupt/empty archive, or contains ONLY disposable sample/junk files with no real video.\n"
+            "2. Choose 'extract' if there is a valid archive containing real video media files that need unpacking.\n"
+            "3. Choose 'no_extraction' if valid unpacked video files are already on disk."
+        )
+        data = await self._call_gemini(
+            prompt,
+            schema,
+            operation="evaluate_stage1_triage",
+            item_title=release_title
+        )
+        return Stage1TriageResult(
+            action=str(data.get("action", "no_extraction")),
+            category_tag=str(data.get("category_tag", "malware_or_corrupt")),
+            confidence=float(data.get("confidence", 0.0)),
+            reasoning=str(data.get("reasoning", "")),
+            model_name=self.name
+        )
+
+    async def evaluate_import_decision(
+        self,
+        media_type: str,
+        release_title: str,
+        folder_name: str,
+        queue_messages: List[str],
+        candidate_media: Optional[Dict[str, Any]],
+        library_candidates: Optional[List[Dict[str, Any]]],
+        manual_import_files: List[Dict[str, Any]],
+        existing_disk_files: List[Dict[str, Any]],
+        known_episodes: Optional[List[Dict[str, Any]]] = None,
+        raw_disk_files: Optional[List[str]] = None,
+    ) -> Stage2DecisionResult:
+        schema = (
+            "Return JSON adhering strictly to this schema:\n"
+            "{\n"
+            '  "decision": "import" | "reject_keep_seeding" | "reject_delete" | "dismiss_pack",\n'
+            '  "matched_media_id": integer or null,\n'
+            '  "files_to_import": [\n'
+            '    {\n'
+            '      "path": "exact file path from candidate files",\n'
+            '      "season_number": integer or null,\n'
+            '      "episode_numbers": [integer]\n'
+            '    }\n'
+            '  ],\n'
+            '  "category_tag": "id_match" | "unknown_media" | "episode_parsed" | "quality_downgrade" | "wrong_media" | "sample_only" | "malware_or_corrupt" | "season_pack",\n'
+            '  "confidence": float (0.0 to 1.0),\n'
+            '  "reasoning": "clear explanation of identity match, file mapping, and quality upgrade/downgrade check"\n'
+            "}"
+        )
+        prompt = (
+            f"Media Type: {media_type} ({'Sonarr TV Series' if media_type == 'series' else 'Radarr Movie'})\n"
+            f"Release Title: {release_title}\n"
+            f"Folder Name: {folder_name}\n"
+            f"Queue Status Messages: {json.dumps(queue_messages, ensure_ascii=False)}\n"
+            f"Candidate Media (if known by *arr): {json.dumps(candidate_media, ensure_ascii=False)}\n"
+            f"Library Candidates (if media unknown): {json.dumps((library_candidates or [])[:50], ensure_ascii=False)}\n"
+            f"Candidate Files from /manualimport: {json.dumps(manual_import_files, ensure_ascii=False, indent=2)}\n"
+            f"Raw Files on Disk (if /manualimport found 0): {json.dumps((raw_disk_files or [])[:30], ensure_ascii=False)}\n"
+            f"Existing Imported Files Already on Disk: {json.dumps(existing_disk_files[:60], ensure_ascii=False)}\n"
+            f"Known Episodes in Series (if TV): {json.dumps((known_episodes or [])[:80], ensure_ascii=False)}\n\n"
+            "Stage 2 Unified Import vs. Reject Evaluation Rules:\n"
+            "1. Identity Verification: Verify whether the release belongs to Candidate Media (or match it against Library Candidates, accounting for aliases, Pinyin, Romaji, and festival/release year +/- 1).\n"
+            "2. Upgrade vs. Downgrade Check: Compare each candidate file's quality/resolution and Custom Format score against Existing Imported Files Already on Disk for that movie or episode, as well as any Sonarr/Radarr quality rejection messages.\n"
+            "   - If the target episode/movie is ALREADY on disk with equal or higher quality (or Sonarr/Radarr rejected it as 'Existing file on disk has equal or higher quality' or 'Not a Custom Format upgrade'), DO NOT import it.\n"
+            "3. Sample / Extra Filtering: Exclude any disposable sample clips or trailers from files_to_import, while keeping genuine full episodes/specials/movies.\n"
+            "4. Choose ONE decision:\n"
+            "   - 'import': The release matches the target media AND at least one valid video file is either missing on disk or a genuine quality upgrade. Populate matched_media_id and files_to_import (with season_number and episode_numbers for TV series).\n"
+            "   - 'reject_keep_seeding': The release is a quality downgrade/not an upgrade over existing disk files, OR is the wrong series/movie or unwanted language. (Preserves seeding while blocklisting in *arr).\n"
+            "   - 'reject_delete': ONLY when the files are virus/malware, 100% disposable samples/trailers with no real media, or corrupt/unusable files. (Deletes from client and blocklists).\n"
+            "   - 'dismiss_pack': A multi-episode/season pack where needed episodes were already imported and remaining episodes are missing or already satisfied on disk."
+        )
+        data = await self._call_gemini(
+            prompt,
+            schema,
+            operation="evaluate_import_decision",
+            item_title=release_title
+        )
+        files = []
+        for f in data.get("files_to_import") or []:
+            if isinstance(f, dict) and f.get("path"):
+                ep_nums = f.get("episode_numbers") or []
+                if isinstance(ep_nums, int):
+                    ep_nums = [ep_nums]
+                files.append(
+                    ApprovedFileItem(
+                        path=str(f["path"]),
+                        season_number=int(f["season_number"]) if f.get("season_number") is not None else None,
+                        episode_numbers=[int(x) for x in ep_nums],
+                    )
+                )
+        return Stage2DecisionResult(
+            decision=str(data.get("decision", "reject_keep_seeding")),
+            matched_media_id=int(data["matched_media_id"]) if data.get("matched_media_id") is not None else None,
+            files_to_import=files,
+            category_tag=str(data.get("category_tag", "ai_decision")),
+            confidence=float(data.get("confidence", 0.0)),
+            reasoning=str(data.get("reasoning", "")),
+            model_name=self.name,
         )

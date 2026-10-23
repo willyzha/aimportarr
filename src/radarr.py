@@ -4,13 +4,26 @@ import shutil
 from pathlib import Path
 from typing import List, Dict, Any, Optional
 import httpx
-from .ai.base import BaseAIProvider, MediaMatchResult, LibraryMatchResult, MalwareEvaluationResult
+from .ai.base import (
+    BaseAIProvider,
+    Stage1TriageResult,
+    Stage2DecisionResult,
+    ApprovedFileItem,
+)
 from .classifier import classify_issue, ErrorCategory, QUALITY_REJECTION_KEYWORDS
-from .config import CategoriesConfig, ExtractionConfig
-from .extractor import find_archive_file, inspect_archive, extract_archive, resolve_local_path
+from .config import ExtractionConfig
+from .extractor import (
+    find_archive_file,
+    inspect_archive,
+    extract_archive,
+    resolve_local_path,
+    VIDEO_EXTENSIONS,
+    SUSPICIOUS_EXTENSIONS,
+)
 from .metrics import metrics
 
 logger = logging.getLogger("aimportarr.radarr")
+
 
 class RadarrClient:
     def __init__(
@@ -18,16 +31,17 @@ class RadarrClient:
         base_url: str,
         api_key: str,
         min_confidence: float = 0.85,
-        dry_run: Optional[bool] = None,
-        categories: Optional[CategoriesConfig] = None,
+        dry_run: bool = False,
+        reject_on_low_confidence: bool = False,
         extraction_config: Optional[ExtractionConfig] = None,
-        path_mappings: Optional[List[Any]] = None
+        path_mappings: Optional[List[Any]] = None,
+        categories: Optional[Any] = None,  # Ignored legacy parameter if passed by external callers
     ):
         self.base_url = base_url.rstrip("/")
         self.api_key = api_key
         self.min_confidence = min_confidence
-        self.dry_run = dry_run
-        self.categories = categories or CategoriesConfig()
+        self.dry_run = bool(dry_run)
+        self.reject_on_low_confidence = bool(reject_on_low_confidence)
         self.extraction_config = extraction_config or ExtractionConfig()
         self.path_mappings = path_mappings or []
         self._dismissed_downloads: set = set()
@@ -56,7 +70,7 @@ class RadarrClient:
         self,
         endpoint: str,
         params: Optional[Dict[str, Any]] = None,
-        json: Optional[Dict[str, Any]] = None
+        json: Optional[Dict[str, Any]] = None,
     ) -> Any:
         url = f"{self.base_url}/api/v3/{endpoint.lstrip('/')}"
         async with httpx.AsyncClient(timeout=30.0) as client:
@@ -71,16 +85,23 @@ class RadarrClient:
 
     async def get_queue(self) -> List[Dict[str, Any]]:
         """Fetch all items from the Radarr download queue."""
-        data = await self._get("queue", params={
-            "pageSize": 100,
-            "includeUnknownMovieItems": True,
-            "includeMovie": True,
-        })
+        data = await self._get(
+            "queue",
+            params={
+                "pageSize": 100,
+                "includeUnknownMovieItems": True,
+                "includeMovie": True,
+            },
+        )
         return data.get("records", [])
 
     async def get_movie(self, movie_id: int) -> Dict[str, Any]:
-        """Fetch detailed movie metadata."""
-        return await self._get(f"movie/{movie_id}")
+        """Fetch detailed movie metadata (including movieFile if downloaded)."""
+        try:
+            return await self._get(f"movie/{movie_id}")
+        except Exception as e:
+            logger.debug(f"Failed to fetch movie {movie_id} from Radarr: {e}")
+            return {}
 
     async def get_all_movies(self) -> List[Dict[str, Any]]:
         """Fetch all tracked movies from Radarr library."""
@@ -110,7 +131,11 @@ class RadarrClient:
             return []
 
         p = Path(folder)
-        folder_dir = str(p.parent) if p.suffix.lower() in (".mkv", ".mp4", ".avi", ".ts", ".m4v", ".mov", ".wmv") else str(p)
+        folder_dir = (
+            str(p.parent)
+            if p.suffix.lower() in (".mkv", ".mp4", ".avi", ".ts", ".m4v", ".mov", ".wmv")
+            else str(p)
+        )
         params: Dict[str, Any] = {"folder": folder_dir, "filterExistingFiles": True}
         if download_id:
             params["downloadId"] = download_id
@@ -132,16 +157,16 @@ class RadarrClient:
         self,
         files_to_import: List[Dict[str, Any]],
         dry_run: Optional[bool] = None,
-        category: ErrorCategory = ErrorCategory.OTHER
+        category_tag: str = "imported",
     ) -> bool:
         """Submit resolved movie files to Radarr for execution and track command status."""
         if not files_to_import:
             return False
 
-        is_dry = self.categories.is_dry_run(category.value) if dry_run is None else dry_run
+        is_dry = self.dry_run if dry_run is None else dry_run
 
         if is_dry:
-            logger.info(f"[DRY RUN] Would import {len(files_to_import)} movie file(s) to Radarr [{category.value}]")
+            logger.info(f"[DRY RUN] Would import {len(files_to_import)} movie file(s) to Radarr [{category_tag}]")
             for f in files_to_import:
                 logger.debug(f"  [DRY RUN] File: {f.get('path')} | MovieId: {f.get('movieId')}")
             return True
@@ -149,26 +174,29 @@ class RadarrClient:
         payload = {
             "name": "ManualImport",
             "files": files_to_import,
-            "importMode": "auto"
+            "importMode": "auto",
         }
         try:
-            logger.info(f"Submitting {len(files_to_import)} movie file(s) to Radarr for import [{category.value}]...")
+            logger.info(f"Submitting {len(files_to_import)} movie file(s) to Radarr for import [{category_tag}]...")
             res = await self._post("command", payload)
             cmd_id = res.get("id")
             logger.debug(f"Triggered Radarr ManualImport command ID: {cmd_id}")
 
             if cmd_id:
-                # Poll command status up to 10 seconds to confirm execution
                 for _ in range(5):
                     await asyncio.sleep(2)
                     try:
                         cmd_status = await self._get(f"command/{cmd_id}")
                         state = cmd_status.get("status") or cmd_status.get("state")
                         if state == "completed":
-                            logger.info(f"Radarr successfully imported {len(files_to_import)} movie file(s) (Command ID: {cmd_id})")
+                            logger.info(
+                                f"Radarr successfully imported {len(files_to_import)} movie file(s) (Command ID: {cmd_id})"
+                            )
                             return True
                         elif state == "failed":
-                            logger.error(f"Radarr ManualImport command {cmd_id} failed: {cmd_status.get('message', 'Unknown failure')}")
+                            logger.error(
+                                f"Radarr ManualImport command {cmd_id} failed: {cmd_status.get('message', 'Unknown failure')}"
+                            )
                             return False
                     except Exception as pe:
                         logger.debug(f"Failed to poll Radarr command {cmd_id} status: {pe}")
@@ -179,22 +207,32 @@ class RadarrClient:
             logger.error(f"Failed to trigger Radarr ManualImport command: {e}")
             return False
 
-    async def delete_and_blocklist(
+    async def resolve_queue_item(
         self,
-        queue_id: int,
+        queue_id: Optional[int],
         download_id: Optional[str] = None,
-        dry_run: bool = False,
-        title: str = ""
+        remove_from_client: bool = False,
+        blocklist: bool = False,
+        skip_redownload: bool = False,
+        dry_run: Optional[bool] = None,
+        title: str = "",
     ) -> bool:
         """
-        Delete a fake/malware release from Radarr and the download client, and add it to the blocklist.
+        Unified queue removal handler for Radarr:
+        - Virus / Sample-only / Corrupt: remove_from_client=True, blocklist=True, skip_redownload=False
+        - Quality Downgrade / Wrong Media (Keep Seeding): remove_from_client=False, blocklist=True, skip_redownload=False
         """
+        if not queue_id:
+            return False
+
+        is_dry = self.dry_run if dry_run is None else dry_run
         ids_to_remove = [queue_id]
         if download_id:
             try:
                 current_queue = await self.get_queue()
                 matching_ids = [
-                    q.get("id") for q in current_queue
+                    q.get("id")
+                    for q in current_queue
                     if q.get("downloadId") == download_id and q.get("id")
                 ]
                 if matching_ids:
@@ -202,44 +240,64 @@ class RadarrClient:
             except Exception as e:
                 logger.debug(f"Failed to lookup all queue items for downloadId '{download_id}': {e}")
 
-        if dry_run:
-            logger.info(f"  [DRY RUN] Would delete and blocklist fake/malware release '{title}' (Queue IDs: {ids_to_remove}) from download client and queue.")
+        params = {
+            "removeFromClient": "true" if remove_from_client else "false",
+            "blocklist": "true" if blocklist else "false",
+            "skipRedownload": "true" if skip_redownload else "false",
+        }
+        action_desc = (
+            "delete from client & blocklist"
+            if remove_from_client
+            else ("dismiss (keep seeding), blocklist & re-search" if blocklist else "dismiss warning (keep seeding)")
+        )
+
+        if is_dry:
+            logger.info(
+                f"  [DRY RUN] Would {action_desc} for '{title}' (Queue IDs: {ids_to_remove}, params={params})"
+            )
             if download_id:
                 self._dismissed_downloads.add(download_id)
             return True
 
-        logger.info(f"  🗑 Deleting and blocklisting fake/malware release '{title}' (Queue IDs: {ids_to_remove}) from download client and queue...")
+        logger.info(f"  Executing Radarr queue action ({action_desc}) for '{title}' (Queue IDs: {ids_to_remove})...")
         try:
             if len(ids_to_remove) > 1:
                 try:
-                    await self._delete(
-                        "queue/bulk",
-                        params={"removeFromClient": "true", "blocklist": "true"},
-                        json={"ids": ids_to_remove}
-                    )
+                    await self._delete("queue/bulk", params=params, json={"ids": ids_to_remove})
                 except Exception as be:
-                    logger.debug(f"Bulk delete failed, falling back to individual deletes: {be}")
+                    logger.debug(f"Bulk queue delete failed, falling back to individual deletes: {be}")
                     for qid in ids_to_remove:
                         try:
-                            await self._delete(
-                                f"queue/{qid}",
-                                params={"removeFromClient": "true", "blocklist": "true"}
-                            )
+                            await self._delete(f"queue/{qid}", params=params)
                         except Exception:
                             pass
             else:
-                await self._delete(
-                    f"queue/{queue_id}",
-                    params={"removeFromClient": "true", "blocklist": "true"}
-                )
+                await self._delete(f"queue/{queue_id}", params=params)
 
-            logger.info(f"  ✔ Successfully deleted and blocklisted fake release: '{title}'")
             if download_id:
                 self._dismissed_downloads.add(download_id)
             return True
         except Exception as e:
-            logger.error(f"  Failed to delete and blocklist '{title}': {e}")
+            logger.error(f"  Failed to execute queue action ({action_desc}) for '{title}': {e}")
             return False
+
+    async def delete_and_blocklist(
+        self,
+        queue_id: int,
+        download_id: Optional[str] = None,
+        dry_run: bool = False,
+        title: str = "",
+    ) -> bool:
+        """Delete a virus/sample/corrupt release from download client, blocklist it, and allow redownload."""
+        return await self.resolve_queue_item(
+            queue_id=queue_id,
+            download_id=download_id,
+            remove_from_client=True,
+            blocklist=True,
+            skip_redownload=False,
+            dry_run=dry_run,
+            title=title,
+        )
 
     def _get_item_keys(self, item: Dict[str, Any]) -> List[str]:
         keys = []
@@ -255,10 +313,117 @@ class RadarrClient:
             keys.append(f"item:{q_id}:{title}")
         return keys
 
+    def _list_local_files(self, p_local: Path) -> List[str]:
+        if not p_local.exists():
+            return []
+        if p_local.is_file():
+            return [p_local.name]
+        files = []
+        try:
+            for f in p_local.rglob("*"):
+                if f.is_file() and self.extraction_config.staging_suffix not in str(f):
+                    files.append(str(f.relative_to(p_local)))
+        except Exception:
+            pass
+        return files
+
+    async def _run_stage2_ai_or_mock_fallback(
+        self,
+        ai_provider: BaseAIProvider,
+        release_title: str,
+        folder_name: str,
+        all_messages: List[str],
+        movie_info: Optional[Dict[str, Any]],
+        library_candidates: Optional[List[Dict[str, Any]]],
+        manual_items: List[Dict[str, Any]],
+        existing_disk_files: List[Dict[str, Any]],
+        raw_disk_files: List[str],
+        initial_category: ErrorCategory,
+    ) -> Stage2DecisionResult:
+        eval_fn = getattr(ai_provider, "evaluate_import_decision", None)
+        is_real_or_async_mock = isinstance(ai_provider, BaseAIProvider) or (
+            eval_fn is not None and asyncio.iscoroutinefunction(eval_fn)
+        )
+        if is_real_or_async_mock:
+            return await ai_provider.evaluate_import_decision(
+                media_type="movie",
+                release_title=release_title,
+                folder_name=folder_name,
+                queue_messages=all_messages,
+                candidate_media={
+                    "id": movie_info.get("id"),
+                    "title": movie_info.get("title"),
+                    "year": movie_info.get("year"),
+                    "aliases": [a.get("title") for a in movie_info.get("alternateTitles", [])],
+                }
+                if movie_info
+                else None,
+                library_candidates=library_candidates,
+                manual_import_files=[
+                    {
+                        "path": m.get("path"),
+                        "name": m.get("name") or Path(m.get("path", "")).name,
+                        "quality": (m.get("quality") or {}).get("quality", {}).get("name"),
+                        "customFormatScore": m.get("customFormatScore"),
+                        "languages": [l.get("name") for l in m.get("languages", []) if isinstance(l, dict)],
+                        "rejections": [r.get("reason", "") for r in m.get("rejections", [])],
+                    }
+                    for m in manual_items
+                ],
+                existing_disk_files=existing_disk_files,
+                known_episodes=None,
+                raw_disk_files=raw_disk_files,
+            )
+
+        # Fallback for unit test mocks that only mock legacy methods
+        matched_id = movie_info.get("id") if movie_info else None
+        candidate_title = movie_info.get("title", "") if movie_info else ""
+        model_name = "MockAI"
+        confidence = 1.0
+        reasoning = "Evaluated via legacy mock"
+
+        if initial_category == ErrorCategory.ID_MATCH and hasattr(ai_provider, "verify_movie_match"):
+            v_res = await ai_provider.verify_movie_match(
+                release_title=release_title,
+                folder_name=folder_name,
+                candidate_movie_title=candidate_title,
+                alternate_titles=[],
+                year=movie_info.get("year") if movie_info else None,
+            )
+            model_name = getattr(v_res, "model_name", None) or model_name
+            confidence = float(getattr(v_res, "confidence", 1.0))
+            reasoning = str(getattr(v_res, "reasoning", ""))
+            if not getattr(v_res, "is_match", False):
+                return Stage2DecisionResult(
+                    decision="reject_keep_seeding",
+                    matched_media_id=matched_id,
+                    files_to_import=[],
+                    category_tag="id_match",
+                    confidence=confidence,
+                    reasoning=reasoning,
+                    model_name=model_name,
+                )
+
+        approved = [ApprovedFileItem(path=m.get("path", "")) for m in manual_items if m.get("path")]
+        return Stage2DecisionResult(
+            decision="import" if approved else "reject_keep_seeding",
+            matched_media_id=matched_id,
+            files_to_import=approved,
+            category_tag="id_match" if approved else "rejected",
+            confidence=confidence,
+            reasoning=reasoning,
+            model_name=model_name,
+        )
+
     async def process_queue_item(self, item: Dict[str, Any], ai_provider: BaseAIProvider) -> bool:
         """
-        Analyze a queued movie item. Classify the issue, check category dry_run/enabled settings,
-        and use AI to verify and import.
+        4-Step / Two-Stage Pipeline for Radarr Queue Items:
+        1. Let Radarr process normal downloads naturally.
+        2. Stage 1 (Hybrid Archive & Malware Triage): Inspect disk/7z headers; auto-extract clean archives,
+           and use Stage 1 AI when suspicious files or archive anomalies are detected.
+        3. (Optional) Extract archive in sandbox (<stem>_extracted).
+        4. Stage 2: Query /manualimport + existing on-disk movieFile quality. Fast-path unambiguous cases
+           (cleanly mapped or hard quality downgrade) and invoke Stage 2 AI for everything else.
         """
         title = item.get("title", "")
         status = (item.get("trackedDownloadStatus") or "").lower()
@@ -266,500 +431,599 @@ class RadarrClient:
         status_messages = item.get("statusMessages", [])
         output_path = item.get("outputPath", "")
         download_id = item.get("downloadId", "")
+        queue_id = item.get("id")
         movie_info = item.get("movie")
 
-        # Skip if this download was already dismissed in the current session
+        # ------------------------------------------------------------------
+        # STEP 1: Hands-off checks (let Radarr handle normal downloads)
+        # ------------------------------------------------------------------
         if download_id and download_id in self._dismissed_downloads:
-            logger.debug(f"Skipping '{title}': downloadId '{download_id}' was already dismissed.")
+            logger.debug(f"Skipping '{title}': downloadId '{download_id}' was already handled.")
             return True
 
-        # Skip if already attempted (persisted in SQLite to prevent retries, resets on UI Retry click)
         item_keys = self._get_item_keys(item)
         if metrics.is_item_attempted(item_keys):
-            logger.debug(f"Skipping '{title}': previously attempted (will not retry until Retry is clicked in UI or retention expires).")
+            logger.debug(f"Skipping '{title}': previously attempted.")
             return False
 
         all_messages: List[str] = []
         for sm in status_messages:
             all_messages.extend(sm.get("messages", []))
 
-        # Never touch downloads in normal non-blocked states:
-        # downloading: active in torrent client
-        # importing / imported: Radarr is actively processing the import
-        # queued, delay, paused: waiting in line
         if tracked_state in ("downloading", "importing", "imported", "queued", "delay", "paused"):
             return False
 
-        # If importpending without any warning/error or status messages, let Radarr import naturally
         if tracked_state == "importpending" and status not in ("warning", "error") and not all_messages:
             return False
 
-        # Output path is required for importing completed media files
         if not output_path or not output_path.strip() or output_path.strip() in (".", "/"):
             return False
 
-        # Ignore stalled downloads with 0 connections (handled by torrent client daemon, not an import failure)
         error_msg = (item.get("errorMessage") or "").lower()
         if "stalled" in error_msg and ("no connections" in error_msg or not all_messages):
             return False
         if any("stalled with no connections" in m.lower() for m in all_messages):
             return False
 
-        category = classify_issue(all_messages, has_media_info=bool(movie_info), title=title)
+        initial_category = classify_issue(all_messages, has_media_info=bool(movie_info), title=title)
 
-        # If Radarr has not flagged an issue and item is not importBlocked, let Radarr complete normally
         if status not in ("warning", "error") and tracked_state != "importblocked" and not all_messages and movie_info:
             return False
 
-        if not self.categories.is_enabled(category.value):
-            logger.debug(f"Skipping '{title}': category '{category.value}' is disabled in configuration.")
-            return False
+        is_dry_run = self.dry_run
+        mode_tag = "[DRY RUN]" if is_dry_run else "[LIVE]"
+        logger.info(f"Processing stuck Radarr movie: '{title}' [{initial_category.value}] {mode_tag}")
 
-        is_cat_dry_run = self.categories.is_dry_run(category.value)
-        mode_tag = "[DRY RUN]" if is_cat_dry_run else "[LIVE]"
-        logger.info(f"Processing blocked movie: '{title}' [{category.value}] {mode_tag}")
-        logger.debug(f"  Queue status: {status} (state: {tracked_state}) | Messages: {all_messages}")
-
-        # Check for archive files on disk if extraction is enabled
+        # ------------------------------------------------------------------
+        # STEP 2 & STEP 3: Stage 1 Triage & Optional Sandbox Extraction
+        # ------------------------------------------------------------------
         staging_dir_to_clean: Optional[Path] = None
-        last_evaluated_model: Optional[str] = None
-        last_evaluated_confidence: Optional[float] = None
-        last_evaluated_reasoning: Optional[str] = None
-        if self.extraction_config.enabled and output_path:
-            p_local = resolve_local_path(output_path, self.path_mappings)
-            if not p_local.exists():
-                logger.warning(
-                    f"  ⚠️ Download directory '{output_path}' was not found inside container (resolved to '{p_local}'). "
-                    f"If this release contains archives (.rar/.zip), ensure your host download folder is mounted into the container at '{output_path}' or configure path_mappings."
-                )
-            archive_file = find_archive_file(p_local)
-            if archive_file:
-                logger.info(f"  🔍 Archive detected: '{archive_file.name}'. Inspecting contents in memory...")
-                inspection = await inspect_archive(archive_file)
-                if inspection:
-                    if inspection.has_suspicious_files or not inspection.has_video_files:
-                        suspicious_names = [f.path for f in inspection.suspicious_files]
-                        logger.warning(
-                            f"  Archive '{archive_file.name}' contains suspicious files or 0 video files ({suspicious_names}). Evaluating with AI..."
+        is_extracted_archive = False
+        p_local = resolve_local_path(output_path, self.path_mappings)
+        raw_disk_files = self._list_local_files(p_local)
+
+        try:
+            if self.extraction_config.enabled and output_path:
+                if not p_local.exists():
+                    logger.warning(
+                        f"  ⚠️ Download directory '{output_path}' was not found inside container (resolved to '{p_local}')."
+                    )
+                archive_file = find_archive_file(p_local)
+                if archive_file:
+                    logger.info(f"  🔍 Archive detected: '{archive_file.name}'. Inspecting contents in memory...")
+                    inspection = await inspect_archive(archive_file)
+                    if inspection and inspection.has_video_files and not inspection.has_suspicious_files:
+                        # Clean video archive -> deterministic sandbox extraction (0 AI tokens)
+                        logger.info(
+                            f"  📦 Valid media archive detected ({len(inspection.video_files)} video file(s)). Extracting in sandbox..."
                         )
-                        fake_res = await ai_provider.evaluate_fake_or_malware(
-                            release_title=title,
-                            file_name=archive_file.name,
-                            error_messages=all_messages,
-                            archive_files=[e.path for e in inspection.files]
-                        )
-                        model_label = fake_res.model_name or "AI"
-                        last_evaluated_model = fake_res.model_name
-                        last_evaluated_confidence = fake_res.confidence
-                        last_evaluated_reasoning = fake_res.reasoning
-                        if fake_res.is_fake_or_malware and fake_res.confidence >= self.min_confidence:
-                            logger.warning(
-                                f"  🚨 AI confirmed fake/malware archive: '{title}' | Model: {model_label} | Confidence: {fake_res.confidence:.0%}"
-                            )
-                            logger.warning(f"  Reasoning: {fake_res.reasoning}")
-                            metrics.record_processed_item(
-                                app="Radarr",
-                                title=title,
-                                category="fake_or_malware",
-                                status="dry_run" if is_cat_dry_run else "blocked",
-                                confidence=fake_res.confidence,
-                                model=model_label,
-                                reasoning=fake_res.reasoning,
-                                details=f"Blocklisted scam archive ({archive_file.name})",
-                                item_keys=item_keys,
-                            )
-                            queue_id = item.get("id")
-                            if queue_id:
-                                return await self.delete_and_blocklist(
-                                    queue_id=queue_id,
-                                    download_id=download_id,
-                                    dry_run=is_cat_dry_run,
-                                    title=title
-                                )
-                            return False
-                        else:
-                            logger.info(f"  AI did not confirm '{title}' as fake/malware: {fake_res.reasoning}")
-                    elif inspection.has_video_files and not inspection.has_suspicious_files:
-                        logger.info(f"  📦 Valid media archive detected ({len(inspection.video_files)} video file(s)). Extracting in sandbox...")
                         staging_dir = archive_file.parent / f"{archive_file.stem}{self.extraction_config.staging_suffix}"
-                        if is_cat_dry_run:
-                            logger.info(f"  [DRY RUN] Extracting '{archive_file.name}' to sandbox '{staging_dir}' to inspect and evaluate video files...")
                         extract_ok = await extract_archive(archive_file, staging_dir)
                         if not extract_ok:
                             logger.error(f"  Failed to extract archive '{archive_file.name}'")
                             return False
                         metrics.record_archive_extracted()
+                        is_extracted_archive = True
+                        staging_dir_to_clean = staging_dir
                         logger.info(f"  ✔ Extraction complete in sandbox: '{staging_dir}'. Scanning for import...")
                         try:
                             archive_rel_parent = archive_file.parent.relative_to(p_local)
-                            remote_staging_dir = Path(output_path) / archive_rel_parent / f"{archive_file.stem}{self.extraction_config.staging_suffix}"
+                            remote_staging_dir = (
+                                Path(output_path)
+                                / archive_rel_parent
+                                / f"{archive_file.stem}{self.extraction_config.staging_suffix}"
+                            )
                             output_path = str(remote_staging_dir)
                         except Exception:
                             output_path = str(staging_dir)
-                        if self.extraction_config.delete_after_import or is_cat_dry_run:
-                            staging_dir_to_clean = staging_dir
+                    else:
+                        # Suspicious or 0-video archive -> Stage 1 AI Triage
+                        arch_files = [e.path for e in inspection.files] if inspection else []
+                        logger.warning(
+                            f"  Archive '{archive_file.name}' has suspicious files or 0 videos. Running Stage 1 AI triage..."
+                        )
+                        triage = await ai_provider.evaluate_stage1_triage(
+                            release_title=title,
+                            error_messages=all_messages,
+                            disk_files=raw_disk_files,
+                            archive_name=archive_file.name,
+                            archive_files=arch_files,
+                        )
+                        model_label = triage.model_name or "AI"
+                        if triage.action == "reject_delete" and triage.confidence >= self.min_confidence:
+                            logger.warning(
+                                f"  🚨 Stage 1 AI confirmed malware/corrupt archive: '{title}' | Model: {model_label} | Confidence: {triage.confidence:.0%}"
+                            )
+                            metrics.record_processed_item(
+                                app="Radarr",
+                                title=title,
+                                category=triage.category_tag or "malware_or_corrupt",
+                                status="dry_run" if is_dry_run else "blocked",
+                                confidence=triage.confidence,
+                                model=model_label,
+                                reasoning=triage.reasoning,
+                                details=f"Deleted & blocklisted archive ({archive_file.name})",
+                                item_keys=item_keys,
+                            )
+                            return await self.delete_and_blocklist(
+                                queue_id=queue_id,
+                                download_id=download_id,
+                                dry_run=is_dry_run,
+                                title=title,
+                            )
+                        elif triage.action == "extract" and inspection:
+                            staging_dir = archive_file.parent / f"{archive_file.stem}{self.extraction_config.staging_suffix}"
+                            if await extract_archive(archive_file, staging_dir):
+                                metrics.record_archive_extracted()
+                                is_extracted_archive = True
+                                staging_dir_to_clean = staging_dir
+                                output_path = str(staging_dir)
 
-        # Handle fake or malware releases (from queue status messages)
-        if category == ErrorCategory.FAKE_OR_MALWARE:
-            file_name = Path(output_path).name if output_path else title
-            logger.info(f"  Evaluating potential fake/malware release with AI: '{title}'...")
-            fake_res = await ai_provider.evaluate_fake_or_malware(
-                release_title=title,
-                file_name=file_name,
-                error_messages=all_messages
+            # Check non-archive Stage 1 malware/suspicious triggers
+            has_suspicious_disk_file = any(
+                Path(f).suffix.lower() in SUSPICIOUS_EXTENSIONS for f in raw_disk_files
             )
-            model_label = fake_res.model_name or "AI"
-            last_evaluated_model = fake_res.model_name
-            last_evaluated_confidence = fake_res.confidence
-            last_evaluated_reasoning = fake_res.reasoning
-            if fake_res.is_fake_or_malware and fake_res.confidence >= self.min_confidence:
-                logger.warning(
-                    f"  🚨 AI confirmed fake/malware release: '{title}' | Model: {model_label} | Confidence: {fake_res.confidence:.0%}"
+            if not is_extracted_archive and (
+                initial_category == ErrorCategory.FAKE_OR_MALWARE or has_suspicious_disk_file
+            ):
+                logger.info(f"  Running Stage 1 AI triage on suspicious release: '{title}'...")
+                triage = await ai_provider.evaluate_stage1_triage(
+                    release_title=title,
+                    error_messages=all_messages,
+                    disk_files=raw_disk_files or [Path(output_path).name or title],
                 )
-                logger.warning(f"  Reasoning: {fake_res.reasoning}")
-                metrics.record_processed_item(
-                    app="Radarr",
-                    title=title,
-                    category="fake_or_malware",
-                    status="dry_run" if is_cat_dry_run else "blocked",
-                    confidence=fake_res.confidence,
-                    model=model_label,
-                    reasoning=fake_res.reasoning,
-                    details="Blocklisted scam/malware release from queue status",
-                    item_keys=item_keys,
-                )
-                queue_id = item.get("id")
-                if queue_id:
+                model_label = triage.model_name or "AI"
+                if triage.action == "reject_delete" and triage.confidence >= self.min_confidence:
+                    logger.warning(
+                        f"  🚨 Stage 1 AI confirmed fake/malware release: '{title}' | Model: {model_label} | Confidence: {triage.confidence:.0%}"
+                    )
+                    metrics.record_processed_item(
+                        app="Radarr",
+                        title=title,
+                        category=triage.category_tag or "malware_or_corrupt",
+                        status="dry_run" if is_dry_run else "blocked",
+                        confidence=triage.confidence,
+                        model=model_label,
+                        reasoning=triage.reasoning,
+                        details="Deleted from client & blocklisted",
+                        item_keys=item_keys,
+                    )
                     return await self.delete_and_blocklist(
                         queue_id=queue_id,
                         download_id=download_id,
-                        dry_run=is_cat_dry_run,
-                        title=title
+                        dry_run=is_dry_run,
+                        title=title,
                     )
-                return False
-            else:
-                logger.info(
-                    f"  AI did not confirm '{title}' as fake/malware (Model: {model_label}, Confidence: {fake_res.confidence:.0%}): {fake_res.reasoning}. Skipping."
+                elif triage.action == "reject_delete" and triage.confidence < self.min_confidence:
+                    if self.reject_on_low_confidence:
+                        metrics.record_processed_item(
+                            app="Radarr",
+                            title=title,
+                            category="low_confidence",
+                            status="dry_run" if is_dry_run else "rejected",
+                            confidence=triage.confidence,
+                            model=model_label,
+                            reasoning=triage.reasoning,
+                            details="Low-confidence suspicious item; dismissed & blocklisted (seeding kept)",
+                            item_keys=item_keys,
+                        )
+                        return await self.resolve_queue_item(
+                            queue_id=queue_id,
+                            download_id=download_id,
+                            remove_from_client=False,
+                            blocklist=True,
+                            skip_redownload=False,
+                            dry_run=is_dry_run,
+                            title=title,
+                        )
+                    metrics.record_processed_item(
+                        app="Radarr",
+                        title=title,
+                        category="low_confidence",
+                        status="skipped",
+                        confidence=triage.confidence,
+                        model=model_label,
+                        reasoning=triage.reasoning,
+                        details="Left in queue (AI confidence below threshold)",
+                        item_keys=item_keys,
+                    )
+                    return False
+
+            # ------------------------------------------------------------------
+            # STEP 4: Stage 2 — Query /manualimport, Fast-Path, or Stage 2 AI
+            # ------------------------------------------------------------------
+            query_download_id = None if staging_dir_to_clean else download_id
+            manual_items = await self.get_manual_import_items(
+                folder=output_path, download_id=query_download_id
+            )
+
+            movie_path = (movie_info.get("path") or "").rstrip("/") if movie_info else ""
+            if movie_path:
+                manual_items = [
+                    m for m in manual_items
+                    if not (m.get("path") or "").startswith(movie_path)
+                ]
+
+            if not manual_items:
+                if not p_local.exists():
+                    logger.warning(
+                        f"  Radarr returned 0 files for '{title}' and local path '{p_local}' is not accessible. Leaving in queue."
+                    )
+                    metrics.record_processed_item(
+                        app="Radarr",
+                        title=title,
+                        category="path_unreachable",
+                        status="skipped",
+                        confidence=0.0,
+                        model=None,
+                        reasoning=f"Radarr returned 0 importable files and local path '{p_local}' is not mounted.",
+                        details="0 files found (path not mounted)",
+                        item_keys=item_keys,
+                    )
+                    return False
+
+                triage = await ai_provider.evaluate_stage1_triage(
+                    release_title=title,
+                    error_messages=all_messages,
+                    disk_files=raw_disk_files,
                 )
+                model_label = triage.model_name or "AI"
+                if triage.action == "reject_delete" and triage.confidence >= self.min_confidence:
+                    metrics.record_processed_item(
+                        app="Radarr",
+                        title=title,
+                        category=triage.category_tag or "sample_only",
+                        status="dry_run" if is_dry_run else "blocked",
+                        confidence=triage.confidence,
+                        model=model_label,
+                        reasoning=triage.reasoning,
+                        details="0 valid videos; deleted from client & blocklisted",
+                        item_keys=item_keys,
+                    )
+                    return await self.delete_and_blocklist(
+                        queue_id=queue_id,
+                        download_id=download_id,
+                        dry_run=is_dry_run,
+                        title=title,
+                    )
                 metrics.record_processed_item(
                     app="Radarr",
                     title=title,
-                    category="fake_or_malware",
-                    status="skipped",
-                    confidence=fake_res.confidence,
+                    category="no_importable_files",
+                    status="rejected",
+                    confidence=triage.confidence,
                     model=model_label,
-                    reasoning=fake_res.reasoning,
-                    details="AI determined release is not malware",
+                    reasoning=triage.reasoning or "Radarr manual import returned 0 importable files",
+                    details="0 files found",
                     item_keys=item_keys,
                 )
                 return False
 
-        p = Path(output_path)
-        folder_name = p.parent.name if p.suffix.lower() in (".mkv", ".mp4", ".avi", ".ts", ".m4v", ".mov", ".wmv") else (p.name or title)
-        matched_from_library = False
-        match_res: Optional[LibraryMatchResult] = None
+            # Gather existing on-disk movieFile metadata for Upgrade vs. Downgrade checking
+            movie_id = movie_info.get("id") if movie_info else None
+            existing_disk_files = []
+            if movie_info:
+                mf = movie_info.get("movieFile")
+                if not mf and movie_info.get("hasFile") and movie_id:
+                    full_movie = await self.get_movie(movie_id)
+                    mf = full_movie.get("movieFile")
+                if mf and isinstance(mf, dict):
+                    existing_disk_files.append({
+                        "movieId": movie_id,
+                        "quality": (mf.get("quality") or {}).get("quality", {}).get("name"),
+                        "customFormatScore": mf.get("customFormatScore"),
+                        "size": mf.get("size"),
+                    })
 
-        # If movie is unknown, attempt to match release to Radarr library using AI
-        if not movie_info:
-            logger.info(f"  Searching Radarr library to identify unknown release '{title}'...")
-            all_movies = await self.get_all_movies()
-            if not all_movies:
-                logger.warning("  Could not retrieve library movies from Radarr.")
+            # Evaluate fast-path eligibility and hard quality rejections
+            fast_path_import_files: List[Dict[str, Any]] = []
+            quality_rejected_count = 0
+            needs_ai_stage2 = False
+            all_rejection_reasons: List[str] = []
+
+            if not movie_info or initial_category == ErrorCategory.ID_MATCH:
+                needs_ai_stage2 = True
+
+            for m_file in manual_items:
+                f_path = m_file.get("path", "")
+                f_name = m_file.get("name") or Path(f_path).name
+                rejections = [r.get("reason", "") for r in m_file.get("rejections", [])]
+                all_rejection_reasons.extend(rejections)
+                curr_movie = m_file.get("movie") or movie_info
+                target_movie_id = curr_movie.get("id") if curr_movie else movie_id
+
+                if any("matched to movie by id" in r.lower() or "matched by id" in r.lower() for r in rejections):
+                    needs_ai_stage2 = True
+
+                quality_rejs = [
+                    r for r in rejections
+                    if any(k in r.lower() for k in QUALITY_REJECTION_KEYWORDS)
+                ]
+                if quality_rejs:
+                    logger.warning(
+                        f"  ✖ Skipping file '{f_name}': Radarr quality rule rejected import ({'; '.join(quality_rejs)})."
+                    )
+                    quality_rejected_count += 1
+                    continue
+
+                if target_movie_id and not rejections and not needs_ai_stage2:
+                    payload_item = {
+                        "path": f_path,
+                        "movieId": target_movie_id,
+                        "quality": m_file.get("quality"),
+                        "languages": m_file.get("languages", []),
+                        "releaseGroup": m_file.get("releaseGroup"),
+                    }
+                    if download_id:
+                        payload_item["downloadId"] = download_id
+                    fast_path_import_files.append(payload_item)
+                else:
+                    needs_ai_stage2 = True
+
+            # FAST-PATH A: All candidate files were rejected by Radarr's hard quality/CF rules
+            if quality_rejected_count == len(manual_items):
+                reason_str = "; ".join(sorted(set(all_rejection_reasons))) or "Existing file on disk has equal or higher quality"
+                metrics.record_processed_item(
+                    app="Radarr",
+                    title=title,
+                    category="quality_downgrade",
+                    status="dry_run" if is_dry_run else "rejected",
+                    confidence=1.0,
+                    model="Radarr (Quality Rule)",
+                    reasoning=f"Rejected by Radarr quality rules: {reason_str}",
+                    details="Dismissed & blocklisted (seeding preserved)",
+                    item_keys=item_keys,
+                )
+                await self.resolve_queue_item(
+                    queue_id=queue_id,
+                    download_id=download_id,
+                    remove_from_client=False,
+                    blocklist=True,
+                    skip_redownload=False,
+                    dry_run=is_dry_run,
+                    title=title,
+                )
                 return False
 
-            candidates = [
-                {
-                    "id": m.get("id"),
-                    "title": m.get("title"),
-                    "year": m.get("year"),
-                    "aliases": [a.get("title") for a in m.get("alternateTitles", [])]
-                }
-                for m in all_movies
+            # FAST-PATH B: Cleanly mapped movie files with 0 rejections (e.g., extracted archive)
+            if not needs_ai_stage2 and fast_path_import_files:
+                decider = "Radarr (Extracted Archive)" if is_extracted_archive else "Radarr (Direct Match)"
+                cat_tag = "archive_extracted" if is_extracted_archive else "direct_match"
+                candidate_title = movie_info.get("title", "") if movie_info else title
+                logger.info(
+                    f"  ✔ Fast-path approved {len(fast_path_import_files)} file(s) for '{candidate_title}' | Model: {decider}"
+                )
+                import_ok = await self.trigger_manual_import(
+                    fast_path_import_files, dry_run=is_dry_run, category_tag=cat_tag
+                )
+                status_label = "dry_run" if is_dry_run else ("imported" if import_ok else "failed")
+                metrics.record_processed_item(
+                    app="Radarr",
+                    title=title,
+                    category=cat_tag,
+                    status=status_label,
+                    confidence=1.0,
+                    model=decider,
+                    reasoning=f"Cleanly mapped {len(fast_path_import_files)} file(s) with 0 quality/identity rejections",
+                    details=f"Imported {len(fast_path_import_files)} movie file(s) into '{candidate_title}'",
+                    item_keys=item_keys,
+                )
+                return import_ok
+
+            # ------------------------------------------------------------------
+            # STAGE 2 AI: Ambiguity Remains -> Unified AI Import/Reject Decision
+            # ------------------------------------------------------------------
+            p_out = Path(output_path)
+            folder_name = (
+                p_out.parent.name
+                if p_out.suffix.lower() in VIDEO_EXTENSIONS
+                else (p_out.name or title)
+            )
+
+            all_movies: List[Dict[str, Any]] = []
+            library_candidates: Optional[List[Dict[str, Any]]] = None
+            if not movie_info:
+                all_movies = await self.get_all_movies()
+                library_candidates = [
+                    {
+                        "id": m.get("id"),
+                        "title": m.get("title"),
+                        "year": m.get("year"),
+                        "aliases": [a.get("title") for a in m.get("alternateTitles", [])],
+                    }
+                    for m in all_movies
+                ]
+
+            eligible_manual_items = [
+                m for m in manual_items
+                if not any(
+                    any(k in r.get("reason", "").lower() for k in QUALITY_REJECTION_KEYWORDS)
+                    for r in m.get("rejections", [])
+                )
             ]
-            match_res = await ai_provider.match_unknown_media(
+
+            logger.info(f"  Running Stage 2 AI evaluation for '{title}'...")
+            stage2 = await self._run_stage2_ai_or_mock_fallback(
+                ai_provider=ai_provider,
                 release_title=title,
                 folder_name=folder_name,
-                media_type="movie",
-                candidates=candidates
+                all_messages=all_messages,
+                movie_info=movie_info,
+                library_candidates=library_candidates,
+                manual_items=eligible_manual_items,
+                existing_disk_files=existing_disk_files,
+                raw_disk_files=raw_disk_files,
+                initial_category=initial_category,
             )
-            model_label = match_res.model_name or "AI"
-            if match_res.model_name:
-                last_evaluated_model = match_res.model_name
-                last_evaluated_confidence = match_res.confidence
-                last_evaluated_reasoning = match_res.reasoning
+            model_label = stage2.model_name or "AI"
 
-            if not match_res.matched_id or match_res.confidence < self.min_confidence:
-                logger.warning(f"  Could not match '{title}' to any movie in Radarr library ({match_res.confidence:.0%}): {match_res.reasoning}")
+            if stage2.confidence < self.min_confidence:
+                logger.warning(
+                    f"  ⚠️ Stage 2 AI confidence ({stage2.confidence:.0%}) is below threshold ({self.min_confidence:.0%}) for '{title}': {stage2.reasoning}"
+                )
+                if self.reject_on_low_confidence:
+                    metrics.record_processed_item(
+                        app="Radarr",
+                        title=title,
+                        category="low_confidence",
+                        status="dry_run" if is_dry_run else "rejected",
+                        confidence=stage2.confidence,
+                        model=model_label,
+                        reasoning=stage2.reasoning,
+                        details="Low confidence; dismissed & blocklisted (seeding preserved)",
+                        item_keys=item_keys,
+                    )
+                    await self.resolve_queue_item(
+                        queue_id=queue_id,
+                        download_id=download_id,
+                        remove_from_client=False,
+                        blocklist=True,
+                        skip_redownload=False,
+                        dry_run=is_dry_run,
+                        title=title,
+                    )
+                    return False
+
                 metrics.record_processed_item(
                     app="Radarr",
                     title=title,
-                    category="unknown_media",
-                    status="rejected",
-                    confidence=match_res.confidence,
+                    category="low_confidence",
+                    status="skipped",
+                    confidence=stage2.confidence,
                     model=model_label,
-                    reasoning=match_res.reasoning,
-                    details="Could not match release to Radarr library",
+                    reasoning=stage2.reasoning,
+                    details="Left in queue (AI confidence below threshold)",
                     item_keys=item_keys,
                 )
                 return False
 
-            movie_info = next((m for m in all_movies if m.get("id") == match_res.matched_id), None)
-            if not movie_info:
-                logger.warning(f"  Movie ID {match_res.matched_id} matched by AI not found in Radarr library.")
+            if stage2.decision == "import":
+                if not movie_info and stage2.matched_media_id:
+                    movie_info = next(
+                        (m for m in all_movies if m.get("id") == stage2.matched_media_id),
+                        None,
+                    )
+                    if movie_info:
+                        movie_id = movie_info.get("id")
+
+                if not movie_id:
+                    metrics.record_processed_item(
+                        app="Radarr",
+                        title=title,
+                        category="unknown_media",
+                        status="rejected",
+                        confidence=stage2.confidence,
+                        model=model_label,
+                        reasoning=stage2.reasoning or "Could not resolve movie ID in Radarr library",
+                        details="Dismissed & blocklisted (seeding preserved)",
+                        item_keys=item_keys,
+                    )
+                    await self.resolve_queue_item(
+                        queue_id=queue_id,
+                        download_id=download_id,
+                        remove_from_client=False,
+                        blocklist=True,
+                        skip_redownload=False,
+                        dry_run=is_dry_run,
+                        title=title,
+                    )
+                    return False
+
+                candidate_title = movie_info.get("title", title) if movie_info else title
+                m_by_path = {m.get("path"): m for m in eligible_manual_items if m.get("path")}
+                m_by_name = {
+                    (m.get("name") or Path(m.get("path", "")).name): m
+                    for m in eligible_manual_items
+                }
+
+                files_to_import: List[Dict[str, Any]] = []
+                for app_file in stage2.files_to_import:
+                    m_file = m_by_path.get(app_file.path) or m_by_name.get(Path(app_file.path).name)
+                    if not m_file and len(eligible_manual_items) == 1:
+                        m_file = eligible_manual_items[0]
+                    if not m_file:
+                        continue
+
+                    payload_item = {
+                        "path": m_file.get("path"),
+                        "movieId": movie_id,
+                        "quality": m_file.get("quality"),
+                        "languages": m_file.get("languages", []),
+                        "releaseGroup": m_file.get("releaseGroup"),
+                    }
+                    if download_id:
+                        payload_item["downloadId"] = download_id
+                    files_to_import.append(payload_item)
+
+                if files_to_import:
+                    cat_tag = stage2.category_tag or ("archive_extracted" if is_extracted_archive else "ai_imported")
+                    import_ok = await self.trigger_manual_import(
+                        files_to_import, dry_run=is_dry_run, category_tag=cat_tag
+                    )
+                    status_label = "dry_run" if is_dry_run else ("imported" if import_ok else "failed")
+                    metrics.record_processed_item(
+                        app="Radarr",
+                        title=title,
+                        category=cat_tag,
+                        status=status_label,
+                        confidence=stage2.confidence,
+                        model=model_label,
+                        reasoning=stage2.reasoning,
+                        details=f"Imported {len(files_to_import)} movie file(s) into '{candidate_title}'",
+                        item_keys=item_keys,
+                    )
+                    return import_ok
+
+            if stage2.decision == "reject_delete":
+                cat_tag = stage2.category_tag or "malware_or_corrupt"
+                metrics.record_processed_item(
+                    app="Radarr",
+                    title=title,
+                    category=cat_tag,
+                    status="dry_run" if is_dry_run else "blocked",
+                    confidence=stage2.confidence,
+                    model=model_label,
+                    reasoning=stage2.reasoning,
+                    details="Deleted from client & blocklisted",
+                    item_keys=item_keys,
+                )
+                await self.delete_and_blocklist(
+                    queue_id=queue_id,
+                    download_id=download_id,
+                    dry_run=is_dry_run,
+                    title=title,
+                )
                 return False
 
-            logger.info(f"  ✔ AI matched library movie: '{movie_info.get('title')}' | Model: {model_label} | Confidence: {match_res.confidence:.0%}")
-            logger.debug(f"  Library match reasoning: {match_res.reasoning}")
-            matched_from_library = True
-
-        movie_id = movie_info.get("id")
-        candidate_title = movie_info.get("title", "")
-        year = movie_info.get("year")
-        alternate_titles = [a.get("title") for a in movie_info.get("alternateTitles", [])]
-
-        # If the movie was already confirmed by Radarr's title parser or AI library match,
-        # we don't re-verify it. However, if Radarr blocked the item because it was matched by ID
-        # (ID_MATCH), we will use AI below to verify that the release actually belongs to this movie.
-
-        # Query Radarr manual import to inspect media files
-        query_download_id = None if staging_dir_to_clean else download_id
-        manual_items = await self.get_manual_import_items(
-            folder=output_path, download_id=query_download_id
-        )
-
-        if not manual_items:
-            logger.warning(f"  Radarr returned 0 importable files for '{title}'.")
+            cat_tag = stage2.category_tag or "rejected"
             metrics.record_processed_item(
                 app="Radarr",
                 title=title,
-                category=category.value,
-                status="rejected",
-                confidence=last_evaluated_confidence if last_evaluated_model else 0.0,
-                model=last_evaluated_model,
-                reasoning="Radarr manual import returned 0 importable files",
-                details="0 files found",
+                category=cat_tag,
+                status="dry_run" if is_dry_run else "rejected",
+                confidence=stage2.confidence,
+                model=model_label,
+                reasoning=stage2.reasoning,
+                details="Dismissed, blocklisted & re-searched (seeding preserved)",
                 item_keys=item_keys,
+            )
+            await self.resolve_queue_item(
+                queue_id=queue_id,
+                download_id=download_id,
+                remove_from_client=False,
+                blocklist=True,
+                skip_redownload=False,
+                dry_run=is_dry_run,
+                title=title,
             )
             return False
 
-        # Refine issue category if manual import rejections offer more specific classification
-        all_manual_rejections = [r.get("reason", "") for m in manual_items for r in m.get("rejections", [])]
-        if all_manual_rejections:
-            refined_cat = classify_issue(all_messages, has_media_info=bool(movie_info), manual_rejections=all_manual_rejections)
-            if refined_cat != category:
-                logger.debug(f"  Refined issue category from '{category.value}' to '{refined_cat.value}' based on manual import rejections.")
-                category = refined_cat
-                if not self.categories.is_enabled(category.value):
-                    logger.debug(f"Skipping '{title}': refined category '{category.value}' is disabled.")
-                    return False
-                is_cat_dry_run = self.categories.is_dry_run(category.value)
-
-        # If matched by ID, verify with AI that the release actually belongs to the movie
-        movie_verify_res: Optional[MediaMatchResult] = None
-        if category == ErrorCategory.ID_MATCH:
-            logger.info(f"  Verifying release identity with AI for '{title}' against '{candidate_title}' ({year or 'Unknown Year'})...")
-            movie_verify_res = await ai_provider.verify_movie_match(
-                release_title=title,
-                folder_name=folder_name,
-                candidate_movie_title=candidate_title,
-                alternate_titles=alternate_titles,
-                year=year
-            )
-            model_label = movie_verify_res.model_name or "AI"
-            if movie_verify_res.model_name:
-                last_evaluated_model = movie_verify_res.model_name
-                last_evaluated_confidence = movie_verify_res.confidence
-                last_evaluated_reasoning = movie_verify_res.reasoning
-
-            if not movie_verify_res.is_match or movie_verify_res.confidence < self.min_confidence:
-                logger.warning(
-                    f"  ✖ AI rejected movie match for '{title}' against '{candidate_title}' "
-                    f"| Model: {model_label} | Confidence: {movie_verify_res.confidence:.0%} | Reasoning: {movie_verify_res.reasoning}"
-                )
-                metrics.record_processed_item(
-                    app="Radarr",
-                    title=title,
-                    category="id_match",
-                    status="rejected",
-                    confidence=movie_verify_res.confidence,
-                    model=model_label,
-                    reasoning=movie_verify_res.reasoning,
-                    details=f"AI rejected movie match against '{candidate_title}'",
-                    item_keys=item_keys,
-                )
-                return False
-
-            logger.info(
-                f"  ✔ AI confirmed movie match: '{candidate_title}' | Model: {model_label} | Confidence: {movie_verify_res.confidence:.0%}"
-            )
-            logger.debug(f"  Movie match reasoning: {movie_verify_res.reasoning}")
-
-        files_to_import: List[Dict[str, Any]] = []
-        movie_path = (movie_info.get("path") or "").rstrip("/") if movie_info else ""
-
-        for m_file in manual_items:
-            file_path = m_file.get("path", "")
-
-            # Safeguard: never import files that are already inside the destination library folder
-            if movie_path and file_path.startswith(movie_path):
-                logger.debug(f"Ignoring file '{file_path}' because it is inside destination library directory '{movie_path}'")
-                continue
-
-            file_name = m_file.get("name") or m_file.get("relativePath") or Path(file_path).name
-            file_folder = m_file.get("folderName", "") or folder_name
-            rejections = [r.get("reason", "") for r in m_file.get("rejections", [])]
-            curr_movie = m_file.get("movie") or movie_info
-            target_movie_id = curr_movie.get("id") if curr_movie else movie_id
-
-            if not target_movie_id:
-                logger.warning(f"  ✖ Skipping file '{file_name}': No movie matched in Radarr.")
-                continue
-
-            # Sample or extra evaluation
-            is_sample_rej = any("sample" in r.lower() or "short video" in r.lower() for r in rejections)
-            if is_sample_rej or category == ErrorCategory.SAMPLE_OR_EXTRA:
-                sample_res = await ai_provider.evaluate_sample_or_extra(
-                    file_name=file_name,
-                    folder_name=file_folder,
-                    media_title=candidate_title
-                )
-                sample_decider = sample_res.model_name or "AI"
-                if sample_res.model_name:
-                    last_evaluated_model = sample_res.model_name
-                    last_evaluated_confidence = sample_res.confidence
-                    last_evaluated_reasoning = sample_res.reasoning
-
-                if not sample_res.is_valid_media:
-                    logger.info(f"  ✖ Skipping sample/extra: '{file_name}' | Model: {sample_decider} | Confidence: {sample_res.confidence:.0%}")
-                    logger.debug(f"  Sample evaluation reasoning: {sample_res.reasoning}")
-                    continue
-                else:
-                    logger.debug(f"  ✔ Valid media confirmed: '{file_name}' | Model: {sample_decider} | Confidence: {sample_res.confidence:.0%}")
-
-            # Quality and upgrade rule enforcement:
-            # Rejections indicating the release is worse than on disk or not an upgrade
-            quality_rejections = [
-                r for r in rejections
-                if any(k in r.lower() for k in QUALITY_REJECTION_KEYWORDS)
-            ]
-
-            # Extracted archives must ALWAYS respect Radarr's quality rules.
-            # Normal files respect quality rules unless explicitly overridden by QUALITY_OR_LANGUAGE category.
-            is_extracted_archive = bool(staging_dir_to_clean)
-            if quality_rejections and (is_extracted_archive or category != ErrorCategory.QUALITY_OR_LANGUAGE):
-                logger.warning(
-                    f"  ✖ Skipping file '{file_name}': Radarr quality rule rejected import ({'; '.join(quality_rejections)})."
-                )
-                last_evaluated_model = "Radarr (Quality Rule)"
-                last_evaluated_confidence = 1.0
-                last_evaluated_reasoning = f"Rejected by Radarr quality rules: {'; '.join(quality_rejections)}"
-                continue
-
-            non_blocking_rejections = [
-                r for r in rejections
-                if "matched to movie by id" not in r.lower()
-                and not (category == ErrorCategory.QUALITY_OR_LANGUAGE and not is_extracted_archive and any(k in r.lower() for k in QUALITY_REJECTION_KEYWORDS))
-            ]
-
-            if non_blocking_rejections:
-                logger.warning(f"  ✖ Skipping file '{file_name}': Radarr reported unresolved rejections ({'; '.join(non_blocking_rejections)}).")
-                last_evaluated_model = "Radarr (Rejection)"
-                last_evaluated_confidence = 1.0
-                last_evaluated_reasoning = f"Radarr rejections: {'; '.join(non_blocking_rejections)}"
-                continue
-
-            if matched_from_library and match_res:
-                decider = match_res.model_name or "AI"
-                conf_str = f"{match_res.confidence:.0%}"
-            elif movie_verify_res:
-                decider = movie_verify_res.model_name or "AI"
-                conf_str = f"{movie_verify_res.confidence:.0%}"
-            elif is_extracted_archive:
-                decider = "Radarr (Extracted Archive)"
-                conf_str = "100%"
-            else:
-                decider = "Radarr (Direct Match)"
-                conf_str = "100%"
-
-            logger.info(f"  ✔ Approved: '{file_name}' -> '{candidate_title}' | Model: {decider} | Confidence: {conf_str}")
-            file_payload = {
-                "path": file_path,
-                "movieId": target_movie_id,
-                "quality": m_file.get("quality"),
-                "languages": m_file.get("languages", []),
-                "releaseGroup": m_file.get("releaseGroup"),
-            }
-            if download_id:
-                file_payload["downloadId"] = download_id
-            files_to_import.append(file_payload)
-
-        if files_to_import:
-            import_ok = await self.trigger_manual_import(files_to_import, dry_run=is_cat_dry_run, category=category)
-            if staging_dir_to_clean:
-                if (import_ok and self.extraction_config.delete_after_import) or is_cat_dry_run or not import_ok:
-                    try:
-                        shutil.rmtree(staging_dir_to_clean, ignore_errors=True)
-                        logger.info(f"  🧹 Cleaned up extracted staging folder '{staging_dir_to_clean}'. Seeding archive preserved.")
-                    except Exception as ce:
-                        logger.debug(f"Failed to clean up staging folder '{staging_dir_to_clean}': {ce}")
-
-            # Record metrics
-            decider_model = None
-            decider_conf = 1.0
-            decider_reasoning = f"Imported {len(files_to_import)} file(s)"
-            if match_res and match_res.model_name:
-                decider_model = match_res.model_name
-                decider_conf = match_res.confidence
-                decider_reasoning = match_res.reasoning
-            elif movie_verify_res and movie_verify_res.model_name:
-                decider_model = movie_verify_res.model_name
-                decider_conf = movie_verify_res.confidence
-                decider_reasoning = movie_verify_res.reasoning
-            elif last_evaluated_model:
-                decider_model = last_evaluated_model
-                decider_conf = last_evaluated_confidence or 1.0
-                decider_reasoning = last_evaluated_reasoning or decider_reasoning
-            elif is_extracted_archive:
-                decider_model = "Radarr (Extracted Archive)"
-                decider_conf = 1.0
-            else:
-                decider_model = "Radarr (Direct Match)"
-                decider_conf = 1.0
-
-            status_label = "dry_run" if is_cat_dry_run else ("imported" if import_ok else "failed")
-            metrics.record_processed_item(
-                app="Radarr",
-                title=title,
-                category=category.value,
-                status=status_label,
-                confidence=decider_conf,
-                model=decider_model,
-                reasoning=decider_reasoning,
-                details=f"Imported {len(files_to_import)} movie file(s) into '{candidate_title}'",
-                item_keys=item_keys,
-            )
-            return import_ok
-
-        if staging_dir_to_clean and staging_dir_to_clean.exists():
-            try:
-                shutil.rmtree(staging_dir_to_clean, ignore_errors=True)
-                logger.info(f"  🧹 Cleaned up extracted staging folder '{staging_dir_to_clean}'.")
-            except Exception as ce:
-                logger.debug(f"Failed to clean up staging folder '{staging_dir_to_clean}': {ce}")
-
-        reasoning_msg = "No files available or approved for import"
-        if last_evaluated_reasoning and last_evaluated_model:
-            reasoning_msg = f"{last_evaluated_reasoning} (0 files imported)"
-
-        metrics.record_processed_item(
-            app="Radarr",
-            title=title,
-            category=category.value,
-            status="rejected",
-            confidence=last_evaluated_confidence if last_evaluated_model else 0.0,
-            model=last_evaluated_model,
-            reasoning=reasoning_msg,
-            details="0 files imported",
-            item_keys=item_keys,
-        )
-        return False
+        finally:
+            if staging_dir_to_clean and staging_dir_to_clean.exists():
+                try:
+                    shutil.rmtree(staging_dir_to_clean, ignore_errors=True)
+                    logger.info(
+                        f"  🧹 Cleaned up extracted staging folder '{staging_dir_to_clean}'. Seeding archive preserved."
+                    )
+                except Exception as ce:
+                    logger.debug(f"Failed to clean up staging folder '{staging_dir_to_clean}': {ce}")

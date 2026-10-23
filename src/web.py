@@ -5,8 +5,9 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 import threading
 from urllib.parse import parse_qs, urlparse
-from typing import Optional, Any
+from typing import Optional, Any, Callable
 
+from .config import AppConfig, load_config, save_config, config_to_dict, update_config_from_dict
 from .metrics import MetricsTracker, metrics as default_metrics
 
 logger = logging.getLogger("aimportarr.web")
@@ -651,6 +652,107 @@ DASHBOARD_HTML = """<!DOCTYPE html>
     .bar-fill-prompt { background-color: #3b82f6; }
     .bar-fill-completion { background-color: #10b981; }
 
+    /* Settings Form Styles */
+    .settings-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(360px, 1fr));
+      gap: 1.25rem;
+      margin-bottom: 1.5rem;
+    }
+
+    .form-group {
+      margin-bottom: 1rem;
+    }
+
+    .form-group:last-child {
+      margin-bottom: 0;
+    }
+
+    .form-label {
+      display: block;
+      font-size: 0.78rem;
+      font-weight: 600;
+      color: var(--text-main);
+      margin-bottom: 0.3rem;
+    }
+
+    .form-hint {
+      font-size: 0.72rem;
+      color: var(--text-dim);
+      margin-top: 0.25rem;
+    }
+
+    .form-input {
+      width: 100%;
+      background-color: #0e1218;
+      border: 1px solid var(--border);
+      color: var(--text-main);
+      padding: 0.5rem 0.75rem;
+      border-radius: 6px;
+      font-size: 0.825rem;
+      outline: none;
+    }
+
+    .form-input:focus {
+      border-color: var(--accent);
+    }
+
+    .form-row {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 1rem;
+      padding: 0.55rem 0;
+      border-bottom: 1px solid var(--border-subtle);
+    }
+
+    .form-row:last-child {
+      border-bottom: none;
+    }
+
+    .toggle-switch {
+      position: relative;
+      display: inline-block;
+      width: 40px;
+      height: 22px;
+      flex-shrink: 0;
+    }
+
+    .toggle-switch input {
+      opacity: 0;
+      width: 0;
+      height: 0;
+    }
+
+    .toggle-slider {
+      position: absolute;
+      cursor: pointer;
+      top: 0; left: 0; right: 0; bottom: 0;
+      background-color: #2b3545;
+      transition: .2s;
+      border-radius: 22px;
+    }
+
+    .toggle-slider:before {
+      position: absolute;
+      content: "";
+      height: 16px;
+      width: 16px;
+      left: 3px;
+      bottom: 3px;
+      background-color: white;
+      transition: .2s;
+      border-radius: 50%;
+    }
+
+    .toggle-switch input:checked + .toggle-slider {
+      background-color: var(--accent);
+    }
+
+    .toggle-switch input:checked + .toggle-slider:before {
+      transform: translateX(18px);
+    }
+
     /* Footer */
     footer {
       border-top: 1px solid var(--border);
@@ -804,6 +906,9 @@ DASHBOARD_HTML = """<!DOCTYPE html>
         <button class="tab-btn" onclick="switchTab('analytics')">
           Model Analytics
         </button>
+        <button class="tab-btn" onclick="switchTab('settings')">
+          ⚙️ Settings
+        </button>
       </div>
     </div>
 
@@ -823,6 +928,7 @@ DASHBOARD_HTML = """<!DOCTYPE html>
             <div class="filter-pill" data-filter="blocked" onclick="setFilter('blocked')">Blocked</div>
             <div class="filter-pill" data-filter="rejected" onclick="setFilter('rejected')">Rejected</div>
             <div class="filter-pill" data-filter="dismissed" onclick="setFilter('dismissed')">Dismissed</div>
+            <div class="filter-pill" data-filter="skipped" onclick="setFilter('skipped')">Skipped</div>
           </div>
         </div>
 
@@ -910,6 +1016,206 @@ DASHBOARD_HTML = """<!DOCTYPE html>
         </div>
       </div>
     </div>
+
+    <!-- TAB 4: Settings / Configuration -->
+    <div id="tab-settings" class="tab-pane" style="display: none;">
+      <div class="table-toolbar">
+        <div>
+          <div style="font-size: 1rem; font-weight: 700;">System Configuration</div>
+          <div style="font-size: 0.78rem; color: var(--text-muted);">Changes are saved to your config file and hot-reloaded immediately without restarting the container.</div>
+        </div>
+        <div style="display: flex; gap: 0.6rem;">
+          <button class="btn" onclick="loadConfigFromApi()">↺ Reload</button>
+          <button class="btn btn-primary" onclick="saveConfigToApi()">💾 Save Configuration</button>
+        </div>
+      </div>
+
+      <div class="settings-grid">
+        <!-- General & Pipeline Policy -->
+        <div class="analytics-card">
+          <div class="analytics-card-title"><span>🎛</span> General & Two-Stage Policy</div>
+
+          <div class="form-row">
+            <div>
+              <div class="form-label" style="margin-bottom: 0;">Dry Run (Simulation Mode)</div>
+              <div class="form-hint">Log decisions without modifying Sonarr/Radarr or deleting files</div>
+            </div>
+            <label class="toggle-switch">
+              <input type="checkbox" id="cfg-dry-run">
+              <span class="toggle-slider"></span>
+            </label>
+          </div>
+
+          <div class="form-row" style="margin-bottom: 0.85rem;">
+            <div>
+              <div class="form-label" style="margin-bottom: 0;">Hands-Off Low Confidence Rejection</div>
+              <div class="form-hint">Off (Conservative): leave low-confidence items in queue. On (Hands-Off): blocklist &amp; re-search while keeping seeding.</div>
+            </div>
+            <label class="toggle-switch">
+              <input type="checkbox" id="cfg-reject-low-conf">
+              <span class="toggle-slider"></span>
+            </label>
+          </div>
+
+          <div class="form-group">
+            <label class="form-label" for="cfg-min-confidence">Minimum AI Confidence (0.00 - 1.00)</label>
+            <input type="number" step="0.05" min="0" max="1" id="cfg-min-confidence" class="form-input" value="0.85">
+          </div>
+
+          <div class="form-group">
+            <label class="form-label" for="cfg-check-interval">Queue Check Interval (seconds)</label>
+            <input type="number" min="10" id="cfg-check-interval" class="form-input" value="120">
+          </div>
+
+          <div class="form-group">
+            <label class="form-label" for="cfg-log-level">Log Level</label>
+            <select id="cfg-log-level" class="form-input">
+              <option value="INFO">INFO</option>
+              <option value="DEBUG">DEBUG</option>
+              <option value="WARNING">WARNING</option>
+              <option value="ERROR">ERROR</option>
+            </select>
+          </div>
+        </div>
+
+        <!-- AI Provider Configuration -->
+        <div class="analytics-card">
+          <div class="analytics-card-title"><span>✨</span> AI Provider (Gemini &amp; Ollama)</div>
+
+          <div class="form-group">
+            <label class="form-label" for="cfg-ai-provider">Primary AI Provider</label>
+            <select id="cfg-ai-provider" class="form-input">
+              <option value="gemini">Google Gemini</option>
+              <option value="ollama">Ollama (Local)</option>
+            </select>
+          </div>
+
+          <div class="form-row" style="margin-bottom: 0.85rem;">
+            <div>
+              <div class="form-label" style="margin-bottom: 0;">Automatic Fallback Provider</div>
+              <div class="form-hint">Fall back to secondary provider on rate limits or network errors</div>
+            </div>
+            <label class="toggle-switch">
+              <input type="checkbox" id="cfg-ai-fallback">
+              <span class="toggle-slider"></span>
+            </label>
+          </div>
+
+          <div class="form-group">
+            <label class="form-label" for="cfg-gemini-key">Gemini API Key</label>
+            <input type="password" id="cfg-gemini-key" class="form-input" placeholder="AIza...">
+          </div>
+
+          <div class="form-group">
+            <label class="form-label" for="cfg-gemini-model">Gemini Model</label>
+            <input type="text" id="cfg-gemini-model" class="form-input" placeholder="auto">
+            <div class="form-hint">Use "auto" to dynamically select the fastest active Flash model</div>
+          </div>
+
+          <div class="form-group">
+            <label class="form-label" for="cfg-ollama-url">Ollama Base URL</label>
+            <input type="text" id="cfg-ollama-url" class="form-input" placeholder="http://localhost:11434">
+          </div>
+
+          <div class="form-group">
+            <label class="form-label" for="cfg-ollama-model">Ollama Model</label>
+            <input type="text" id="cfg-ollama-model" class="form-input" placeholder="qwen2.5:1.5b">
+          </div>
+        </div>
+
+        <!-- Sonarr & Radarr Connections -->
+        <div class="analytics-card">
+          <div class="analytics-card-title"><span>📺</span> Sonarr &amp; Radarr Connections</div>
+
+          <div class="form-row">
+            <div>
+              <div class="form-label" style="margin-bottom: 0; color: var(--sonarr);">Enable Sonarr</div>
+            </div>
+            <label class="toggle-switch">
+              <input type="checkbox" id="cfg-sonarr-enabled">
+              <span class="toggle-slider"></span>
+            </label>
+          </div>
+
+          <div class="form-group" style="margin-top: 0.6rem;">
+            <label class="form-label" for="cfg-sonarr-url">Sonarr URL</label>
+            <input type="text" id="cfg-sonarr-url" class="form-input" placeholder="http://localhost:8989">
+          </div>
+
+          <div class="form-group">
+            <label class="form-label" for="cfg-sonarr-key">Sonarr API Key</label>
+            <input type="password" id="cfg-sonarr-key" class="form-input" placeholder="Sonarr API Key">
+          </div>
+
+          <hr style="border: none; border-top: 1px solid var(--border); margin: 1rem 0;">
+
+          <div class="form-row">
+            <div>
+              <div class="form-label" style="margin-bottom: 0; color: var(--radarr);">Enable Radarr</div>
+            </div>
+            <label class="toggle-switch">
+              <input type="checkbox" id="cfg-radarr-enabled">
+              <span class="toggle-slider"></span>
+            </label>
+          </div>
+
+          <div class="form-group" style="margin-top: 0.6rem;">
+            <label class="form-label" for="cfg-radarr-url">Radarr URL</label>
+            <input type="text" id="cfg-radarr-url" class="form-input" placeholder="http://localhost:7878">
+          </div>
+
+          <div class="form-group">
+            <label class="form-label" for="cfg-radarr-key">Radarr API Key</label>
+            <input type="password" id="cfg-radarr-key" class="form-input" placeholder="Radarr API Key">
+          </div>
+        </div>
+
+        <!-- Archive Extraction, Database & Path Mappings -->
+        <div class="analytics-card">
+          <div class="analytics-card-title"><span>📦</span> Sandbox Extraction &amp; Storage</div>
+
+          <div class="form-row">
+            <div>
+              <div class="form-label" style="margin-bottom: 0;">Enable Sandbox Archive Extraction</div>
+              <div class="form-hint">Inspects and unpacks .rar/.zip/.7z archives while keeping seeding files intact</div>
+            </div>
+            <label class="toggle-switch">
+              <input type="checkbox" id="cfg-extract-enabled">
+              <span class="toggle-slider"></span>
+            </label>
+          </div>
+
+          <div class="form-row" style="margin-bottom: 0.85rem;">
+            <div>
+              <div class="form-label" style="margin-bottom: 0;">Delete Extracted Staging Folder After Import</div>
+              <div class="form-hint">Clean up temporary unpacked video files once imported</div>
+            </div>
+            <label class="toggle-switch">
+              <input type="checkbox" id="cfg-extract-delete">
+              <span class="toggle-slider"></span>
+            </label>
+          </div>
+
+          <div class="form-group">
+            <label class="form-label" for="cfg-extract-suffix">Staging Folder Suffix</label>
+            <input type="text" id="cfg-extract-suffix" class="form-input" value="_extracted">
+          </div>
+
+          <div class="form-group">
+            <label class="form-label" for="cfg-db-retention">Database History Retention (days)</label>
+            <input type="number" min="0" id="cfg-db-retention" class="form-input" value="30">
+          </div>
+
+          <div class="form-group">
+            <div style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 0.4rem;">
+              <label class="form-label" style="margin-bottom: 0;">Path Mappings (Remote *arr &rarr; Local Container)</label>
+              <button type="button" class="btn btn-sm" onclick="addPathMappingRow('', '')">+ Add Mapping</button>
+            </div>
+            <div id="cfg-path-mappings-list" style="display: flex; flex-direction: column; gap: 0.45rem;"></div>
+          </div>
+        </div>
+      </div>
+    </div>
   </main>
 
   <!-- Footer -->
@@ -922,6 +1228,7 @@ DASHBOARD_HTML = """<!DOCTYPE html>
     let rawTokens = [];
     let currentFilter = 'all';
     let refreshTimer = null;
+    let openReasoningId = null;
 
     function formatNumber(num) {
       if (num === null || num === undefined) return '0';
@@ -949,6 +1256,10 @@ DASHBOARD_HTML = """<!DOCTYPE html>
         b.getAttribute('onclick').includes(tabName)
       );
       if (targetBtn) targetBtn.classList.add('active');
+
+      if (tabName === 'settings') {
+        loadConfigFromApi();
+      }
     }
 
     function setFilter(status) {
@@ -974,8 +1285,17 @@ DASHBOARD_HTML = """<!DOCTYPE html>
     }
 
     function toggleReasoning(rowId) {
-      const el = document.getElementById(`reasoning-${rowId}`);
-      if (el) el.classList.toggle('open');
+      if (openReasoningId === rowId) {
+        openReasoningId = null;
+      } else {
+        openReasoningId = rowId;
+      }
+      document.querySelectorAll('.reasoning-row').forEach(el => {
+        el.classList.toggle('open', el.id === `reasoning-${openReasoningId}`);
+      });
+      document.querySelectorAll('.reasoning-chevron').forEach(el => {
+        el.innerText = el.id === `chevron-${openReasoningId}` ? '▴' : '▾';
+      });
     }
 
     function renderHistoryTable(items) {
@@ -999,6 +1319,7 @@ DASHBOARD_HTML = """<!DOCTYPE html>
         }
         const appClass = (item.app || '').toLowerCase() === 'sonarr' ? 'badge-sonarr' : 'badge-radarr';
         const statusClass = `badge-${item.status || 'skipped'}`;
+        const isOpen = openReasoningId === item.id;
 
         let actionCell = '<span style="color: var(--text-dim); font-size: 0.75rem;">--</span>';
         if (['rejected', 'failed', 'blocked'].includes(item.status)) {
@@ -1024,9 +1345,9 @@ DASHBOARD_HTML = """<!DOCTYPE html>
               <div style="font-size: 0.7rem; color: var(--text-dim);">${escapeHtml(modelText)}</div>
             </td>
             <td style="text-align: center;" onclick="event.stopPropagation()">${actionCell}</td>
-            <td style="color: var(--text-dim); font-size: 0.8rem;">▾</td>
+            <td id="chevron-${item.id}" class="reasoning-chevron" style="color: var(--text-dim); font-size: 0.8rem;">${isOpen ? '▴' : '▾'}</td>
           </tr>
-          <tr id="reasoning-${item.id}" class="reasoning-row">
+          <tr id="reasoning-${item.id}" class="reasoning-row ${isOpen ? 'open' : ''}">
             <td colspan="8">
               <div class="reasoning-box">
                 <div style="font-weight: 600; color: #a5b4fc; margin-bottom: 0.35rem;">
@@ -1272,8 +1593,142 @@ DASHBOARD_HTML = """<!DOCTYPE html>
       }
     }
 
+    function addPathMappingRow(fromVal = '', toVal = '') {
+      const container = document.getElementById('cfg-path-mappings-list');
+      if (!container) return;
+      const row = document.createElement('div');
+      row.className = 'path-mapping-row';
+      row.style.cssText = 'display: flex; gap: 0.45rem; align-items: center;';
+      row.innerHTML = `
+        <input type="text" class="form-input pm-from" placeholder="/remote/downloads" value="${escapeHtml(fromVal)}" style="flex: 1;">
+        <span style="color: var(--text-dim);">&rarr;</span>
+        <input type="text" class="form-input pm-to" placeholder="/data/downloads" value="${escapeHtml(toVal)}" style="flex: 1;">
+        <button type="button" class="btn btn-sm" onclick="this.parentElement.remove()" title="Remove">✕</button>
+      `;
+      container.appendChild(row);
+    }
+
+    async function loadConfigFromApi() {
+      try {
+        const res = await fetch('/api/config');
+        if (!res.ok) return;
+        const cfg = await res.json();
+        const g = cfg.general || {};
+        const ai = cfg.ai || {};
+        const gm = ai.gemini || {};
+        const ol = ai.ollama || {};
+        const s = cfg.sonarr || {};
+        const r = cfg.radarr || {};
+        const ex = cfg.extraction || {};
+        const db = cfg.database || {};
+
+        document.getElementById('cfg-dry-run').checked = Boolean(g.dry_run);
+        document.getElementById('cfg-reject-low-conf').checked = Boolean(g.reject_on_low_confidence);
+        document.getElementById('cfg-min-confidence').value = g.min_confidence ?? 0.85;
+        document.getElementById('cfg-check-interval').value = g.check_interval_seconds ?? 120;
+        document.getElementById('cfg-log-level').value = g.log_level || 'INFO';
+
+        document.getElementById('cfg-ai-provider').value = ai.provider || 'gemini';
+        document.getElementById('cfg-ai-fallback').checked = ai.fallback_enabled !== false;
+        document.getElementById('cfg-gemini-key').value = gm.api_key || '';
+        document.getElementById('cfg-gemini-model').value = gm.model || 'auto';
+        document.getElementById('cfg-ollama-url').value = ol.base_url || 'http://localhost:11434';
+        document.getElementById('cfg-ollama-model').value = ol.model || 'qwen2.5:1.5b';
+
+        document.getElementById('cfg-sonarr-enabled').checked = Boolean(s.enabled);
+        document.getElementById('cfg-sonarr-url').value = s.url || 'http://localhost:8989';
+        document.getElementById('cfg-sonarr-key').value = s.api_key || '';
+
+        document.getElementById('cfg-radarr-enabled').checked = Boolean(r.enabled);
+        document.getElementById('cfg-radarr-url').value = r.url || 'http://localhost:7878';
+        document.getElementById('cfg-radarr-key').value = r.api_key || '';
+
+        document.getElementById('cfg-extract-enabled').checked = ex.enabled !== false;
+        document.getElementById('cfg-extract-delete').checked = ex.delete_after_import !== false;
+        document.getElementById('cfg-extract-suffix').value = ex.staging_suffix || '_extracted';
+        document.getElementById('cfg-db-retention').value = db.retention_days ?? 30;
+
+        const pmContainer = document.getElementById('cfg-path-mappings-list');
+        if (pmContainer) {
+          pmContainer.innerHTML = '';
+          (cfg.path_mappings || []).forEach(m => addPathMappingRow(m.from || '', m.to || ''));
+        }
+      } catch (e) {
+        console.error('Failed to load config:', e);
+        showToast('Failed to load configuration', 'danger');
+      }
+    }
+
+    async function saveConfigToApi() {
+      const mappings = [];
+      document.querySelectorAll('.path-mapping-row').forEach(row => {
+        const f = row.querySelector('.pm-from')?.value.trim();
+        const t = row.querySelector('.pm-to')?.value.trim();
+        if (f && t) mappings.push({ from: f, to: t });
+      });
+
+      const payload = {
+        general: {
+          dry_run: document.getElementById('cfg-dry-run').checked,
+          reject_on_low_confidence: document.getElementById('cfg-reject-low-conf').checked,
+          min_confidence: parseFloat(document.getElementById('cfg-min-confidence').value) || 0.85,
+          check_interval_seconds: parseInt(document.getElementById('cfg-check-interval').value, 10) || 120,
+          log_level: document.getElementById('cfg-log-level').value || 'INFO'
+        },
+        ai: {
+          provider: document.getElementById('cfg-ai-provider').value,
+          fallback_enabled: document.getElementById('cfg-ai-fallback').checked,
+          gemini: {
+            api_key: document.getElementById('cfg-gemini-key').value.trim(),
+            model: document.getElementById('cfg-gemini-model').value.trim() || 'auto'
+          },
+          ollama: {
+            base_url: document.getElementById('cfg-ollama-url').value.trim(),
+            model: document.getElementById('cfg-ollama-model').value.trim()
+          }
+        },
+        sonarr: {
+          enabled: document.getElementById('cfg-sonarr-enabled').checked,
+          url: document.getElementById('cfg-sonarr-url').value.trim(),
+          api_key: document.getElementById('cfg-sonarr-key').value.trim()
+        },
+        radarr: {
+          enabled: document.getElementById('cfg-radarr-enabled').checked,
+          url: document.getElementById('cfg-radarr-url').value.trim(),
+          api_key: document.getElementById('cfg-radarr-key').value.trim()
+        },
+        extraction: {
+          enabled: document.getElementById('cfg-extract-enabled').checked,
+          delete_after_import: document.getElementById('cfg-extract-delete').checked,
+          staging_suffix: document.getElementById('cfg-extract-suffix').value.trim() || '_extracted'
+        },
+        database: {
+          retention_days: parseInt(document.getElementById('cfg-db-retention').value, 10) || 30
+        },
+        path_mappings: mappings
+      };
+
+      try {
+        const res = await fetch('/api/config', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(payload)
+        });
+        const data = await res.json();
+        if (res.ok && data.status === 'ok') {
+          showToast('Configuration saved and hot-reloaded!', 'success');
+        } else {
+          showToast(data.message || 'Failed to save configuration', 'danger');
+        }
+      } catch (e) {
+        console.error('Error saving configuration:', e);
+        showToast('Network error saving configuration', 'danger');
+      }
+    }
+
     // Initialize
     fetchData();
+    loadConfigFromApi();
     updateAutoRefresh();
   </script>
 </body>
@@ -1284,8 +1739,19 @@ DASHBOARD_HTML = """<!DOCTYPE html>
 class MetricsHTTPHandler(BaseHTTPRequestHandler):
     """HTTP Request handler for lightweight dashboard and REST metrics API."""
 
-    def __init__(self, *args, metrics_instance: Optional[MetricsTracker] = None, **kwargs):
+    def __init__(
+        self,
+        *args,
+        metrics_instance: Optional[MetricsTracker] = None,
+        config_instance: Optional[AppConfig] = None,
+        on_config_updated: Optional[Callable[[AppConfig], None]] = None,
+        config_path: Optional[str] = None,
+        **kwargs,
+    ):
         self.metrics = metrics_instance or default_metrics
+        self.config = config_instance or load_config(config_path)
+        self.on_config_updated = on_config_updated
+        self.config_path = config_path
         super().__init__(*args, **kwargs)
 
     def log_message(self, format, *args):
@@ -1373,6 +1839,11 @@ class MetricsHTTPHandler(BaseHTTPRequestHandler):
             self._send_json(self.metrics.get_token_history(limit))
             return
 
+        # REST API: Configuration
+        if path == "/api/config":
+            self._send_json(config_to_dict(self.config))
+            return
+
         # REST API: Health
         if path in ("/api/health", "/health"):
             summary = self.metrics.get_summary()
@@ -1396,6 +1867,25 @@ class MetricsHTTPHandler(BaseHTTPRequestHandler):
     def do_POST(self) -> None:
         parsed = urlparse(self.path)
         path = parsed.path.rstrip("/")
+
+        if path == "/api/config":
+            try:
+                length = int(self.headers.get("Content-Length", 0))
+                body = self.rfile.read(length).decode("utf-8") if length > 0 else "{}"
+                data = json.loads(body) if body.strip() else {}
+                update_config_from_dict(self.config, data)
+                saved_path = save_config(self.config, self.config_path)
+                if self.on_config_updated:
+                    self.on_config_updated(self.config)
+                self._send_json({
+                    "status": "ok",
+                    "message": f"Configuration saved to {saved_path}",
+                    "config": config_to_dict(self.config),
+                })
+            except Exception as e:
+                logger.error(f"Error saving configuration via POST /api/config: {e}")
+                self._send_json({"status": "error", "message": str(e)}, status=400)
+            return
 
         if path == "/api/retry":
             try:
@@ -1442,16 +1932,32 @@ class MetricsHTTPHandler(BaseHTTPRequestHandler):
 class WebServerRunner:
     """Manager for the background ThreadingHTTPServer."""
 
-    def __init__(self, host: str, port: int, metrics_instance: Optional[MetricsTracker] = None):
+    def __init__(
+        self,
+        host: str,
+        port: int,
+        metrics_instance: Optional[MetricsTracker] = None,
+        config_instance: Optional[AppConfig] = None,
+        on_config_updated: Optional[Callable[[AppConfig], None]] = None,
+        config_path: Optional[str] = None,
+    ):
         self.host = host
         self.port = port
         self.metrics = metrics_instance or default_metrics
+        self.config = config_instance or load_config(config_path)
+        self.on_config_updated = on_config_updated
+        self.config_path = config_path
         self.httpd: Optional[ThreadingHTTPServer] = None
         self._thread: Optional[threading.Thread] = None
 
     def start(self) -> None:
         handler_factory = lambda *args, **kwargs: MetricsHTTPHandler(
-            *args, metrics_instance=self.metrics, **kwargs
+            *args,
+            metrics_instance=self.metrics,
+            config_instance=self.config,
+            on_config_updated=self.on_config_updated,
+            config_path=self.config_path,
+            **kwargs,
         )
         self.httpd = ThreadingHTTPServer((self.host, self.port), handler_factory)
         self._thread = threading.Thread(target=self.httpd.serve_forever, daemon=True)

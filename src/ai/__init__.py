@@ -1,5 +1,14 @@
 import logging
-from .base import BaseAIProvider, MediaMatchResult, SeriesMatchResult, EpisodeMatchResult, AIProviderError
+from .base import (
+    BaseAIProvider,
+    MediaMatchResult,
+    SeriesMatchResult,
+    EpisodeMatchResult,
+    Stage1TriageResult,
+    ApprovedFileItem,
+    Stage2DecisionResult,
+    AIProviderError,
+)
 from .gemini import GeminiProvider
 from .ollama import OllamaProvider
 from .fallback import FallbackProvider
@@ -71,6 +80,9 @@ __all__ = [
     "MediaMatchResult",
     "SeriesMatchResult",
     "EpisodeMatchResult",
+    "Stage1TriageResult",
+    "ApprovedFileItem",
+    "Stage2DecisionResult",
     "AIProviderError",
     "GeminiProvider",
     "OllamaProvider",

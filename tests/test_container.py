@@ -15,11 +15,13 @@ class ContainerSmokeTests(unittest.TestCase):
         try:
             from src.config import (
                 load_config,
+                save_config,
+                config_to_dict,
+                update_config_from_dict,
                 AppConfig,
                 PathMapping,
                 GeneralConfig,
                 AIConfig,
-                CategoriesConfig,
                 ExtractionConfig,
                 WebConfig,
                 DatabaseConfig,
@@ -39,6 +41,9 @@ class ContainerSmokeTests(unittest.TestCase):
                 SampleEvaluationResult,
                 LibraryMatchResult,
                 MalwareEvaluationResult,
+                Stage1TriageResult,
+                ApprovedFileItem,
+                Stage2DecisionResult,
             )
             from src.ai.gemini import GeminiProvider
             from src.ai.ollama import OllamaProvider
@@ -56,8 +61,8 @@ class ContainerSmokeTests(unittest.TestCase):
         if example_path.exists():
             config = load_config(str(example_path))
             self.assertIsNotNone(config)
-            self.assertTrue(config.categories.is_enabled("fake_or_malware"))
-            self.assertTrue(config.categories.is_enabled("id_match"))
+            self.assertFalse(config.general.dry_run)
+            self.assertFalse(config.general.reject_on_low_confidence)
             self.assertTrue(config.extraction.enabled)
             self.assertTrue(config.web.enabled)
             self.assertEqual(config.web.port, 9890)
@@ -72,10 +77,11 @@ class ContainerSmokeTests(unittest.TestCase):
         self.assertIsNotNone(config.ai)
         self.assertIsNotNone(config.sonarr)
         self.assertIsNotNone(config.radarr)
-        self.assertIsNotNone(config.categories)
         self.assertIsNotNone(config.extraction)
         self.assertIsNotNone(config.web)
         self.assertIsNotNone(config.database)
+        self.assertFalse(config.general.dry_run)
+        self.assertFalse(config.general.reject_on_low_confidence)
         self.assertEqual(config.web.port, 9890)
         self.assertTrue(config.web.enabled)
         self.assertEqual(config.database.retention_days, 30)
@@ -230,90 +236,126 @@ class ContainerSmokeTests(unittest.TestCase):
         )
 
         # Choose a high test port to avoid conflict
-        port = 18992
-        server = WebServerRunner(host="127.0.0.1", port=port, metrics_instance=test_tracker)
-        server.start()
-
-        try:
-            time.sleep(0.1) # Wait for server to bind
-
-            # 1. Dashboard UI
-            req = urllib.request.Request(f"http://127.0.0.1:{port}/")
-            with urllib.request.urlopen(req, timeout=3.0) as resp:
-                self.assertEqual(resp.status, 200)
-                self.assertIn("text/html", resp.headers.get("Content-Type", ""))
-                html = resp.read().decode("utf-8")
-                self.assertIn("AImportarr", html)
-                self.assertIn("Processed History", html)
-                self.assertIn("Token Usage History", html)
-
-            # 2. REST API: Summary / Metrics
-            req = urllib.request.Request(f"http://127.0.0.1:{port}/api/metrics")
-            with urllib.request.urlopen(req, timeout=3.0) as resp:
-                self.assertEqual(resp.status, 200)
-                data = json.loads(resp.read().decode("utf-8"))
-                self.assertEqual(data["total_scans"], 1)
-                self.assertEqual(data["total_imported"], 1)
-
-            # 3. REST API: Processed History
-            req = urllib.request.Request(f"http://127.0.0.1:{port}/api/history")
-            with urllib.request.urlopen(req, timeout=3.0) as resp:
-                self.assertEqual(resp.status, 200)
-                items = json.loads(resp.read().decode("utf-8"))
-                self.assertEqual(len(items), 1)
-                self.assertEqual(items[0]["title"], "Test.Release.S01E01")
-
-            # 4. REST API: Health
-            req = urllib.request.Request(f"http://127.0.0.1:{port}/api/health")
-            with urllib.request.urlopen(req, timeout=3.0) as resp:
-                self.assertEqual(resp.status, 200)
-                health = json.loads(resp.read().decode("utf-8"))
-                self.assertEqual(health["status"], "ok")
-
-            # 5. REST API: POST /api/retry for single item
-            test_tracker.record_processed_item(
-                app="Radarr",
-                title="Failed.Movie.2024",
-                category="unknown_media",
-                status="rejected",
-                details="Could not match"
+        with tempfile.TemporaryDirectory() as td:
+            test_cfg_path = str(Path(td) / "test_config.yml")
+            port = 18992
+            server = WebServerRunner(
+                host="127.0.0.1",
+                port=port,
+                metrics_instance=test_tracker,
+                config_path=test_cfg_path,
             )
-            hist = test_tracker.get_processed_history()
-            failed_id = hist[0]["id"]
+            server.start()
 
-            post_data = json.dumps({"id": failed_id}).encode("utf-8")
-            req = urllib.request.Request(
-                f"http://127.0.0.1:{port}/api/retry",
-                data=post_data,
-                headers={"Content-Type": "application/json"}
-            )
-            with urllib.request.urlopen(req, timeout=3.0) as resp:
-                self.assertEqual(resp.status, 200)
-                res = json.loads(resp.read().decode("utf-8"))
-                self.assertEqual(res["status"], "ok")
-                self.assertTrue(res["success"])
+            try:
+                time.sleep(0.1) # Wait for server to bind
 
-            # 6. REST API: POST /api/retry for all items
-            post_data = json.dumps({"all": True}).encode("utf-8")
-            req = urllib.request.Request(
-                f"http://127.0.0.1:{port}/api/retry",
-                data=post_data,
-                headers={"Content-Type": "application/json"}
-            )
-            with urllib.request.urlopen(req, timeout=3.0) as resp:
-                self.assertEqual(resp.status, 200)
-                res = json.loads(resp.read().decode("utf-8"))
-                self.assertEqual(res["status"], "ok")
-                self.assertIn("count", res)
+                # 1. Dashboard UI
+                req = urllib.request.Request(f"http://127.0.0.1:{port}/")
+                with urllib.request.urlopen(req, timeout=3.0) as resp:
+                    self.assertEqual(resp.status, 200)
+                    self.assertIn("text/html", resp.headers.get("Content-Type", ""))
+                    html = resp.read().decode("utf-8")
+                    self.assertIn("AImportarr", html)
+                    self.assertIn("Processed History", html)
+                    self.assertIn("Token Usage History", html)
+                    self.assertIn("Settings", html)
 
-            # 7. Official Logo Asset
-            req = urllib.request.Request(f"http://127.0.0.1:{port}/assets/logo.png")
-            with urllib.request.urlopen(req, timeout=3.0) as resp:
-                self.assertEqual(resp.status, 200)
-                self.assertEqual(resp.headers.get("Content-Type", ""), "image/png")
+                # 2. REST API: Summary / Metrics
+                req = urllib.request.Request(f"http://127.0.0.1:{port}/api/metrics")
+                with urllib.request.urlopen(req, timeout=3.0) as resp:
+                    self.assertEqual(resp.status, 200)
+                    data = json.loads(resp.read().decode("utf-8"))
+                    self.assertEqual(data["total_scans"], 1)
+                    self.assertEqual(data["total_imported"], 1)
 
-        finally:
-            server.stop()
+                # 3. REST API: Processed History
+                req = urllib.request.Request(f"http://127.0.0.1:{port}/api/history")
+                with urllib.request.urlopen(req, timeout=3.0) as resp:
+                    self.assertEqual(resp.status, 200)
+                    items = json.loads(resp.read().decode("utf-8"))
+                    self.assertEqual(len(items), 1)
+                    self.assertEqual(items[0]["title"], "Test.Release.S01E01")
+
+                # 4. REST API: Health
+                req = urllib.request.Request(f"http://127.0.0.1:{port}/api/health")
+                with urllib.request.urlopen(req, timeout=3.0) as resp:
+                    self.assertEqual(resp.status, 200)
+                    health = json.loads(resp.read().decode("utf-8"))
+                    self.assertEqual(health["status"], "ok")
+
+                # 5. REST API: GET & POST /api/config
+                req = urllib.request.Request(f"http://127.0.0.1:{port}/api/config")
+                with urllib.request.urlopen(req, timeout=3.0) as resp:
+                    self.assertEqual(resp.status, 200)
+                    cfg_data = json.loads(resp.read().decode("utf-8"))
+                    self.assertIn("general", cfg_data)
+                    self.assertIn("reject_on_low_confidence", cfg_data["general"])
+
+                cfg_update = {
+                    "general": {
+                        "dry_run": True,
+                        "reject_on_low_confidence": True,
+                        "min_confidence": 0.9,
+                    }
+                }
+                req = urllib.request.Request(
+                    f"http://127.0.0.1:{port}/api/config",
+                    data=json.dumps(cfg_update).encode("utf-8"),
+                    headers={"Content-Type": "application/json"},
+                )
+                with urllib.request.urlopen(req, timeout=3.0) as resp:
+                    self.assertEqual(resp.status, 200)
+                    res_cfg = json.loads(resp.read().decode("utf-8"))
+                    self.assertEqual(res_cfg["status"], "ok")
+                    self.assertTrue(res_cfg["config"]["general"]["dry_run"])
+                    self.assertTrue(res_cfg["config"]["general"]["reject_on_low_confidence"])
+                    self.assertEqual(res_cfg["config"]["general"]["min_confidence"], 0.9)
+
+                # 6. REST API: POST /api/retry for single item
+                test_tracker.record_processed_item(
+                    app="Radarr",
+                    title="Failed.Movie.2024",
+                    category="unknown_media",
+                    status="rejected",
+                    details="Could not match"
+                )
+                hist = test_tracker.get_processed_history()
+                failed_id = hist[0]["id"]
+
+                post_data = json.dumps({"id": failed_id}).encode("utf-8")
+                req = urllib.request.Request(
+                    f"http://127.0.0.1:{port}/api/retry",
+                    data=post_data,
+                    headers={"Content-Type": "application/json"}
+                )
+                with urllib.request.urlopen(req, timeout=3.0) as resp:
+                    self.assertEqual(resp.status, 200)
+                    res = json.loads(resp.read().decode("utf-8"))
+                    self.assertEqual(res["status"], "ok")
+                    self.assertTrue(res["success"])
+
+                # 7. REST API: POST /api/retry for all items
+                post_data = json.dumps({"all": True}).encode("utf-8")
+                req = urllib.request.Request(
+                    f"http://127.0.0.1:{port}/api/retry",
+                    data=post_data,
+                    headers={"Content-Type": "application/json"}
+                )
+                with urllib.request.urlopen(req, timeout=3.0) as resp:
+                    self.assertEqual(resp.status, 200)
+                    res = json.loads(resp.read().decode("utf-8"))
+                    self.assertEqual(res["status"], "ok")
+                    self.assertIn("count", res)
+
+                # 8. Official Logo Asset
+                req = urllib.request.Request(f"http://127.0.0.1:{port}/assets/logo.png")
+                with urllib.request.urlopen(req, timeout=3.0) as resp:
+                    self.assertEqual(resp.status, 200)
+                    self.assertEqual(resp.headers.get("Content-Type", ""), "image/png")
+
+            finally:
+                server.stop()
 
     def test_database_persistence_and_retention(self):
         """Verify DatabaseManager persistent storage, key indexing, retry toggles, and retention purge."""

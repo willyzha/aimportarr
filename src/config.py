@@ -1,13 +1,14 @@
 import os
 import yaml
 from pathlib import Path
-from typing import Optional, Literal, List
+from typing import Optional, Literal, List, Dict, Any
 from pydantic import BaseModel, Field
 
 class GeneralConfig(BaseModel):
-    dry_run: Optional[bool] = None  # Deprecated: dry_run is now configured per category
+    dry_run: bool = False
     check_interval_seconds: int = 120
     min_confidence: float = 0.85
+    reject_on_low_confidence: bool = False
     log_level: str = "INFO"
 
 class GeminiConfig(BaseModel):
@@ -36,34 +37,6 @@ class RadarrConfig(BaseModel):
     url: str = "http://localhost:7878"
     api_key: str = ""
 
-class CategoryRule(BaseModel):
-    enabled: bool = True
-    dry_run: bool = True  # Defaults to True (safe simulation) if omitted
-
-class CategoriesConfig(BaseModel):
-    fake_or_malware: CategoryRule = Field(default_factory=lambda: CategoryRule(enabled=True, dry_run=False))
-    id_match: CategoryRule = Field(default_factory=lambda: CategoryRule(enabled=True, dry_run=False))
-    unknown_media: CategoryRule = Field(default_factory=lambda: CategoryRule(enabled=True, dry_run=True))
-    unknown_episode: CategoryRule = Field(default_factory=lambda: CategoryRule(enabled=True, dry_run=True))
-    sample_or_extra: CategoryRule = Field(default_factory=lambda: CategoryRule(enabled=True, dry_run=True))
-    quality_or_language: CategoryRule = Field(default_factory=lambda: CategoryRule(enabled=True, dry_run=True))
-    missing_episodes: CategoryRule = Field(default_factory=lambda: CategoryRule(enabled=True, dry_run=False))
-    other: CategoryRule = Field(default_factory=lambda: CategoryRule(enabled=True, dry_run=True))  # Fallback category
-
-    def is_dry_run(self, category: str, default_dry_run: Optional[bool] = None) -> bool:
-        rule = getattr(self, category, None)
-        if rule and rule.dry_run is not None:
-            return rule.dry_run
-        if default_dry_run is not None:
-            return default_dry_run
-        return True
-
-    def is_enabled(self, category: str) -> bool:
-        rule = getattr(self, category, None)
-        if rule is not None:
-            return rule.enabled
-        return True
-
 class ExtractionConfig(BaseModel):
     enabled: bool = True
     delete_after_import: bool = True
@@ -80,22 +53,59 @@ class DatabaseConfig(BaseModel):
 
 class PathMapping(BaseModel):
     model_config = {"populate_by_name": True}
-    from_path: str = Field(alias="from")
-    to_path: str = Field(alias="to")
+    from_path: str = Field(default="", alias="from")
+    to_path: str = Field(default="", alias="to")
+
+    def __init__(self, **kwargs):
+        if "from" in kwargs and "from_path" not in kwargs:
+            kwargs["from_path"] = kwargs.pop("from")
+        if "to" in kwargs and "to_path" not in kwargs:
+            kwargs["to_path"] = kwargs.pop("to")
+        super().__init__(**kwargs)
 
 class AppConfig(BaseModel):
+    model_config = {"extra": "ignore"}
     general: GeneralConfig = Field(default_factory=GeneralConfig)
     ai: AIConfig = Field(default_factory=AIConfig)
     sonarr: SonarrConfig = Field(default_factory=SonarrConfig)
     radarr: RadarrConfig = Field(default_factory=RadarrConfig)
-    categories: CategoriesConfig = Field(default_factory=CategoriesConfig)
     extraction: ExtractionConfig = Field(default_factory=ExtractionConfig)
     web: WebConfig = Field(default_factory=WebConfig)
     database: DatabaseConfig = Field(default_factory=DatabaseConfig)
     path_mappings: List[PathMapping] = Field(default_factory=list)
 
-def load_config(config_path: Optional[str] = None) -> AppConfig:
-    """Load configuration from YAML file and apply environment variable overrides."""
+    def __init__(self, **kwargs):
+        # Ensure nested dicts instantiate proper sub-models even in minimal test environments
+        if isinstance(kwargs.get("general"), dict):
+            kwargs["general"] = GeneralConfig(**kwargs["general"])
+        if isinstance(kwargs.get("ai"), dict):
+            ai_d = dict(kwargs["ai"])
+            if isinstance(ai_d.get("gemini"), dict):
+                ai_d["gemini"] = GeminiConfig(**ai_d["gemini"])
+            if isinstance(ai_d.get("ollama"), dict):
+                ai_d["ollama"] = OllamaConfig(**ai_d["ollama"])
+            kwargs["ai"] = AIConfig(**ai_d)
+        if isinstance(kwargs.get("sonarr"), dict):
+            kwargs["sonarr"] = SonarrConfig(**kwargs["sonarr"])
+        if isinstance(kwargs.get("radarr"), dict):
+            kwargs["radarr"] = RadarrConfig(**kwargs["radarr"])
+        if isinstance(kwargs.get("extraction"), dict):
+            kwargs["extraction"] = ExtractionConfig(**kwargs["extraction"])
+        if isinstance(kwargs.get("web"), dict):
+            kwargs["web"] = WebConfig(**kwargs["web"])
+        if isinstance(kwargs.get("database"), dict):
+            kwargs["database"] = DatabaseConfig(**kwargs["database"])
+        if isinstance(kwargs.get("path_mappings"), list):
+            kwargs["path_mappings"] = [
+                PathMapping(**m) if isinstance(m, dict) else m
+                for m in kwargs["path_mappings"]
+            ]
+        kwargs.pop("categories", None)
+        super().__init__(**kwargs)
+
+
+def resolve_config_path(config_path: Optional[str] = None) -> Path:
+    """Resolve the active configuration file path for reading or saving."""
     candidates = [
         config_path,
         os.getenv("AIMPORTARR_CONFIG"),
@@ -104,46 +114,206 @@ def load_config(config_path: Optional[str] = None) -> AppConfig:
         "config.yml",
         "config.yaml",
     ]
-    
-    selected_path = None
     for p in candidates:
         if p and Path(p).is_file():
-            selected_path = Path(p)
-            break
+            return Path(p)
+
+    if config_path:
+        return Path(config_path)
+    if env_p := os.getenv("AIMPORTARR_CONFIG"):
+        return Path(env_p)
+    if Path("/config").is_dir():
+        return Path("/config/config.yml")
+    return Path("config.yml")
+
+
+def config_to_dict(config: AppConfig) -> Dict[str, Any]:
+    """Serialize AppConfig into a clean dictionary suitable for YAML or JSON API."""
+    return {
+        "general": {
+            "dry_run": bool(config.general.dry_run),
+            "check_interval_seconds": int(config.general.check_interval_seconds),
+            "min_confidence": float(config.general.min_confidence),
+            "reject_on_low_confidence": bool(config.general.reject_on_low_confidence),
+            "log_level": str(config.general.log_level),
+        },
+        "ai": {
+            "provider": str(config.ai.provider),
+            "fallback_enabled": bool(config.ai.fallback_enabled),
+            "gemini": {
+                "api_key": str(config.ai.gemini.api_key),
+                "model": str(config.ai.gemini.model),
+            },
+            "ollama": {
+                "base_url": str(config.ai.ollama.base_url),
+                "model": str(config.ai.ollama.model),
+            },
+        },
+        "sonarr": {
+            "enabled": bool(config.sonarr.enabled),
+            "url": str(config.sonarr.url),
+            "api_key": str(config.sonarr.api_key),
+        },
+        "radarr": {
+            "enabled": bool(config.radarr.enabled),
+            "url": str(config.radarr.url),
+            "api_key": str(config.radarr.api_key),
+        },
+        "extraction": {
+            "enabled": bool(config.extraction.enabled),
+            "delete_after_import": bool(config.extraction.delete_after_import),
+            "staging_suffix": str(config.extraction.staging_suffix),
+        },
+        "web": {
+            "enabled": bool(config.web.enabled),
+            "host": str(config.web.host),
+            "port": int(config.web.port),
+        },
+        "database": {
+            "path": str(config.database.path),
+            "retention_days": int(config.database.retention_days),
+        },
+        "path_mappings": [
+            {"from": m.from_path, "to": m.to_path}
+            for m in (config.path_mappings or [])
+            if m.from_path and m.to_path
+        ],
+    }
+
+
+def update_config_from_dict(config: AppConfig, data: Dict[str, Any]) -> AppConfig:
+    """Update an existing AppConfig instance in-place from a dictionary payload."""
+    if "general" in data and isinstance(data["general"], dict):
+        g = data["general"]
+        if "dry_run" in g and g["dry_run"] is not None:
+            config.general.dry_run = bool(g["dry_run"])
+        if "check_interval_seconds" in g and g["check_interval_seconds"] is not None:
+            config.general.check_interval_seconds = max(10, int(g["check_interval_seconds"]))
+        if "min_confidence" in g and g["min_confidence"] is not None:
+            config.general.min_confidence = max(0.0, min(1.0, float(g["min_confidence"])))
+        if "reject_on_low_confidence" in g and g["reject_on_low_confidence"] is not None:
+            config.general.reject_on_low_confidence = bool(g["reject_on_low_confidence"])
+        if "log_level" in g and g["log_level"]:
+            config.general.log_level = str(g["log_level"]).upper()
+
+    if "ai" in data and isinstance(data["ai"], dict):
+        a = data["ai"]
+        if a.get("provider") in ("gemini", "ollama"):
+            config.ai.provider = a["provider"]
+        if "fallback_enabled" in a and a["fallback_enabled"] is not None:
+            config.ai.fallback_enabled = bool(a["fallback_enabled"])
+        if "gemini" in a and isinstance(a["gemini"], dict):
+            gm = a["gemini"]
+            if "api_key" in gm and gm["api_key"] is not None:
+                config.ai.gemini.api_key = str(gm["api_key"]).strip()
+            if "model" in gm and gm["model"] is not None:
+                config.ai.gemini.model = str(gm["model"]).strip() or "auto"
+        if "ollama" in a and isinstance(a["ollama"], dict):
+            ol = a["ollama"]
+            if "base_url" in ol and ol["base_url"]:
+                config.ai.ollama.base_url = str(ol["base_url"]).strip().rstrip("/")
+            if "model" in ol and ol["model"]:
+                config.ai.ollama.model = str(ol["model"]).strip()
+
+    if "sonarr" in data and isinstance(data["sonarr"], dict):
+        s = data["sonarr"]
+        if "enabled" in s and s["enabled"] is not None:
+            config.sonarr.enabled = bool(s["enabled"])
+        if "url" in s and s["url"]:
+            config.sonarr.url = str(s["url"]).strip().rstrip("/")
+        if "api_key" in s and s["api_key"] is not None:
+            config.sonarr.api_key = str(s["api_key"]).strip()
+
+    if "radarr" in data and isinstance(data["radarr"], dict):
+        r = data["radarr"]
+        if "enabled" in r and r["enabled"] is not None:
+            config.radarr.enabled = bool(r["enabled"])
+        if "url" in r and r["url"]:
+            config.radarr.url = str(r["url"]).strip().rstrip("/")
+        if "api_key" in r and r["api_key"] is not None:
+            config.radarr.api_key = str(r["api_key"]).strip()
+
+    if "extraction" in data and isinstance(data["extraction"], dict):
+        ex = data["extraction"]
+        if "enabled" in ex and ex["enabled"] is not None:
+            config.extraction.enabled = bool(ex["enabled"])
+        if "delete_after_import" in ex and ex["delete_after_import"] is not None:
+            config.extraction.delete_after_import = bool(ex["delete_after_import"])
+        if "staging_suffix" in ex and ex["staging_suffix"]:
+            config.extraction.staging_suffix = str(ex["staging_suffix"]).strip()
+
+    if "web" in data and isinstance(data["web"], dict):
+        w = data["web"]
+        if "enabled" in w and w["enabled"] is not None:
+            config.web.enabled = bool(w["enabled"])
+        if "host" in w and w["host"]:
+            config.web.host = str(w["host"]).strip()
+        if "port" in w and w["port"] is not None:
+            config.web.port = int(w["port"])
+
+    if "database" in data and isinstance(data["database"], dict):
+        db = data["database"]
+        if "path" in db and db["path"]:
+            config.database.path = str(db["path"]).strip()
+        if "retention_days" in db and db["retention_days"] is not None:
+            config.database.retention_days = max(0, int(db["retention_days"]))
+
+    if "path_mappings" in data and isinstance(data["path_mappings"], list):
+        mappings = []
+        for m in data["path_mappings"]:
+            if isinstance(m, dict):
+                f = (m.get("from") or m.get("from_path") or "").strip()
+                t = (m.get("to") or m.get("to_path") or "").strip()
+                if f and t:
+                    mappings.append(PathMapping(**{"from": f, "to": t}))
+            elif isinstance(m, PathMapping) and m.from_path and m.to_path:
+                mappings.append(m)
+        config.path_mappings = mappings
+
+    return config
+
+
+def save_config(config: AppConfig, config_path: Optional[str] = None) -> Path:
+    """Persist AppConfig to YAML on disk."""
+    target = resolve_config_path(config_path)
+    target.parent.mkdir(parents=True, exist_ok=True)
+    payload = config_to_dict(config)
+    with open(target, "w", encoding="utf-8") as f:
+        yaml.safe_dump(payload, f, sort_keys=False, default_flow_style=False)
+    return target
+
+
+def load_config(config_path: Optional[str] = None) -> AppConfig:
+    """Load configuration from YAML file and apply environment variable overrides."""
+    selected_path = resolve_config_path(config_path)
 
     data = {}
-    if selected_path:
+    if selected_path.is_file():
         with open(selected_path, "r", encoding="utf-8") as f:
             data = yaml.safe_load(f) or {}
 
-    config = AppConfig(**data)
-
-    # Backward compatibility: migrate legacy auto_approve / auto_resolve flags if categories not explicitly defined
-    sonarr_data = data.get("sonarr", {}) if isinstance(data, dict) else {}
-    radarr_data = data.get("radarr", {}) if isinstance(data, dict) else {}
-    cats_data = data.get("categories", {}) if isinstance(data, dict) else {}
-
-    if "auto_approve_id_matches" in sonarr_data and "id_match" not in cats_data:
-        config.categories.id_match.enabled = bool(sonarr_data["auto_approve_id_matches"])
-    elif "auto_approve_id_matches" in radarr_data and "id_match" not in cats_data:
-        config.categories.id_match.enabled = bool(radarr_data["auto_approve_id_matches"])
-
-    if "auto_resolve_unknown_episodes" in sonarr_data and "unknown_episode" not in cats_data:
-        config.categories.unknown_episode.enabled = bool(sonarr_data["auto_resolve_unknown_episodes"])
+    config = AppConfig()
+    if isinstance(data, dict):
+        update_config_from_dict(config, data)
 
     # General overrides
     if env_dry_run := os.getenv("DRY_RUN"):
-        is_dry = env_dry_run.lower() in ("true", "1", "yes")
-        config.general.dry_run = is_dry
-        for cat_name in ["id_match", "unknown_media", "unknown_episode", "sample_or_extra", "quality_or_language", "missing_episodes", "other"]:
-            getattr(config.categories, cat_name).dry_run = is_dry
-    elif config.general.dry_run is not None:
-        # Legacy support: if general.dry_run is set in YAML, apply to categories without explicit dry_run
-        for cat_name in ["id_match", "unknown_media", "unknown_episode", "sample_or_extra", "quality_or_language", "missing_episodes", "other"]:
-            rule_data = cats_data.get(cat_name)
-            if not isinstance(rule_data, dict) or "dry_run" not in rule_data:
-                getattr(config.categories, cat_name).dry_run = config.general.dry_run
-    
+        config.general.dry_run = env_dry_run.lower() in ("true", "1", "yes")
+    if env_reject_low := os.getenv("REJECT_ON_LOW_CONFIDENCE"):
+        config.general.reject_on_low_confidence = env_reject_low.lower() in ("true", "1", "yes")
+    if env_min_conf := os.getenv("MIN_CONFIDENCE"):
+        try:
+            config.general.min_confidence = float(env_min_conf)
+        except ValueError:
+            pass
+    if env_interval := os.getenv("CHECK_INTERVAL_SECONDS"):
+        try:
+            config.general.check_interval_seconds = int(env_interval)
+        except ValueError:
+            pass
+    if env_log_level := os.getenv("LOG_LEVEL"):
+        config.general.log_level = env_log_level.strip().upper()
+
     # AI overrides
     if env_provider := os.getenv("AI_PROVIDER"):
         if env_provider in ("gemini", "ollama"):
@@ -176,18 +346,6 @@ def load_config(config_path: Optional[str] = None) -> AppConfig:
         config.radarr.url = env_radarr_url
     if env_radarr_key := os.getenv("RADARR_API_KEY"):
         config.radarr.api_key = env_radarr_key
-
-    # Category overrides from environment variables
-    # e.g. CATEGORY_ID_MATCH_DRY_RUN=false, CATEGORY_UNKNOWN_MEDIA_DRY_RUN=true, CATEGORY_OTHER_DRY_RUN=false
-    for cat_name in ["fake_or_malware", "id_match", "unknown_media", "unknown_episode", "sample_or_extra", "quality_or_language", "missing_episodes", "other"]:
-        rule = getattr(config.categories, cat_name, None)
-        if not rule:
-            continue
-        prefix = f"CATEGORY_{cat_name.upper()}"
-        if env_dry := os.getenv(f"{prefix}_DRY_RUN"):
-            rule.dry_run = env_dry.lower() in ("true", "1", "yes")
-        if env_enabled := os.getenv(f"{prefix}_ENABLED"):
-            rule.enabled = env_enabled.lower() in ("true", "1", "yes")
 
     # Extraction overrides
     if env_extraction_enabled := os.getenv("EXTRACTION_ENABLED"):
