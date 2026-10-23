@@ -1445,10 +1445,13 @@ DASHBOARD_HTML = """<!DOCTYPE html>
     }
 
     function renderAnalytics(summary) {
-      // Models List
+      // Models List (sorted by total_tokens descending, then calls descending)
       const modelsList = document.getElementById('analytics-models-list');
       const models = summary.tokens_by_model || {};
-      const modelKeys = Object.keys(models);
+      const modelKeys = Object.keys(models).sort((a, b) => {
+        const diff = (models[b].total_tokens || 0) - (models[a].total_tokens || 0);
+        return diff !== 0 ? diff : (models[b].calls || 0) - (models[a].calls || 0);
+      });
 
       if (modelKeys.length === 0) {
         modelsList.innerHTML = '<div class="empty-state">No model usage recorded yet.</div>';
@@ -1474,10 +1477,13 @@ DASHBOARD_HTML = """<!DOCTYPE html>
         }).join('');
       }
 
-      // Operations List
+      // Operations List (sorted by total_tokens descending, then calls descending)
       const opsList = document.getElementById('analytics-operations-list');
       const ops = summary.tokens_by_operation || {};
-      const opKeys = Object.keys(ops);
+      const opKeys = Object.keys(ops).sort((a, b) => {
+        const diff = (ops[b].total_tokens || 0) - (ops[a].total_tokens || 0);
+        return diff !== 0 ? diff : (ops[b].calls || 0) - (ops[a].calls || 0);
+      });
 
       if (opKeys.length === 0) {
         opsList.innerHTML = '<div class="empty-state">No operation data recorded yet.</div>';

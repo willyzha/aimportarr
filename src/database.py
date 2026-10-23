@@ -407,6 +407,7 @@ class DatabaseManager:
                     COALESCE(SUM(total_tokens), 0) as total_tokens
                 FROM token_usage
                 GROUP BY model
+                ORDER BY total_tokens DESC, calls DESC
             """)
             tokens_by_model = {
                 row["model"]: {
@@ -427,6 +428,7 @@ class DatabaseManager:
                     COALESCE(SUM(total_tokens), 0) as total_tokens
                 FROM token_usage
                 GROUP BY operation
+                ORDER BY total_tokens DESC, calls DESC
             """)
             tokens_by_op = {
                 row["operation"]: {
