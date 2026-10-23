@@ -4,6 +4,7 @@ on:
   push:
     branches:
       - main
+      - dev
     tags:
       - 'v*'
   pull_request:
@@ -64,9 +65,10 @@ jobs:
           images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
           tags: |
             type=semver,pattern={{version}}
-            type=semver,pattern={{major}}.{{minor}}
+            type=semver,pattern={{major}}.{{minor}},enable=${{ !contains(github.ref, 'beta') && !contains(github.ref, 'alpha') && !contains(github.ref, 'dev') }}
+            type=raw,value=dev,enable=${{ github.ref == 'refs/heads/dev' || contains(github.ref, 'dev') }}
             type=raw,value=beta,enable=${{ contains(github.ref, 'beta') }}
-            type=raw,value=latest,enable=${{ github.ref == 'refs/heads/main' || (startsWith(github.ref, 'refs/tags/v') && !contains(github.ref, 'beta') && !contains(github.ref, 'alpha')) }}
+            type=raw,value=latest,enable=${{ github.ref == 'refs/heads/main' || (startsWith(github.ref, 'refs/tags/v') && !contains(github.ref, 'beta') && !contains(github.ref, 'alpha') && !contains(github.ref, 'dev')) }}
           labels: |
             org.opencontainers.image.title=AImportarr
             org.opencontainers.image.description=AI-powered queue companion & archive unpacker for Sonarr and Radarr — automatically resolves stuck imports, unpacks archives, and blocklists downgrades or malware.
@@ -88,5 +90,5 @@ jobs:
         if: startsWith(github.ref, 'refs/tags/v')
         uses: softprops/action-gh-release@v2
         with:
-          prerelease: ${{ contains(github.ref, 'beta') || contains(github.ref, 'alpha') }}
+          prerelease: ${{ contains(github.ref, 'beta') || contains(github.ref, 'alpha') || contains(github.ref, 'dev') }}
           generate_release_notes: true
