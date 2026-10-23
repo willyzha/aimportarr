@@ -3,7 +3,7 @@ from datetime import datetime, timedelta, timezone
 import logging
 import shutil
 from pathlib import Path
-from typing import List, Dict, Any, Optional, Tuple
+from typing import List, Dict, Any, Optional, Tuple, Set
 import httpx
 from .ai.base import (
     BaseAIProvider,
@@ -1350,15 +1350,21 @@ class SonarrClient:
     def is_season_eligible_for_backfill(
         season_episodes: List[Dict[str, Any]],
         min_missing_days: int = 3,
+        is_latest_season: bool = False,
+        series_status: str = "ended",
         now_utc: Optional[datetime] = None,
     ) -> Tuple[bool, int, int]:
         """
         Verify if a season is eligible for Season Pack Backfill:
         1. Has >= 1 monitored episode.
-        2. ALL monitored episodes in the season have aired at least `min_missing_days` ago (season is finished airing).
-        3. At least 1 monitored episode is missing (`hasFile == False`).
+        2. Not the latest season of an actively continuing/upcoming series.
+        3. ALL monitored episodes in the season have aired at least `min_missing_days` ago (season is finished airing).
+        4. At least 1 monitored episode is missing (`hasFile == False`).
         Returns (is_eligible, missing_count, existing_count).
         """
+        if is_latest_season and str(series_status).strip().lower() in ("continuing", "upcoming"):
+            return False, 0, 0
+
         monitored_eps = [e for e in season_episodes if e.get("monitored", True)]
         if not monitored_eps:
             return False, 0, 0
@@ -1435,7 +1441,11 @@ class SonarrClient:
         # Identify seasons already active in the Sonarr download queue
         queue_items = await self.get_queue()
         queued_series_seasons = set()
+        queued_episode_ids = set()
         for q in queue_items or []:
+            q_ep_id = q.get("episodeId") or (q.get("episode") or {}).get("id")
+            if q_ep_id:
+                queued_episode_ids.add(int(q_ep_id))
             q_series_id = q.get("seriesId") or (q.get("series") or {}).get("id")
             q_season = q.get("seasonNumber") or (q.get("episode") or {}).get("seasonNumber")
             if q_series_id and q_season is not None:
@@ -1474,7 +1484,11 @@ class SonarrClient:
                     continue
                 eps_by_season.setdefault(int(s_num), []).append(ep)
 
-            for season_num in sorted(eps_by_season.keys()):
+            sorted_seasons = sorted(eps_by_season.keys())
+            max_season_num = max(sorted_seasons) if sorted_seasons else 0
+            series_status = series.get("status") or ""
+
+            for season_num in sorted_seasons:
                 if seasons_searched >= max_seasons:
                     break
 
@@ -1488,8 +1502,12 @@ class SonarrClient:
                     continue
 
                 season_eps = eps_by_season[season_num]
+                is_latest_season = (season_num == max_season_num)
                 eligible, missing_cnt, existing_cnt = self.is_season_eligible_for_backfill(
-                    season_eps, min_missing_days=min_missing_days
+                    season_eps,
+                    min_missing_days=min_missing_days,
+                    is_latest_season=is_latest_season,
+                    series_status=series_status,
                 )
                 if not eligible:
                     continue
@@ -1608,7 +1626,7 @@ class SonarrClient:
                 else:
                     no_pack_reason = match_reasoning or (
                         f"Searched {len(releases)} release(s) for {season_label} ({missing_cnt} missing, {existing_cnt} on disk); "
-                        "no qualifying full-season pack found."
+                        "no qualifying full-season pack found. Falling back inline to individual episode search."
                     )
                     logger.info(f"  ℹ️ {no_pack_reason}")
                     metrics.record_processed_item(
@@ -1619,8 +1637,28 @@ class SonarrClient:
                         confidence=match_confidence if tier2_packs else None,
                         model=decider_model if tier2_packs else None,
                         reasoning=no_pack_reason,
-                        details=f"No qualifying season pack found ({missing_cnt} missing ep(s); {cooldown_days}d cooldown)",
+                        details=f"No qualifying season pack found ({missing_cnt} missing ep(s)); falling back inline to individual episode search ({cooldown_days}d cooldown)",
                         item_keys=[backfill_key],
+                    )
+
+                    # Immediate inline fallback: search up to max_episodes_per_run missing episodes with 30s delay
+                    season_missing_eps = [
+                        e for e in season_eps
+                        if e.get("monitored", True) and not e.get("hasFile", False)
+                    ]
+                    fallback_max = max(1, int(self.episode_retry_config.max_episodes_per_run))
+                    logger.info(
+                        f"  ↪ Falling back inline to search individual episodes for {season_label} (up to {fallback_max} eps, 30s delay)..."
+                    )
+                    await self._retry_missing_episodes_batch(
+                        series=series,
+                        season_num=season_num,
+                        missing_eps=season_missing_eps,
+                        queued_episode_ids=queued_episode_ids,
+                        ai_provider=ai_provider,
+                        dry_run=is_dry_run,
+                        max_episodes=fallback_max,
+                        delay_seconds=30.0,
                     )
 
         return packs_grabbed
@@ -1702,12 +1740,14 @@ class SonarrClient:
         season_episodes: List[Dict[str, Any]],
         min_air_delay_hours: int = 6,
         season_finale_grace_days: int = 3,
+        is_latest_season: bool = False,
+        series_status: str = "ended",
         now_utc: Optional[datetime] = None,
     ) -> List[Dict[str, Any]]:
         """
         For an ongoing/incomplete season (where at least 1 monitored episode has NOT finished airing
-        past `season_finale_grace_days`), return all monitored missing episodes (`hasFile == False`)
-        that aired at least `min_air_delay_hours` ago.
+        past `season_finale_grace_days`, or the season is the latest season of an actively continuing/upcoming series),
+        return all monitored missing episodes (`hasFile == False`) that aired at least `min_air_delay_hours` ago.
         If the season is already completely finished airing past the finale grace period, returns []
         so Season Pack Backfill handles it instead.
         """
@@ -1719,7 +1759,9 @@ class SonarrClient:
         finale_cutoff_dt = now_dt - timedelta(days=max(0, int(season_finale_grace_days)))
         air_delay_cutoff_dt = now_dt - timedelta(hours=max(0, int(min_air_delay_hours)))
 
-        is_season_ongoing = False
+        is_season_ongoing = bool(
+            is_latest_season and str(series_status).strip().lower() in ("continuing", "upcoming")
+        )
         eligible_missing_eps: List[Dict[str, Any]] = []
 
         for ep in monitored_eps:
@@ -1751,6 +1793,203 @@ class SonarrClient:
 
         eligible_missing_eps.sort(key=lambda e: int(e.get("episodeNumber") or 0))
         return eligible_missing_eps
+
+    async def _retry_missing_episodes_batch(
+        self,
+        series: Dict[str, Any],
+        season_num: int,
+        missing_eps: List[Dict[str, Any]],
+        queued_episode_ids: Set[int],
+        ai_provider: Optional[BaseAIProvider] = None,
+        dry_run: Optional[bool] = None,
+        max_episodes: int = 5,
+        delay_seconds: float = 30.0,
+    ) -> Tuple[int, int]:
+        """
+        Iterate through missing episodes of a season in chronological order,
+        search Sonarr interactive releases (with rate-limiting delay between searches),
+        rank Tier 1 vs Tier 2 (AI), and grab winning releases.
+        If a winning release covers multiple episodes, satisfies and records all covered episodes.
+        Returns (episodes_searched, episodes_grabbed).
+        """
+        is_dry_run = self.dry_run if dry_run is None else dry_run
+        cooldown_hours = max(1, int(self.episode_retry_config.episode_cooldown_hours))
+        series_id = series.get("id")
+        series_title = series.get("title") or f"Series #{series_id}"
+
+        sorted_eps = sorted(missing_eps, key=lambda e: int(e.get("episodeNumber") or 0))
+        ep_num_to_obj = {int(e.get("episodeNumber") or 0): e for e in sorted_eps}
+
+        episodes_searched = 0
+        episodes_grabbed = 0
+        satisfied_ep_nums: Set[int] = set()
+
+        for ep in sorted_eps:
+            if episodes_searched >= max_episodes:
+                break
+
+            ep_num = int(ep.get("episodeNumber") or 0)
+            if ep_num in satisfied_ep_nums:
+                continue
+
+            ep_id = ep.get("id")
+            if not ep_id or int(ep_id) in queued_episode_ids:
+                continue
+
+            retry_key = f"ep_retry:sonarr:{series_id}:s{season_num:02d}e{ep_num:02d}"
+            if metrics.is_item_attempted_within_hours([retry_key], hours=cooldown_hours):
+                continue
+            if not metrics.db and retry_key in self._attempted_episode_retry_keys:
+                continue
+
+            if episodes_searched > 0 and delay_seconds > 0:
+                logger.info(
+                    f"  ⏳ Waiting {delay_seconds:.0f}s before next episode search to respect indexer rate limits..."
+                )
+                await asyncio.sleep(delay_seconds)
+
+            episodes_searched += 1
+            ep_title = ep.get("title") or f"Episode {ep_num}"
+            ep_label = f"{series_title} - S{season_num:02d}E{ep_num:02d} - {ep_title}"
+            logger.info(f"  🔎 Searching releases for missing episode '{ep_label}'...")
+
+            try:
+                releases = await self.get_episode_releases(int(ep_id))
+            except Exception as e:
+                logger.warning(f"  ⚠️ Interactive episode search failed for '{ep_label}': {e}")
+                continue
+
+            tier1_releases: List[Dict[str, Any]] = []
+            tier2_releases: List[Dict[str, Any]] = []
+
+            for rel in releases:
+                tier = self.classify_episode_release(rel, season_num, ep_num)
+                if tier == "tier1_eligible":
+                    tier1_releases.append(rel)
+                elif tier == "tier2_unknown_series":
+                    tier2_releases.append(rel)
+
+            winning_rel: Optional[Dict[str, Any]] = None
+            decider_model = "Sonarr (Episode Retry)"
+            match_confidence = 1.0
+            match_reasoning = ""
+
+            if tier1_releases:
+                tier1_releases.sort(key=self._rank_season_pack, reverse=True)
+                winning_rel = tier1_releases[0]
+                match_reasoning = (
+                    f"Selected best qualifying release '{winning_rel.get('title')}' "
+                    f"for missing episode S{season_num:02d}E{ep_num:02d}."
+                )
+            elif tier2_releases and ai_provider:
+                tier2_releases.sort(key=self._rank_season_pack, reverse=True)
+                logger.info(
+                    f"  🤖 No direct episode release matched for '{ep_label}', evaluating {len(tier2_releases)} 'Unknown Series' release(s) with AI..."
+                )
+                ai_res = await ai_provider.evaluate_backfill_episode(
+                    series_info={
+                        "id": series_id,
+                        "title": series_title,
+                        "year": series.get("year"),
+                        "aliases": [a.get("title") for a in (series.get("alternateTitles") or [])],
+                    },
+                    season_number=season_num,
+                    episode_number=ep_num,
+                    episode_title=ep_title,
+                    candidate_releases=[
+                        {
+                            "guid": r.get("guid"),
+                            "title": r.get("title"),
+                            "quality": ((r.get("quality") or {}).get("quality") or {}).get("name"),
+                            "customFormatScore": r.get("customFormatScore", 0),
+                            "qualityWeight": r.get("qualityWeight", 0),
+                            "seeders": r.get("seeders"),
+                        }
+                        for r in tier2_releases[:25]
+                    ],
+                )
+                decider_model = ai_res.model_name or ai_provider.name
+                match_confidence = ai_res.confidence
+                if ai_res.matched_guid and ai_res.confidence >= self.min_confidence:
+                    winning_rel = next(
+                        (r for r in tier2_releases if str(r.get("guid")) == str(ai_res.matched_guid)),
+                        None,
+                    )
+                    match_reasoning = ai_res.reasoning or (
+                        f"AI matched 'Unknown Series' release '{winning_rel.get('title') if winning_rel else ''}' "
+                        f"for {ep_label}."
+                    )
+                else:
+                    match_reasoning = (
+                        ai_res.reasoning
+                        or "AI did not confirm any 'Unknown Series' candidate episode release."
+                    )
+
+            if winning_rel:
+                rel_title = winning_rel.get("title") or ep_label
+                grab_ok = await self.grab_release(
+                    guid=str(winning_rel.get("guid")),
+                    indexer_id=int(winning_rel.get("indexerId", 0)),
+                    dry_run=is_dry_run,
+                    title=rel_title,
+                )
+                status_str = "dry_run" if is_dry_run else ("imported" if grab_ok else "failed")
+                if grab_ok:
+                    episodes_grabbed += 1
+
+                # Check which episodes this release covers (multi-episode support)
+                raw_covered_nums = winning_rel.get("episodeNumbers") or [ep_num]
+                covered_ints = [
+                    int(n) for n in raw_covered_nums if isinstance(n, (int, str)) and str(n).isdigit()
+                ]
+                if not covered_ints or ep_num not in covered_ints:
+                    covered_ints = [ep_num]
+
+                for cov_num in covered_ints:
+                    cov_ep = ep_num_to_obj.get(cov_num)
+                    cov_title = (cov_ep.get("title") if cov_ep else None) or f"Episode {cov_num}"
+                    cov_label = f"{series_title} - S{season_num:02d}E{cov_num:02d} - {cov_title}"
+                    cov_key = f"ep_retry:sonarr:{series_id}:s{season_num:02d}e{cov_num:02d}"
+
+                    self._attempted_episode_retry_keys.add(cov_key)
+                    satisfied_ep_nums.add(cov_num)
+                    if cov_ep and cov_ep.get("id"):
+                        queued_episode_ids.add(int(cov_ep["id"]))
+
+                    cov_details = f"{'Would grab' if is_dry_run else 'Grabbed'} episode release: {rel_title}"
+                    if len(covered_ints) > 1:
+                        cov_details += f" (multi-episode covers E{cov_num:02d})"
+
+                    metrics.record_processed_item(
+                        app="Sonarr",
+                        title=cov_label,
+                        category="episode_retry",
+                        status=status_str,
+                        confidence=match_confidence,
+                        model=decider_model,
+                        reasoning=match_reasoning,
+                        details=cov_details,
+                        item_keys=[cov_key],
+                    )
+            else:
+                self._attempted_episode_retry_keys.add(retry_key)
+                no_rel_reason = match_reasoning or (
+                    f"Searched {len(releases)} release(s) for {ep_label}; no qualifying episode release found."
+                )
+                logger.info(f"  ℹ️ {no_rel_reason}")
+                metrics.record_processed_item(
+                    app="Sonarr",
+                    title=ep_label,
+                    category="episode_retry",
+                    status="skipped",
+                    confidence=match_confidence if tier2_releases else None,
+                    model=decider_model if tier2_releases else None,
+                    reasoning=no_rel_reason,
+                    details=f"No qualifying episode release found ({cooldown_hours}h cooldown)",
+                    item_keys=[retry_key],
+                )
+
+        return episodes_searched, episodes_grabbed
 
     async def run_missing_episode_retry(
         self,
@@ -1821,7 +2060,11 @@ class SonarrClient:
                     continue
                 eps_by_season.setdefault(int(s_num), []).append(ep)
 
-            for season_num in sorted(eps_by_season.keys()):
+            sorted_seasons = sorted(eps_by_season.keys())
+            max_season_num = max(sorted_seasons) if sorted_seasons else 0
+            series_status = series.get("status") or ""
+
+            for season_num in sorted_seasons:
                 if episodes_searched >= max_episodes:
                     break
 
@@ -1833,145 +2076,29 @@ class SonarrClient:
                     continue
 
                 season_eps = eps_by_season[season_num]
+                is_latest = (season_num == max_season_num)
                 missing_eps = self.find_eligible_missing_episodes_for_ongoing_season(
                     season_eps,
                     min_air_delay_hours=min_air_delay_hours,
                     season_finale_grace_days=finale_grace_days,
+                    is_latest_season=is_latest,
+                    series_status=series_status,
                 )
                 if not missing_eps:
                     continue
 
-                for ep in missing_eps:
-                    if episodes_searched >= max_episodes:
-                        break
-
-                    ep_id = ep.get("id")
-                    ep_num = int(ep.get("episodeNumber") or 0)
-                    ep_title = ep.get("title") or f"Episode {ep_num}"
-                    if not ep_id or int(ep_id) in queued_episode_ids:
-                        continue
-
-                    retry_key = f"ep_retry:sonarr:{series_id}:s{season_num:02d}e{ep_num:02d}"
-                    if metrics.is_item_attempted_within_hours([retry_key], hours=cooldown_hours):
-                        continue
-                    if not metrics.db and retry_key in self._attempted_episode_retry_keys:
-                        continue
-
-                    if episodes_searched > 0:
-                        await asyncio.sleep(5.0)
-
-                    episodes_searched += 1
-                    ep_label = f"{series_title} - S{season_num:02d}E{ep_num:02d} - {ep_title}"
-                    logger.info(f"  🔎 Searching releases for missing ongoing-season episode '{ep_label}'...")
-
-                    try:
-                        releases = await self.get_episode_releases(int(ep_id))
-                    except Exception as e:
-                        logger.warning(f"  ⚠️ Interactive episode search failed for '{ep_label}': {e}")
-                        continue
-
-                    tier1_releases: List[Dict[str, Any]] = []
-                    tier2_releases: List[Dict[str, Any]] = []
-
-                    for rel in releases:
-                        tier = self.classify_episode_release(rel, season_num, ep_num)
-                        if tier == "tier1_eligible":
-                            tier1_releases.append(rel)
-                        elif tier == "tier2_unknown_series":
-                            tier2_releases.append(rel)
-
-                    winning_rel: Optional[Dict[str, Any]] = None
-                    decider_model = "Sonarr (Episode Retry)"
-                    match_confidence = 1.0
-                    match_reasoning = ""
-
-                    if tier1_releases:
-                        tier1_releases.sort(key=self._rank_season_pack, reverse=True)
-                        winning_rel = tier1_releases[0]
-                        match_reasoning = (
-                            f"Selected best qualifying release '{winning_rel.get('title')}' "
-                            f"for missing ongoing-season episode S{season_num:02d}E{ep_num:02d}."
-                        )
-                    elif tier2_releases and ai_provider:
-                        tier2_releases.sort(key=self._rank_season_pack, reverse=True)
-                        logger.info(
-                            f"  🤖 No direct episode release matched for '{ep_label}', evaluating {len(tier2_releases)} 'Unknown Series' release(s) with AI..."
-                        )
-                        ai_res = await ai_provider.evaluate_backfill_episode(
-                            series_info={
-                                "id": series_id,
-                                "title": series_title,
-                                "year": series.get("year"),
-                                "aliases": [a.get("title") for a in (series.get("alternateTitles") or [])],
-                            },
-                            season_number=season_num,
-                            episode_number=ep_num,
-                            episode_title=ep_title,
-                            candidate_releases=[
-                                {
-                                    "guid": r.get("guid"),
-                                    "title": r.get("title"),
-                                    "quality": ((r.get("quality") or {}).get("quality") or {}).get("name"),
-                                    "customFormatScore": r.get("customFormatScore", 0),
-                                    "qualityWeight": r.get("qualityWeight", 0),
-                                    "seeders": r.get("seeders"),
-                                }
-                                for r in tier2_releases[:25]
-                            ],
-                        )
-                        decider_model = ai_res.model_name or ai_provider.name
-                        match_confidence = ai_res.confidence
-                        if ai_res.matched_guid and ai_res.confidence >= self.min_confidence:
-                            winning_rel = next(
-                                (r for r in tier2_releases if str(r.get("guid")) == str(ai_res.matched_guid)),
-                                None,
-                            )
-                            match_reasoning = ai_res.reasoning or (
-                                f"AI matched 'Unknown Series' release '{winning_rel.get('title') if winning_rel else ''}' "
-                                f"for {ep_label}."
-                            )
-                        else:
-                            match_reasoning = ai_res.reasoning or "AI did not confirm any 'Unknown Series' candidate episode release."
-
-                    self._attempted_episode_retry_keys.add(retry_key)
-
-                    if winning_rel:
-                        rel_title = winning_rel.get("title") or ep_label
-                        grab_ok = await self.grab_release(
-                            guid=str(winning_rel.get("guid")),
-                            indexer_id=int(winning_rel.get("indexerId", 0)),
-                            dry_run=is_dry_run,
-                            title=rel_title,
-                        )
-                        status_str = "dry_run" if is_dry_run else ("imported" if grab_ok else "failed")
-                        metrics.record_processed_item(
-                            app="Sonarr",
-                            title=ep_label,
-                            category="episode_retry",
-                            status=status_str,
-                            confidence=match_confidence,
-                            model=decider_model,
-                            reasoning=match_reasoning,
-                            details=f"{'Would grab' if is_dry_run else 'Grabbed'} episode release: {rel_title}",
-                            item_keys=[retry_key],
-                        )
-                        if grab_ok:
-                            episodes_grabbed += 1
-                    else:
-                        no_rel_reason = match_reasoning or (
-                            f"Searched {len(releases)} release(s) for {ep_label}; no qualifying episode release found."
-                        )
-                        logger.info(f"  ℹ️ {no_rel_reason}")
-                        metrics.record_processed_item(
-                            app="Sonarr",
-                            title=ep_label,
-                            category="episode_retry",
-                            status="skipped",
-                            confidence=match_confidence if tier2_releases else None,
-                            model=decider_model if tier2_releases else None,
-                            reasoning=no_rel_reason,
-                            details=f"No qualifying episode release found ({cooldown_hours}h cooldown)",
-                            item_keys=[retry_key],
-                        )
+                rem_episodes = max_episodes - episodes_searched
+                batch_searched, batch_grabbed = await self._retry_missing_episodes_batch(
+                    series=series,
+                    season_num=season_num,
+                    missing_eps=missing_eps,
+                    queued_episode_ids=queued_episode_ids,
+                    ai_provider=ai_provider,
+                    dry_run=is_dry_run,
+                    max_episodes=rem_episodes,
+                    delay_seconds=30.0,
+                )
+                episodes_searched += batch_searched
+                episodes_grabbed += batch_grabbed
 
         return episodes_grabbed

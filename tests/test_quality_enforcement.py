@@ -1,5 +1,6 @@
 import sys
 import unittest
+from datetime import datetime, timedelta, timezone
 from unittest.mock import AsyncMock, MagicMock, patch
 from pathlib import Path
 
@@ -1119,6 +1120,190 @@ class QualityEnforcementTests(unittest.IsolatedAsyncioTestCase):
                 dry_run=False,
                 title="LianZaiJu.S02E02.1080p.WEB-DL",
             )
+
+    def test_classify_episode_release_tiers_and_rejections(self):
+        """Test classifying episode releases: Tier 1, Tier 2, and hard disqualifiers."""
+        # Single-episode release matching target
+        rel_single = {
+            "seasonNumber": 1,
+            "episodeNumbers": [2],
+            "rejected": False,
+            "rejections": [],
+        }
+        self.assertEqual(self.sonarr.classify_episode_release(rel_single, season_number=1, episode_number=2), "tier1_eligible")
+        # Wrong episode number
+        self.assertEqual(self.sonarr.classify_episode_release(rel_single, season_number=1, episode_number=3), "disqualified")
+
+        # Multi-episode release matching target
+        rel_multi = {
+            "seasonNumber": 1,
+            "episodeNumbers": [2, 3],
+            "rejected": False,
+            "rejections": [],
+        }
+        self.assertEqual(self.sonarr.classify_episode_release(rel_multi, season_number=1, episode_number=2), "tier1_eligible")
+        self.assertEqual(self.sonarr.classify_episode_release(rel_multi, season_number=1, episode_number=3), "tier1_eligible")
+
+        # Multi-episode release rejected ONLY for existing quality on companion episode
+        rel_multi_quality_rejected = {
+            "seasonNumber": 1,
+            "episodeNumbers": [1, 2],
+            "rejected": True,
+            "rejections": ["Not a Custom Format upgrade for existing episode file(s). New: [] (0) do not improve on Existing: [DSNP] (100)"],
+        }
+        self.assertEqual(self.sonarr.classify_episode_release(rel_multi_quality_rejected, season_number=1, episode_number=2), "tier1_eligible")
+
+        # Unknown Series rejection -> Tier 2
+        rel_unknown = {
+            "seasonNumber": 1,
+            "episodeNumbers": [2],
+            "rejected": True,
+            "rejections": ["Unknown Series"],
+        }
+        self.assertEqual(self.sonarr.classify_episode_release(rel_unknown, season_number=1, episode_number=2), "tier2_unknown_series")
+
+        # Full season release -> Disqualified for episode search
+        rel_full_season = {
+            "seasonNumber": 1,
+            "episodeNumbers": [2],
+            "fullSeason": True,
+        }
+        self.assertEqual(self.sonarr.classify_episode_release(rel_full_season, season_number=1, episode_number=2), "disqualified")
+
+        # Torrent with 0 seeders -> Disqualified
+        rel_zero_seeders = {
+            "seasonNumber": 1,
+            "episodeNumbers": [2],
+            "protocol": "torrent",
+            "seeders": 0,
+        }
+        self.assertEqual(self.sonarr.classify_episode_release(rel_zero_seeders, season_number=1, episode_number=2), "disqualified")
+
+        # Hard disqualifier (blacklist / blocklist)
+        rel_blacklisted = {
+            "seasonNumber": 1,
+            "episodeNumbers": [2],
+            "rejected": True,
+            "rejections": ["Release contains blacklisted word: sample"],
+        }
+        self.assertEqual(self.sonarr.classify_episode_release(rel_blacklisted, season_number=1, episode_number=2), "disqualified")
+
+    def test_ongoing_season_detection_air_date_and_status(self):
+        """Test ongoing season detection with series_status and air dates."""
+        now_utc = datetime.now(timezone.utc)
+        aired_long_ago = (now_utc - timedelta(days=30)).isoformat()
+        airs_in_future = (now_utc + timedelta(days=5)).isoformat()
+
+        season_eps_all_aired = [
+            {"id": 1, "seasonNumber": 1, "episodeNumber": 1, "monitored": True, "hasFile": True, "airDateUtc": aired_long_ago},
+            {"id": 2, "seasonNumber": 1, "episodeNumber": 2, "monitored": True, "hasFile": False, "airDateUtc": aired_long_ago},
+        ]
+
+        # 1. Series ended and all episodes aired > grace days -> not ongoing, returns []
+        res_ended = self.sonarr.find_eligible_missing_episodes_for_ongoing_season(
+            season_eps_all_aired,
+            is_latest_season=True,
+            series_status="ended",
+        )
+        self.assertEqual(res_ended, [])
+
+        # 2. Series continuing and is latest season -> ongoing! Returns missing ep 2
+        res_continuing = self.sonarr.find_eligible_missing_episodes_for_ongoing_season(
+            season_eps_all_aired,
+            is_latest_season=True,
+            series_status="continuing",
+        )
+        self.assertEqual(len(res_continuing), 1)
+        self.assertEqual(res_continuing[0]["id"], 2)
+
+        # 3. Series ended, but has future/TBA episode -> ongoing!
+        season_eps_with_future = [
+            {"id": 1, "seasonNumber": 1, "episodeNumber": 1, "monitored": True, "hasFile": False, "airDateUtc": aired_long_ago},
+            {"id": 2, "seasonNumber": 1, "episodeNumber": 2, "monitored": True, "hasFile": False, "airDateUtc": airs_in_future},
+        ]
+        res_future = self.sonarr.find_eligible_missing_episodes_for_ongoing_season(
+            season_eps_with_future,
+            is_latest_season=False,
+            series_status="ended",
+        )
+        self.assertEqual(len(res_future), 1)
+        self.assertEqual(res_future[0]["id"], 1)
+
+    async def test_multi_episode_companion_satisfaction(self):
+        """Verify grabbing a multi-episode release satisfies and records all covered episodes."""
+        series = {"id": 10, "title": "Test Show", "year": 2026}
+        missing_eps = [
+            {"id": 101, "seasonNumber": 1, "episodeNumber": 1, "title": "Ep 1", "monitored": True, "hasFile": False},
+            {"id": 102, "seasonNumber": 1, "episodeNumber": 2, "title": "Ep 2", "monitored": True, "hasFile": False},
+        ]
+        # Interactive search returns a 2-in-1 release covering E01 and E02
+        releases = [
+            {
+                "guid": "rel-multi-e01-e02",
+                "indexerId": 5,
+                "title": "Test.Show.S01E01-E02.1080p",
+                "seasonNumber": 1,
+                "episodeNumbers": [1, 2],
+                "protocol": "usenet",
+                "rejected": False,
+                "rejections": [],
+            }
+        ]
+
+        with patch.object(self.sonarr, "get_episode_releases", new_callable=AsyncMock, return_value=releases) as mock_search, \
+             patch.object(self.sonarr, "grab_release", new_callable=AsyncMock, return_value=True) as mock_grab:
+
+            queued_ep_ids = set()
+            searched, grabbed = await self.sonarr._retry_missing_episodes_batch(
+                series=series,
+                season_num=1,
+                missing_eps=missing_eps,
+                queued_episode_ids=queued_ep_ids,
+                max_episodes=5,
+                delay_seconds=0,
+            )
+
+            # E01 was searched and grabbed S01E01-E02
+            self.assertEqual(searched, 1)
+            self.assertEqual(grabbed, 1)
+            # E02 should be satisfied immediately without an extra interactive search
+            mock_search.assert_called_once_with(101)
+            mock_grab.assert_called_once()
+            self.assertIn(101, queued_ep_ids)
+            self.assertIn(102, queued_ep_ids)
+            self.assertIn("ep_retry:sonarr:10:s01e01", self.sonarr._attempted_episode_retry_keys)
+            self.assertIn("ep_retry:sonarr:10:s01e02", self.sonarr._attempted_episode_retry_keys)
+
+    async def test_season_pack_backfill_inline_fallback_to_episodes(self):
+        """Verify Season Pack Backfill falls back inline to individual episode search when no pack found."""
+        series_list = [
+            {
+                "id": 30,
+                "title": "Finished Show",
+                "year": 2024,
+                "monitored": True,
+                "status": "ended",
+                "seasons": [{"seasonNumber": 1, "monitored": True}],
+            }
+        ]
+        season_eps = [
+            {"id": 301, "seasonNumber": 1, "episodeNumber": 1, "monitored": True, "hasFile": True, "airDateUtc": "2024-01-01T00:00:00Z"},
+            {"id": 302, "seasonNumber": 1, "episodeNumber": 2, "monitored": True, "hasFile": False, "airDateUtc": "2024-01-08T00:00:00Z"},
+        ]
+
+        with patch.object(self.sonarr, "get_all_series", new_callable=AsyncMock, return_value=series_list), \
+             patch.object(self.sonarr, "get_queue", new_callable=AsyncMock, return_value=[]), \
+             patch.object(self.sonarr, "get_series_episodes", new_callable=AsyncMock, return_value=season_eps), \
+             patch.object(self.sonarr, "get_season_releases", new_callable=AsyncMock, return_value=[]), \
+             patch.object(self.sonarr, "_retry_missing_episodes_batch", new_callable=AsyncMock, return_value=(1, 1)) as mock_fallback_batch:
+
+            packs_grabbed = await self.sonarr.run_season_pack_backfill(ai_provider=self.mock_ai)
+            self.assertEqual(packs_grabbed, 0)
+            mock_fallback_batch.assert_called_once()
+            call_kwargs = mock_fallback_batch.call_args.kwargs
+            self.assertEqual(call_kwargs["season_num"], 1)
+            self.assertEqual(len(call_kwargs["missing_eps"]), 1)
+            self.assertEqual(call_kwargs["missing_eps"][0]["id"], 302)
 
 
 if __name__ == "__main__":
