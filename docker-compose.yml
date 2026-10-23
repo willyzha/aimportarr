@@ -1,16 +1,15 @@
-version: "3.8"
-
 services:
   aimportarr:
-    build: .
+    image: ghcr.io/willyzha/aimportarr:latest
+    # build: .
     container_name: aimportarr
     restart: unless-stopped
     ports:
-      - "9890:9890" # Web UI Metrics & History Monitor
+      - "9890:9890" # Web UI, Metrics & Live Settings
     volumes:
       - ./config:/config
-      # Optional: Mount downloads directory matching Sonarr/Radarr's paths for secure archive extraction
-      # - /mnt/user/Media/downloads:/data/downloads
+      # Mount downloads directory matching Sonarr/Radarr paths for secure archive extraction:
+      # - /path/to/downloads:/data/downloads
     environment:
       - PUID=1000
       - PGID=1000

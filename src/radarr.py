@@ -994,7 +994,7 @@ class RadarrClient:
             return False
 
         finally:
-            if staging_dir_to_clean and staging_dir_to_clean.exists():
+            if self.extraction_config.delete_after_import and staging_dir_to_clean and staging_dir_to_clean.exists():
                 try:
                     shutil.rmtree(staging_dir_to_clean, ignore_errors=True)
                     logger.info(

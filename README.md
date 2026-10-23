@@ -37,7 +37,7 @@ Create a `docker-compose.yml` and start the container (`docker compose up -d`):
 ```yaml
 services:
   aimportarr:
-    image: ghcr.io/willyzha/aimportarr:beta
+    image: ghcr.io/willyzha/aimportarr:latest
     container_name: aimportarr
     restart: unless-stopped
     ports:

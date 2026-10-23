@@ -10,7 +10,7 @@ logger = logging.getLogger("aimportarr.extractor")
 
 ARCHIVE_EXTENSIONS = {".7z", ".zip", ".rar", ".tar", ".tgz", ".gz", ".bz2", ".xz", ".iso"}
 VIDEO_EXTENSIONS = {".mkv", ".mp4", ".avi", ".ts", ".m4v", ".mov", ".wmv"}
-SUSPICIOUS_EXTENSIONS = {".exe", ".scr", ".bat", ".cmd", ".vbs", ".msi", ".pif", ".com", ".crypted"}
+SUSPICIOUS_EXTENSIONS = {".exe", ".scr", ".bat", ".cmd", ".vbs", ".msi", ".ps1", ".lnk", ".pif", ".com", ".crypted"}
 
 def resolve_local_path(remote_path: str, path_mappings: Optional[List[Any]] = None) -> Path:
     """
