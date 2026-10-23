@@ -547,5 +547,16 @@ class ContainerSmokeTests(unittest.TestCase):
 
             db.close()
 
+    def test_web_ui_and_metrics_render_version(self):
+        """Verify Web UI renders version tag and metrics.get_summary() includes version."""
+        from src import __version__
+        from src.web import RENDERED_DASHBOARD_HTML
+        from src.metrics import metrics
+
+        self.assertIn(f"v{__version__}", RENDERED_DASHBOARD_HTML)
+        self.assertIn('class="version-tag"', RENDERED_DASHBOARD_HTML)
+        summary = metrics.get_summary()
+        self.assertEqual(summary.get("version"), __version__)
+
 if __name__ == "__main__":
     unittest.main()

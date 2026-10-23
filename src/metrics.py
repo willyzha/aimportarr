@@ -5,6 +5,7 @@ import threading
 from typing import Any, Dict, List, Optional
 
 from .database import DatabaseManager
+from . import __version__
 
 logger = logging.getLogger("aimportarr.metrics")
 
@@ -355,6 +356,7 @@ class MetricsTracker:
                 uptime_str = f"{seconds}s"
 
             return {
+                "version": __version__,
                 "status": "online",
                 "uptime_seconds": uptime_sec,
                 "uptime_formatted": uptime_str,

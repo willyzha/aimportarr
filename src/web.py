@@ -9,6 +9,7 @@ from typing import Optional, Any, Callable
 
 from .config import AppConfig, load_config, save_config, config_to_dict, update_config_from_dict
 from .metrics import MetricsTracker, metrics as default_metrics
+from . import __version__
 
 logger = logging.getLogger("aimportarr.web")
 
@@ -112,6 +113,19 @@ DASHBOARD_HTML = """<!DOCTYPE html>
     .brand-subtitle {
       font-size: 0.75rem;
       color: var(--text-muted);
+    }
+
+    .version-tag {
+      font-size: 0.68rem;
+      font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+      font-weight: 600;
+      padding: 0.12rem 0.45rem;
+      border-radius: 4px;
+      background: rgba(99, 102, 241, 0.15);
+      color: #818cf8;
+      border: 1px solid rgba(99, 102, 241, 0.3);
+      line-height: 1.2;
+      display: inline-block;
     }
 
     .header-actions {
@@ -858,7 +872,10 @@ DASHBOARD_HTML = """<!DOCTYPE html>
       <img src="/assets/logo.png" alt="AImportarr" onerror="this.style.display='none'; document.getElementById('fallback-logo').style.display='flex';">
       <div id="fallback-logo" class="brand-fallback-logo" style="display: none;">AI</div>
       <div>
-        <div class="brand-title">AImportarr</div>
+        <div style="display: flex; align-items: center; gap: 0.45rem;">
+          <div class="brand-title">AImportarr</div>
+          <span class="version-tag">v{{VERSION}}</span>
+        </div>
         <div class="brand-subtitle">AI-Powered *arr Media Importer</div>
       </div>
     </a>
@@ -1072,7 +1089,10 @@ DASHBOARD_HTML = """<!DOCTYPE html>
     <div id="tab-settings" class="tab-pane" style="display: none;">
       <div class="table-toolbar">
         <div>
-          <div style="font-size: 1rem; font-weight: 700;">System Configuration</div>
+          <div style="display: flex; align-items: center; gap: 0.6rem;">
+            <div style="font-size: 1rem; font-weight: 700;">System Configuration</div>
+            <span class="version-tag">v{{VERSION}}</span>
+          </div>
           <div style="font-size: 0.78rem; color: var(--text-muted);">Changes are saved to your config file and hot-reloaded immediately without restarting the container.</div>
         </div>
         <div style="display: flex; gap: 0.6rem;">
@@ -1359,7 +1379,7 @@ DASHBOARD_HTML = """<!DOCTYPE html>
 
   <!-- Footer -->
   <footer>
-    AImportarr &bull; AI-Powered *arr Queue Companion
+    AImportarr <span class="version-tag" style="margin: 0 0.25rem;">v{{VERSION}}</span> &bull; AI-Powered *arr Queue Companion
   </footer>
 
   <script>
@@ -2036,6 +2056,8 @@ DASHBOARD_HTML = """<!DOCTYPE html>
 </html>
 """
 
+RENDERED_DASHBOARD_HTML = DASHBOARD_HTML.replace("{{VERSION}}", __version__)
+
 
 class MetricsHTTPHandler(BaseHTTPRequestHandler):
     """HTTP Request handler for lightweight dashboard and REST metrics API."""
@@ -2099,7 +2121,7 @@ class MetricsHTTPHandler(BaseHTTPRequestHandler):
 
         # Dashboard UI
         if path in ("/", "/index.html", "/dashboard", "/metrics"):
-            self._send_html(DASHBOARD_HTML)
+            self._send_html(RENDERED_DASHBOARD_HTML)
             return
 
         # Assets
