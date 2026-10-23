@@ -39,7 +39,7 @@ from src.metrics import metrics
 class QualityEnforcementTests(unittest.IsolatedAsyncioTestCase):
     """
     Test suite verifying the 4-step / two-stage AI evaluation architecture,
-    quality & Custom Format enforcement, seeding preservation on downgrades,
+    quality & Custom Format enforcement, client file preservation on downgrades,
     and client deletion on malware/corrupt/sample-only releases.
     """
 
@@ -61,25 +61,11 @@ class QualityEnforcementTests(unittest.IsolatedAsyncioTestCase):
             reject_on_low_confidence=False,
         )
         self.mock_ai = MagicMock()
-        self.mock_ai.parse_episode = AsyncMock()
-        self.mock_ai.evaluate_sample_or_extra = AsyncMock()
         self.mock_ai.evaluate_stage1_triage = AsyncMock()
-        mock_series_match = MagicMock()
-        mock_series_match.is_match = True
-        mock_series_match.confidence = 1.0
-        mock_series_match.model_name = "MockAI"
-        mock_series_match.reasoning = "Series match confirmed"
-        self.mock_ai.verify_series_match = AsyncMock(return_value=mock_series_match)
-
-        mock_movie_match = MagicMock()
-        mock_movie_match.is_match = True
-        mock_movie_match.confidence = 1.0
-        mock_movie_match.model_name = "MockAI"
-        mock_movie_match.reasoning = "Movie match confirmed"
-        self.mock_ai.verify_movie_match = AsyncMock(return_value=mock_movie_match)
+        self.mock_ai.evaluate_import_decision = AsyncMock()
 
     async def test_sonarr_extracted_archive_rejected_on_equal_or_higher_quality(self):
-        """Extracted files rejected for equal/higher quality must NOT import and MUST keep seeding while blocklisting."""
+        """Extracted files rejected for equal/higher quality must NOT import and MUST keep files in client while blocklisting."""
         tmp_base = Path("/tmp/test_sonarr_archive_rej")
         tmp_base.mkdir(parents=True, exist_ok=True)
         archive_file = tmp_base / "mock.rar"
@@ -136,16 +122,16 @@ class QualityEnforcementTests(unittest.IsolatedAsyncioTestCase):
 
             self.assertFalse(imported)
             mock_trigger.assert_not_called()
-            self.mock_ai.parse_episode.assert_not_called()
+            self.mock_ai.evaluate_import_decision.assert_not_called()
             self.assertFalse(staging_dir.exists())
-            # Must dismiss with remove_from_client=False (keep seeding), blocklist=True, skip_redownload=False
+            # Must dismiss with remove_from_client=False (keep in client), blocklist=True, skip_redownload=False
             mock_resolve.assert_called_once()
             self.assertFalse(mock_resolve.call_args.kwargs["remove_from_client"])
             self.assertTrue(mock_resolve.call_args.kwargs["blocklist"])
             self.assertFalse(mock_resolve.call_args.kwargs["skip_redownload"])
 
     async def test_sonarr_extracted_archive_rejected_on_custom_format(self):
-        """Extracted files rejected for custom format upgrade must be skipped and keep seeding."""
+        """Extracted files rejected for custom format upgrade must be skipped and keep files in client."""
         tmp_base = Path("/tmp/test_sonarr_cf_rej")
         tmp_base.mkdir(parents=True, exist_ok=True)
         archive_file = tmp_base / "mock.rar"
@@ -194,7 +180,7 @@ class QualityEnforcementTests(unittest.IsolatedAsyncioTestCase):
 
             self.assertFalse(imported)
             mock_trigger.assert_not_called()
-            self.mock_ai.parse_episode.assert_not_called()
+            self.mock_ai.evaluate_import_decision.assert_not_called()
             mock_resolve.assert_called_once()
             self.assertFalse(mock_resolve.call_args.kwargs["remove_from_client"])
             self.assertTrue(mock_resolve.call_args.kwargs["blocklist"])
@@ -255,7 +241,7 @@ class QualityEnforcementTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(called_payload[0]["episodeIds"], [101])
 
     async def test_radarr_extracted_archive_rejected_on_higher_quality(self):
-        """Extracted movie archive rejected by Radarr for equal/higher quality must keep seeding and blocklist."""
+        """Extracted movie archive rejected by Radarr for equal/higher quality must keep files in client and blocklist."""
         tmp_base = Path("/tmp/test_radarr_archive_rej")
         tmp_base.mkdir(parents=True, exist_ok=True)
         archive_file = tmp_base / "mock.rar"
@@ -368,13 +354,15 @@ class QualityEnforcementTests(unittest.IsolatedAsyncioTestCase):
             "outputPath": "/downloads/Show.Release",
         }
 
-        mock_match = MagicMock()
-        mock_match.confidence = 0.95
-        mock_match.season_number = 1
-        mock_match.episode_numbers = [2]
-        mock_match.model_name = "MockAI"
-        mock_match.reasoning = "Parsed S01E02"
-        self.mock_ai.parse_episode.return_value = mock_match
+        self.mock_ai.evaluate_import_decision.return_value = Stage2DecisionResult(
+            decision="import",
+            matched_media_id=5,
+            files_to_import=[ApprovedFileItem(path="/downloads/Show.mkv", season_number=1, episode_numbers=[2])],
+            category_tag="episode_parsed",
+            confidence=0.95,
+            reasoning="Parsed S01E02",
+            model_name="MockAI",
+        )
 
         with patch.object(self.sonarr, "get_manual_import_items", new_callable=AsyncMock) as mock_get_manual, \
              patch.object(self.sonarr, "trigger_manual_import", new_callable=AsyncMock) as mock_trigger, \
@@ -392,10 +380,10 @@ class QualityEnforcementTests(unittest.IsolatedAsyncioTestCase):
             )
 
             self.assertTrue(imported)
-            self.mock_ai.parse_episode.assert_called_once()
+            self.mock_ai.evaluate_import_decision.assert_called_once()
 
     async def test_sonarr_mapped_episode_with_quality_rejection_never_calls_ai_parse(self):
-        """When curr_episodes is known, but quality rule rejects, AI must NOT be called and seeding must be kept."""
+        """When curr_episodes is known, but quality rule rejects, AI must NOT be called and files must be kept in client."""
         manual_items = [{
             "path": "/downloads/Show.S01E01.mkv",
             "name": "Show.S01E01.mkv",
@@ -429,7 +417,7 @@ class QualityEnforcementTests(unittest.IsolatedAsyncioTestCase):
 
             self.assertFalse(imported)
             mock_trigger.assert_not_called()
-            self.mock_ai.parse_episode.assert_not_called()
+            self.mock_ai.evaluate_import_decision.assert_not_called()
             mock_resolve.assert_called_once()
             self.assertFalse(mock_resolve.call_args.kwargs["remove_from_client"])
             self.assertTrue(mock_resolve.call_args.kwargs["blocklist"])
@@ -462,7 +450,7 @@ class QualityEnforcementTests(unittest.IsolatedAsyncioTestCase):
             self.assertFalse(mock_resolve.call_args.kwargs["skip_redownload"])
 
     async def test_low_confidence_conservative_vs_hands_off(self):
-        """Verify reject_on_low_confidence=False leaves item in queue, while True blocklists & keeps seeding."""
+        """Verify reject_on_low_confidence=False leaves item in queue, while True blocklists & keeps files in client."""
         manual_items = [{
             "path": "/downloads/Ambiguous.mkv",
             "name": "Ambiguous.mkv",
@@ -497,7 +485,7 @@ class QualityEnforcementTests(unittest.IsolatedAsyncioTestCase):
             await self.sonarr.process_queue_item(item=queue_item, ai_provider=self.mock_ai)
             mock_resolve.assert_not_called()
 
-        # 2. Hands-off mode (reject_on_low_confidence=True): must dismiss (keep seeding), blocklist, and re-search
+        # 2. Hands-off mode (reject_on_low_confidence=True): must dismiss (keep in client), blocklist, and re-search
         self.sonarr.reject_on_low_confidence = True
         with patch.object(self.sonarr, "get_manual_import_items", new_callable=AsyncMock, return_value=manual_items), \
              patch.object(self.sonarr, "get_all_series", new_callable=AsyncMock, return_value=[{"id": 5, "title": "Show"}]), \

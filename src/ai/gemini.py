@@ -9,11 +9,6 @@ import httpx
 from ..metrics import metrics
 from .base import (
     BaseAIProvider,
-    MediaMatchResult,
-    EpisodeMatchResult,
-    SampleEvaluationResult,
-    LibraryMatchResult,
-    MalwareEvaluationResult,
     Stage1TriageResult,
     ApprovedFileItem,
     Stage2DecisionResult,
@@ -21,6 +16,7 @@ from .base import (
 )
 
 logger = logging.getLogger("aimportarr.ai.gemini")
+
 
 class GeminiProvider(BaseAIProvider):
     def __init__(self, api_key: str, model: str = "auto"):
@@ -68,15 +64,11 @@ class GeminiProvider(BaseAIProvider):
             name = m.get("name", "").replace("models/", "")
             if "generateContent" not in methods:
                 continue
-            # Exclude specialized modalities (image generation, tts, robotics, audio, transcription)
             if any(x in name for x in ["image", "tts", "robotics", "clip", "banana", "transcribe", "argon", "computer-use"]):
                 continue
             candidates.append(name)
 
         def model_score(name: str):
-            # Tier 1: standard flash (fastest and most reliable on API)
-            # Tier 2: flash-lite
-            # Tier 3: other (pro, etc.)
             tier = 3
             if "flash" in name and "flash-lite" not in name:
                 tier = 1
@@ -99,7 +91,6 @@ class GeminiProvider(BaseAIProvider):
         Filters out models that returned 404 (retired) or are currently on rate-limit cooldown (429/503).
         """
         now = time.time()
-        # Clean expired rate limits
         expired = [m for m, exp in self._rate_limited_models.items() if exp <= now]
         for m in expired:
             del self._rate_limited_models[m]
@@ -121,7 +112,6 @@ class GeminiProvider(BaseAIProvider):
             self._resolved_model = chosen
             return chosen
 
-        # If all candidates are currently rate-limited, try the one whose cooldown expires soonest
         if self._rate_limited_models:
             soonest = min(self._rate_limited_models.keys(), key=lambda k: self._rate_limited_models[k])
             logger.warning("All Gemini candidate models are rate-limited. Trying soonest available '%s'...", soonest)
@@ -162,7 +152,6 @@ class GeminiProvider(BaseAIProvider):
             }
         }
 
-        # Allow up to 4 attempts with model rotation on 404, 429, or 503
         max_attempts = 4
         last_error = None
 
@@ -172,7 +161,6 @@ class GeminiProvider(BaseAIProvider):
             else:
                 current_model = self._resolved_model or self.model
 
-            # Pacing: enforce minimum delay between calls to avoid bursting over rate limits
             now = time.time()
             elapsed = now - self._last_call_time
             if elapsed < self._min_call_interval:
@@ -194,13 +182,13 @@ class GeminiProvider(BaseAIProvider):
                         continue
 
                     if status == 429:
-                        self._rate_limited_models[current_model] = time.time() + 180  # 3 min cooldown
+                        self._rate_limited_models[current_model] = time.time() + 180
                         logger.warning("Gemini model '%s' hit rate limit / quota (HTTP 429). Rotating to next model...", current_model)
                         await self.resolve_smallest_model(force_refresh=True)
                         continue
 
                     if status == 503:
-                        self._rate_limited_models[current_model] = time.time() + 60   # 1 min cooldown
+                        self._rate_limited_models[current_model] = time.time() + 60
                         logger.warning("Gemini model '%s' is overloaded (HTTP 503). Rotating to next model...", current_model)
                         await self.resolve_smallest_model(force_refresh=True)
                         continue
@@ -258,7 +246,7 @@ class GeminiProvider(BaseAIProvider):
         if last_error:
             metrics.record_token_usage(
                 operation=operation,
-                model=self._resolved_model or self.model or "gemini",
+                model=self._resolved_model or self.model,
                 prompt_tokens=0,
                 completion_tokens=0,
                 total_tokens=0,
@@ -266,235 +254,9 @@ class GeminiProvider(BaseAIProvider):
                 item_title=item_title,
                 success=False
             )
+            raise AIProviderError(f"Gemini API failed after {max_attempts} attempts: {last_error}") from last_error
 
-        if isinstance(last_error, httpx.HTTPStatusError) and last_error.response.status_code == 429:
-            raise AIProviderError("All Gemini candidate models hit rate limit or quota (HTTP 429 / Out of tokens)") from last_error
-        raise AIProviderError(f"Failed to get valid response from Gemini after {max_attempts} attempts: {last_error}")
-
-    async def match_unknown_media(
-        self,
-        release_title: str,
-        folder_name: str,
-        media_type: str,
-        candidates: List[dict]
-    ) -> LibraryMatchResult:
-        schema = (
-            "Return JSON adhering strictly to this schema:\n"
-            "{\n"
-            '  "matched_id": integer or null,\n'
-            '  "confidence": float (0.0 to 1.0),\n'
-            '  "reasoning": "brief explanation of match"\n'
-            "}"
-        )
-        prompt = (
-            f"Release Title: {release_title}\n"
-            f"Folder Name: {folder_name}\n"
-            f"Media Type: {media_type}\n"
-            f"Candidate Library Items:\n{json.dumps(candidates, ensure_ascii=False, indent=2)}\n\n"
-            f"Identify if this release matches any candidate in the library. If no confident match exists, set matched_id to null."
-        )
-        data = await self._call_gemini(
-            prompt,
-            schema,
-            operation="match_unknown_media",
-            item_title=release_title
-        )
-        return LibraryMatchResult(
-            matched_id=data.get("matched_id"),
-            confidence=float(data.get("confidence", 0.0)),
-            reasoning=data.get("reasoning", ""),
-            model_name=self.name
-        )
-
-    async def verify_series_match(
-        self,
-        release_title: str,
-        folder_name: str,
-        candidate_series_title: str,
-        alternate_titles: List[str],
-        year: Optional[int] = None
-    ) -> MediaMatchResult:
-        schema = (
-            "Return JSON adhering strictly to this schema:\n"
-            "{\n"
-            '  "is_match": boolean,\n'
-            '  "confidence": float (0.0 to 1.0),\n'
-            '  "reasoning": "brief explanation"\n'
-            "}"
-        )
-        prompt = (
-            f"Release Title: {release_title}\n"
-            f"Folder Name: {folder_name}\n"
-            f"Candidate Series: {candidate_series_title} ({year or 'Unknown Year'})\n"
-            f"Alternate Titles: {', '.join(alternate_titles) if alternate_titles else 'None'}\n\n"
-            f"Does this release belong to the candidate series? Handle Pinyin, English, and Chinese translations."
-        )
-        data = await self._call_gemini(
-            prompt,
-            schema,
-            operation="verify_series_match",
-            item_title=release_title
-        )
-        return MediaMatchResult(
-            is_match=bool(data.get("is_match", False)),
-            confidence=float(data.get("confidence", 0.0)),
-            reasoning=data.get("reasoning", ""),
-            model_name=self.name
-        )
-
-    async def verify_movie_match(
-        self,
-        release_title: str,
-        folder_name: str,
-        candidate_movie_title: str,
-        alternate_titles: List[str],
-        year: Optional[int] = None
-    ) -> MediaMatchResult:
-        schema = (
-            "Return JSON adhering strictly to this schema:\n"
-            "{\n"
-            '  "is_match": boolean,\n'
-            '  "confidence": float (0.0 to 1.0),\n'
-            '  "reasoning": "brief explanation"\n'
-            "}"
-        )
-        prompt = (
-            f"Release Title: {release_title}\n"
-            f"Folder Name: {folder_name}\n"
-            f"Candidate Movie: {candidate_movie_title} ({year or 'Unknown Year'})\n"
-            f"Alternate Titles: {', '.join(alternate_titles) if alternate_titles else 'None'}\n\n"
-            f"Does this release belong to the candidate movie?"
-        )
-        data = await self._call_gemini(
-            prompt,
-            schema,
-            operation="verify_movie_match",
-            item_title=release_title
-        )
-        return MediaMatchResult(
-            is_match=bool(data.get("is_match", False)),
-            confidence=float(data.get("confidence", 0.0)),
-            reasoning=data.get("reasoning", ""),
-            model_name=self.name
-        )
-
-    async def parse_episode(
-        self,
-        file_name: str,
-        folder_name: str,
-        series_title: str,
-        known_seasons: List[int],
-        known_episodes_in_season: List[dict]
-    ) -> EpisodeMatchResult:
-        schema = (
-            "Return JSON adhering strictly to this schema:\n"
-            "{\n"
-            '  "season_number": integer,\n'
-            '  "episode_numbers": [integer],\n'
-            '  "confidence": float (0.0 to 1.0),\n'
-            '  "reasoning": "brief explanation"\n'
-            "}"
-        )
-        simplified_eps = [
-            {"season": e.get("seasonNumber"), "episode": e.get("episodeNumber"), "title": e.get("title")}
-            for e in known_episodes_in_season[:100]
-        ]
-        prompt = (
-            f"File Name: {file_name}\n"
-            f"Folder Name: {folder_name}\n"
-            f"Series Title: {series_title}\n"
-            f"Known Seasons: {known_seasons}\n"
-            f"Sample Known Episodes in Season:\n{json.dumps(simplified_eps, ensure_ascii=False, indent=2)}\n\n"
-            f"Extract the season number and episode number(s) (e.g. for multi-episode files [1, 2])."
-        )
-        data = await self._call_gemini(
-            prompt,
-            schema,
-            operation="parse_episode",
-            item_title=file_name
-        )
-        ep_nums = data.get("episode_numbers", [])
-        if isinstance(ep_nums, int):
-            ep_nums = [ep_nums]
-        return EpisodeMatchResult(
-            season_number=int(data.get("season_number", 1)),
-            episode_numbers=[int(x) for x in ep_nums],
-            confidence=float(data.get("confidence", 0.0)),
-            reasoning=data.get("reasoning", ""),
-            model_name=self.name
-        )
-
-    async def evaluate_sample_or_extra(
-        self,
-        file_name: str,
-        folder_name: str,
-        media_title: str
-    ) -> SampleEvaluationResult:
-        schema = (
-            "Return JSON adhering strictly to this schema:\n"
-            "{\n"
-            '  "is_valid_media": boolean,\n'
-            '  "reasoning": "brief explanation"\n'
-            "}"
-        )
-        prompt = (
-            f"File Name: {file_name}\n"
-            f"Folder Name: {folder_name}\n"
-            f"Media Title: {media_title}\n\n"
-            f"Is this file a valid full media episode/movie file, or is it a disposable sample, trailer, preview, or extra clip?"
-        )
-        data = await self._call_gemini(
-            prompt,
-            schema,
-            operation="evaluate_sample_or_extra",
-            item_title=file_name
-        )
-        return SampleEvaluationResult(
-            is_valid_media=bool(data.get("is_valid_media", True)),
-            confidence=float(data.get("confidence", 1.0)),
-            reasoning=data.get("reasoning", ""),
-            model_name=self.name
-        )
-
-    async def evaluate_fake_or_malware(
-        self,
-        release_title: str,
-        file_name: str,
-        error_messages: List[str],
-        archive_files: Optional[List[str]] = None
-    ) -> MalwareEvaluationResult:
-        schema = (
-            "Return JSON adhering strictly to this schema:\n"
-            "{\n"
-            '  "is_fake_or_malware": boolean,\n'
-            '  "confidence": float (0.0 to 1.0),\n'
-            '  "reasoning": "brief explanation"\n'
-            "}"
-        )
-        archive_section = f"Archive Manifest (Files inside): {', '.join(archive_files[:25])}\n" if archive_files else ""
-        prompt = (
-            f"Release Title: {release_title}\n"
-            f"File Name: {file_name}\n"
-            f"{archive_section}"
-            f"Error / Status Messages: {', '.join(error_messages) if error_messages else 'None'}\n\n"
-            "Task: Determine if this release is a fake, scam, trojan, or malware release pretending to be TV or Movie media.\n\n"
-            "Guidelines:\n"
-            "- Legitimate scene and P2P TV/movie release groups (-FLUX, -EZTV, -MeGusta, -TGx, etc.) distribute video streams in video containers (.mkv, .mp4, .avi) or multi-part scene RAR archives.\n"
-            "- They NEVER package standalone TV/movie releases as '.7z' archives containing Windows executables (.exe, .scr, codec packs, crypted binaries).\n"
-            "- If an archive contains executables (.exe, .scr, .bat) and no actual video stream, or has an unsupported extension like .7z masquerading as scene video, classify it as fake/malware."
-        )
-        data = await self._call_gemini(
-            prompt,
-            schema,
-            operation="evaluate_fake_or_malware",
-            item_title=release_title
-        )
-        return MalwareEvaluationResult(
-            is_fake_or_malware=bool(data.get("is_fake_or_malware", False)),
-            confidence=float(data.get("confidence", 0.0)),
-            reasoning=data.get("reasoning", ""),
-            model_name=self.name
-        )
+        raise AIProviderError("Gemini API failed: all candidate models exhausted or rate-limited")
 
     async def evaluate_stage1_triage(
         self,
@@ -554,7 +316,7 @@ class GeminiProvider(BaseAIProvider):
         schema = (
             "Return JSON adhering strictly to this schema:\n"
             "{\n"
-            '  "decision": "import" | "reject_keep_seeding" | "reject_delete" | "dismiss_pack",\n'
+            '  "decision": "import" | "reject_keep_in_client" | "reject_delete" | "dismiss_pack",\n'
             '  "matched_media_id": integer or null,\n'
             '  "files_to_import": [\n'
             '    {\n'
@@ -586,7 +348,7 @@ class GeminiProvider(BaseAIProvider):
             "3. Sample / Extra Filtering: Exclude any disposable sample clips or trailers from files_to_import, while keeping genuine full episodes/specials/movies.\n"
             "4. Choose ONE decision:\n"
             "   - 'import': The release matches the target media AND at least one valid video file is either missing on disk or a genuine quality upgrade. Populate matched_media_id and files_to_import (with season_number and episode_numbers for TV series).\n"
-            "   - 'reject_keep_seeding': The release is a quality downgrade/not an upgrade over existing disk files, OR is the wrong series/movie or unwanted language. (Preserves seeding while blocklisting in *arr).\n"
+            "   - 'reject_keep_in_client': The release is a quality downgrade/not an upgrade over existing disk files, OR is the wrong series/movie or unwanted language. (Preserves files in download client while blocklisting in *arr).\n"
             "   - 'reject_delete': ONLY when the files are virus/malware, 100% disposable samples/trailers with no real media, or corrupt/unusable files. (Deletes from client and blocklists).\n"
             "   - 'dismiss_pack': A multi-episode/season pack where needed episodes were already imported and remaining episodes are missing or already satisfied on disk."
         )
@@ -610,7 +372,7 @@ class GeminiProvider(BaseAIProvider):
                     )
                 )
         return Stage2DecisionResult(
-            decision=str(data.get("decision", "reject_keep_seeding")),
+            decision=str(data.get("decision", "reject_keep_in_client")),
             matched_media_id=int(data["matched_media_id"]) if data.get("matched_media_id") is not None else None,
             files_to_import=files,
             category_tag=str(data.get("category_tag", "ai_decision")),

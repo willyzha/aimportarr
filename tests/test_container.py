@@ -36,11 +36,6 @@ class ContainerSmokeTests(unittest.TestCase):
             from src.web import WebServerRunner, DASHBOARD_HTML
             from src.ai.base import (
                 BaseAIProvider,
-                MediaMatchResult,
-                EpisodeMatchResult,
-                SampleEvaluationResult,
-                LibraryMatchResult,
-                MalwareEvaluationResult,
                 Stage1TriageResult,
                 ApprovedFileItem,
                 Stage2DecisionResult,
@@ -174,7 +169,7 @@ class ContainerSmokeTests(unittest.TestCase):
             app="Radarr",
             title="Movie.2024",
             category="fake_or_malware",
-            status="blocked",
+            status="rejected",
             confidence=0.99,
             model="gemini-flash",
             reasoning="Executable disguised as movie",
@@ -183,7 +178,7 @@ class ContainerSmokeTests(unittest.TestCase):
 
         # AI token usage
         tracker.record_token_usage(
-            operation="verify_series_match",
+            operation="evaluate_import_decision",
             model="gemini-flash",
             prompt_tokens=450,
             thinking_tokens=300,
@@ -199,7 +194,7 @@ class ContainerSmokeTests(unittest.TestCase):
         self.assertEqual(summary["total_archives_extracted"], 1)
         self.assertEqual(summary["total_items_processed"], 2)
         self.assertEqual(summary["total_imported"], 1)
-        self.assertEqual(summary["total_blocked"], 1)
+        self.assertEqual(summary["total_rejected"], 1)
         self.assertEqual(summary["total_ai_calls"], 1)
         self.assertEqual(summary["total_prompt_tokens"], 450)
         self.assertEqual(summary["total_thinking_tokens"], 300)

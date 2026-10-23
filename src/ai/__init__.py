@@ -1,9 +1,6 @@
 import logging
 from .base import (
     BaseAIProvider,
-    MediaMatchResult,
-    SeriesMatchResult,
-    EpisodeMatchResult,
     Stage1TriageResult,
     ApprovedFileItem,
     Stage2DecisionResult,
@@ -16,8 +13,10 @@ from ..config import AIConfig
 
 logger = logging.getLogger("aimportarr.ai")
 
+
 def _is_valid_key(key: str) -> bool:
     return bool(key) and not key.startswith("YOUR_")
+
 
 def get_ai_provider(config: AIConfig) -> BaseAIProvider:
     """
@@ -75,11 +74,9 @@ def get_ai_provider(config: AIConfig) -> BaseAIProvider:
     else:
         raise ValueError(f"Unsupported AI provider: {config.provider}")
 
+
 __all__ = [
     "BaseAIProvider",
-    "MediaMatchResult",
-    "SeriesMatchResult",
-    "EpisodeMatchResult",
     "Stage1TriageResult",
     "ApprovedFileItem",
     "Stage2DecisionResult",

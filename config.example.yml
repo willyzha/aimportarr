@@ -17,7 +17,7 @@ general:
 
   # Low-confidence behavior:
   # false (Conservative default): leave low-confidence items (< min_confidence) in the queue for review
-  # true (Hands-Off): dismiss, blocklist, and trigger redownload while preserving seeding (removeFromClient=false)
+  # true (Hands-Off): dismiss, blocklist, and trigger redownload while keeping files in client (removeFromClient=false)
   reject_on_low_confidence: false
 
   # Logging level: DEBUG, INFO, WARNING, ERROR

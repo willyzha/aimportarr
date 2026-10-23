@@ -28,7 +28,6 @@ class MetricsTracker:
         self.total_imported: int = 0
         self.total_dry_run: int = 0
         self.total_rejected: int = 0
-        self.total_blocked: int = 0
         self.total_dismissed: int = 0
         self.total_archives_extracted: int = 0
 
@@ -70,7 +69,6 @@ class MetricsTracker:
             self.total_imported = summary["total_imported"]
             self.total_dry_run = summary["total_dry_run"]
             self.total_rejected = summary["total_rejected"]
-            self.total_blocked = summary["total_blocked"]
             self.total_dismissed = summary["total_dismissed"]
             self.total_ai_calls = summary["total_ai_calls"]
             self.total_prompt_tokens = summary["total_prompt_tokens"]
@@ -178,7 +176,7 @@ class MetricsTracker:
     ) -> None:
         """
         Record a processed queue item in SQLite and in-memory summary.
-        status: 'imported', 'dry_run', 'rejected', 'blocked', 'dismissed', or 'skipped'
+        status: 'imported', 'dry_run', 'rejected', 'dismissed', 'failed', or 'skipped'
         """
         with self._lock:
             st = status.lower()
@@ -189,8 +187,6 @@ class MetricsTracker:
                 self.total_dry_run += 1
             elif st == "rejected":
                 self.total_rejected += 1
-            elif st == "blocked":
-                self.total_blocked += 1
             elif st == "dismissed":
                 self.total_dismissed += 1
 
@@ -348,7 +344,6 @@ class MetricsTracker:
                 "total_imported": self.total_imported,
                 "total_dry_run": self.total_dry_run,
                 "total_rejected": self.total_rejected,
-                "total_blocked": self.total_blocked,
                 "total_dismissed": self.total_dismissed,
                 "total_archives_extracted": self.total_archives_extracted,
                 "total_ai_calls": self.total_ai_calls,
@@ -386,7 +381,6 @@ class MetricsTracker:
             self.total_imported = 0
             self.total_dry_run = 0
             self.total_rejected = 0
-            self.total_blocked = 0
             self.total_dismissed = 0
             self.total_archives_extracted = 0
             self.total_ai_calls = 0

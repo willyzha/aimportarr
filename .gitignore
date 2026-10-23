@@ -7,4 +7,8 @@ venv/
 config.yml
 config.yaml
 config/
+*.db
+*.db-wal
+*.db-shm
+*.log
 .DS_Store

@@ -232,7 +232,7 @@ async def main():
 
     mode_str = "DRY RUN (Simulation)" if config.general.dry_run else "LIVE (Auto-Import & Blocklist)"
     low_conf_str = (
-        "Hands-Off (Blocklist & Re-Search, Keep Seeding)"
+        "Hands-Off (Blocklist & Re-Search, Keep in Client)"
         if config.general.reject_on_low_confidence
         else "Conservative (Leave in Queue)"
     )

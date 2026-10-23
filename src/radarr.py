@@ -220,7 +220,7 @@ class RadarrClient:
         """
         Unified queue removal handler for Radarr:
         - Virus / Sample-only / Corrupt: remove_from_client=True, blocklist=True, skip_redownload=False
-        - Quality Downgrade / Wrong Media (Keep Seeding): remove_from_client=False, blocklist=True, skip_redownload=False
+        - Quality Downgrade / Wrong Media (Keep in Client): remove_from_client=False, blocklist=True, skip_redownload=False
         """
         if not queue_id:
             return False
@@ -248,7 +248,7 @@ class RadarrClient:
         action_desc = (
             "delete from client & blocklist"
             if remove_from_client
-            else ("dismiss (keep seeding), blocklist & re-search" if blocklist else "dismiss warning (keep seeding)")
+            else ("dismiss (keep in client), blocklist & re-search" if blocklist else "dismiss warning (keep in client)")
         )
 
         if is_dry:
@@ -326,94 +326,6 @@ class RadarrClient:
         except Exception:
             pass
         return files
-
-    async def _run_stage2_ai_or_mock_fallback(
-        self,
-        ai_provider: BaseAIProvider,
-        release_title: str,
-        folder_name: str,
-        all_messages: List[str],
-        movie_info: Optional[Dict[str, Any]],
-        library_candidates: Optional[List[Dict[str, Any]]],
-        manual_items: List[Dict[str, Any]],
-        existing_disk_files: List[Dict[str, Any]],
-        raw_disk_files: List[str],
-        initial_category: ErrorCategory,
-    ) -> Stage2DecisionResult:
-        eval_fn = getattr(ai_provider, "evaluate_import_decision", None)
-        is_real_or_async_mock = isinstance(ai_provider, BaseAIProvider) or (
-            eval_fn is not None and asyncio.iscoroutinefunction(eval_fn)
-        )
-        if is_real_or_async_mock:
-            return await ai_provider.evaluate_import_decision(
-                media_type="movie",
-                release_title=release_title,
-                folder_name=folder_name,
-                queue_messages=all_messages,
-                candidate_media={
-                    "id": movie_info.get("id"),
-                    "title": movie_info.get("title"),
-                    "year": movie_info.get("year"),
-                    "aliases": [a.get("title") for a in movie_info.get("alternateTitles", [])],
-                }
-                if movie_info
-                else None,
-                library_candidates=library_candidates,
-                manual_import_files=[
-                    {
-                        "path": m.get("path"),
-                        "name": m.get("name") or Path(m.get("path", "")).name,
-                        "quality": (m.get("quality") or {}).get("quality", {}).get("name"),
-                        "customFormatScore": m.get("customFormatScore"),
-                        "languages": [l.get("name") for l in m.get("languages", []) if isinstance(l, dict)],
-                        "rejections": [r.get("reason", "") for r in m.get("rejections", [])],
-                    }
-                    for m in manual_items
-                ],
-                existing_disk_files=existing_disk_files,
-                known_episodes=None,
-                raw_disk_files=raw_disk_files,
-            )
-
-        # Fallback for unit test mocks that only mock legacy methods
-        matched_id = movie_info.get("id") if movie_info else None
-        candidate_title = movie_info.get("title", "") if movie_info else ""
-        model_name = "MockAI"
-        confidence = 1.0
-        reasoning = "Evaluated via legacy mock"
-
-        if initial_category == ErrorCategory.ID_MATCH and hasattr(ai_provider, "verify_movie_match"):
-            v_res = await ai_provider.verify_movie_match(
-                release_title=release_title,
-                folder_name=folder_name,
-                candidate_movie_title=candidate_title,
-                alternate_titles=[],
-                year=movie_info.get("year") if movie_info else None,
-            )
-            model_name = getattr(v_res, "model_name", None) or model_name
-            confidence = float(getattr(v_res, "confidence", 1.0))
-            reasoning = str(getattr(v_res, "reasoning", ""))
-            if not getattr(v_res, "is_match", False):
-                return Stage2DecisionResult(
-                    decision="reject_keep_seeding",
-                    matched_media_id=matched_id,
-                    files_to_import=[],
-                    category_tag="id_match",
-                    confidence=confidence,
-                    reasoning=reasoning,
-                    model_name=model_name,
-                )
-
-        approved = [ApprovedFileItem(path=m.get("path", "")) for m in manual_items if m.get("path")]
-        return Stage2DecisionResult(
-            decision="import" if approved else "reject_keep_seeding",
-            matched_media_id=matched_id,
-            files_to_import=approved,
-            category_tag="id_match" if approved else "rejected",
-            confidence=confidence,
-            reasoning=reasoning,
-            model_name=model_name,
-        )
 
     def is_item_eligible(self, item: Dict[str, Any]) -> tuple[bool, str]:
         """
@@ -650,7 +562,7 @@ class RadarrClient:
                             confidence=triage.confidence,
                             model=model_label,
                             reasoning=triage.reasoning,
-                            details="Low-confidence suspicious item; dismissed & blocklisted (still seeding)",
+                            details="Low-confidence suspicious item; dismissed & blocklisted (kept in client)",
                             item_keys=item_keys,
                         )
                         return await self.resolve_queue_item(
@@ -817,7 +729,7 @@ class RadarrClient:
                     confidence=1.0,
                     model="Radarr (Quality Rule)",
                     reasoning=f"Rejected by Radarr quality rules: {reason_str}",
-                    details="Dismissed & blocklisted (still seeding)",
+                    details="Dismissed & blocklisted (kept in client)",
                     item_keys=item_keys,
                 )
                 await self.resolve_queue_item(
@@ -889,17 +801,34 @@ class RadarrClient:
             ]
 
             logger.info(f"  Running Stage 2 AI evaluation for '{title}'...")
-            stage2 = await self._run_stage2_ai_or_mock_fallback(
-                ai_provider=ai_provider,
+            stage2 = await ai_provider.evaluate_import_decision(
+                media_type="movie",
                 release_title=title,
                 folder_name=folder_name,
-                all_messages=all_messages,
-                movie_info=movie_info,
+                queue_messages=all_messages,
+                candidate_media={
+                    "id": movie_info.get("id"),
+                    "title": movie_info.get("title"),
+                    "year": movie_info.get("year"),
+                    "aliases": [a.get("title") for a in movie_info.get("alternateTitles", [])],
+                }
+                if movie_info
+                else None,
                 library_candidates=library_candidates,
-                manual_items=eligible_manual_items,
+                manual_import_files=[
+                    {
+                        "path": m.get("path"),
+                        "name": m.get("name") or Path(m.get("path", "")).name,
+                        "quality": (m.get("quality") or {}).get("quality", {}).get("name"),
+                        "customFormatScore": m.get("customFormatScore"),
+                        "languages": [l.get("name") for l in m.get("languages", []) if isinstance(l, dict)],
+                        "rejections": [r.get("reason", "") for r in m.get("rejections", [])],
+                    }
+                    for m in eligible_manual_items
+                ],
                 existing_disk_files=existing_disk_files,
+                known_episodes=None,
                 raw_disk_files=raw_disk_files,
-                initial_category=initial_category,
             )
             model_label = stage2.model_name or "AI"
 
@@ -916,7 +845,7 @@ class RadarrClient:
                         confidence=stage2.confidence,
                         model=model_label,
                         reasoning=stage2.reasoning,
-                        details="Low confidence; dismissed & blocklisted (still seeding)",
+                        details="Low confidence; dismissed & blocklisted (kept in client)",
                         item_keys=item_keys,
                     )
                     await self.resolve_queue_item(
@@ -961,7 +890,7 @@ class RadarrClient:
                         confidence=stage2.confidence,
                         model=model_label,
                         reasoning=stage2.reasoning or "Could not resolve movie ID in Radarr library",
-                        details="Dismissed & blocklisted (still seeding)",
+                        details="Dismissed & blocklisted (kept in client)",
                         item_keys=item_keys,
                     )
                     await self.resolve_queue_item(
@@ -1050,7 +979,7 @@ class RadarrClient:
                 confidence=stage2.confidence,
                 model=model_label,
                 reasoning=stage2.reasoning,
-                details="Dismissed, blocklisted & re-searched (still seeding)",
+                details="Dismissed, blocklisted & re-searched (kept in client)",
                 item_keys=item_keys,
             )
             await self.resolve_queue_item(
@@ -1069,7 +998,7 @@ class RadarrClient:
                 try:
                     shutil.rmtree(staging_dir_to_clean, ignore_errors=True)
                     logger.info(
-                        f"  🧹 Cleaned up extracted staging folder '{staging_dir_to_clean}'. Seeding archive preserved."
+                        f"  🧹 Cleaned up extracted staging folder '{staging_dir_to_clean}'. Original archive preserved."
                     )
                 except Exception as ce:
                     logger.debug(f"Failed to clean up staging folder '{staging_dir_to_clean}': {ce}")

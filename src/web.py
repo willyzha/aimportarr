@@ -882,7 +882,7 @@ DASHBOARD_HTML = """<!DOCTYPE html>
           <div class="metric-icon" style="background: var(--danger-bg); color: var(--danger);">🛡</div>
         </div>
         <div class="metric-value" style="color: #f87171;" id="stat-blocked">0</div>
-        <div class="metric-sub" id="stat-blocked-sub">0 Rejected (Deleted) | 0 Dismissed (Seeding)</div>
+        <div class="metric-sub" id="stat-blocked-sub">0 Rejected (Deleted) | 0 Dismissed (Kept in Client)</div>
       </div>
 
       <!-- Total AI Tokens -->
@@ -1051,7 +1051,7 @@ DASHBOARD_HTML = """<!DOCTYPE html>
           <div class="form-row" style="margin-bottom: 0.85rem;">
             <div>
               <div class="form-label" style="margin-bottom: 0;">Hands-Off Low Confidence Rejection</div>
-              <div class="form-hint">Off (Conservative): leave low-confidence items in queue. On (Hands-Off): blocklist &amp; re-search while keeping seeding.</div>
+              <div class="form-hint">Off (Conservative): leave low-confidence items in queue. On (Hands-Off): blocklist &amp; re-search while keeping files in client.</div>
             </div>
             <label class="toggle-switch">
               <input type="checkbox" id="cfg-reject-low-conf">
@@ -1192,7 +1192,7 @@ DASHBOARD_HTML = """<!DOCTYPE html>
           <div class="form-row">
             <div>
               <div class="form-label" style="margin-bottom: 0;">Enable Sandbox Archive Extraction</div>
-              <div class="form-hint">Inspects and unpacks .rar/.zip/.7z archives while keeping seeding files intact</div>
+              <div class="form-hint">Inspects and unpacks .rar/.zip/.7z archives while keeping original archives intact</div>
             </div>
             <label class="toggle-switch">
               <input type="checkbox" id="cfg-extract-enabled">
@@ -1235,7 +1235,7 @@ DASHBOARD_HTML = """<!DOCTYPE html>
 
   <!-- Footer -->
   <footer>
-    AImportarr &bull; In-Memory Metrics &bull; Lightweight Monitoring Server
+    AImportarr &bull; AI-Powered *arr Queue Companion
   </footer>
 
   <script>
@@ -1530,10 +1530,10 @@ DASHBOARD_HTML = """<!DOCTYPE html>
             : 'Scanned items (FIFO idle)';
           document.getElementById('stat-imported').innerText = formatNumber(summary.total_imported);
           document.getElementById('stat-dry-run').innerText = `${formatNumber(summary.total_dry_run)} in Dry Run`;
-          const rejCount = (summary.total_rejected || 0) + (summary.total_blocked || 0);
+          const rejCount = summary.total_rejected || 0;
           const disCount = summary.total_dismissed || 0;
           document.getElementById('stat-blocked').innerText = formatNumber(rejCount + disCount);
-          document.getElementById('stat-blocked-sub').innerText = `${formatNumber(rejCount)} Rejected (Deleted) | ${formatNumber(disCount)} Dismissed (Seeding)`;
+          document.getElementById('stat-blocked-sub').innerText = `${formatNumber(rejCount)} Rejected (Deleted) | ${formatNumber(disCount)} Dismissed (Kept in Client)`;
           document.getElementById('stat-tokens').innerText = formatNumber(summary.total_tokens);
           const pTok = formatNumber(summary.total_prompt_tokens || 0);
           const thTok = formatNumber(summary.total_thinking_tokens || 0);

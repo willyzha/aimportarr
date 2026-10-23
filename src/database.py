@@ -130,7 +130,7 @@ class DatabaseManager:
                 conn.execute("""
                     UPDATE processed_items
                     SET status = 'dismissed'
-                    WHERE status = 'rejected' AND (details LIKE '%seeding%' OR category = 'quality_downgrade');
+                    WHERE status = 'rejected' AND (details LIKE '%kept in client%' OR category = 'quality_downgrade');
                 """)
                 conn.execute("""
                     UPDATE processed_items
@@ -140,7 +140,7 @@ class DatabaseManager:
                 conn.execute("""
                     UPDATE processed_items
                     SET retry_requested = 0
-                    WHERE status IN ('imported', 'rejected', 'blocked', 'dismissed') AND retry_requested = 1;
+                    WHERE status IN ('imported', 'rejected', 'dismissed') AND retry_requested = 1;
                 """)
 
             logger.info(f"SQLite database initialized at '{self.db_path}' (Retention: {self.retention_days} days)")
@@ -443,7 +443,6 @@ class DatabaseManager:
                 "total_imported": status_map.get("imported", 0),
                 "total_dry_run": status_map.get("dry_run", 0),
                 "total_rejected": status_map.get("rejected", 0),
-                "total_blocked": status_map.get("blocked", 0),
                 "total_dismissed": status_map.get("dismissed", 0),
                 "total_ai_calls": total_ai_calls,
                 "total_prompt_tokens": prompt_tokens,

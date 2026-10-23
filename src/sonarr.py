@@ -235,8 +235,8 @@ class SonarrClient:
         """
         Unified queue removal handler for Sonarr:
         - Virus / Sample-only / Corrupt: remove_from_client=True, blocklist=True, skip_redownload=False
-        - Quality Downgrade / Wrong Media (Keep Seeding): remove_from_client=False, blocklist=True, skip_redownload=False
-        - Season Pack Already Satisfied (Keep Seeding): remove_from_client=False, blocklist=False, skip_redownload=True
+        - Quality Downgrade / Wrong Media (Keep in Client): remove_from_client=False, blocklist=True, skip_redownload=False
+        - Season Pack Already Satisfied (Keep in Client): remove_from_client=False, blocklist=False, skip_redownload=True
         """
         if not queue_id:
             return False
@@ -264,7 +264,7 @@ class SonarrClient:
         action_desc = (
             "delete from client & blocklist"
             if remove_from_client
-            else ("dismiss (keep seeding), blocklist & re-search" if blocklist else "dismiss warning (keep seeding)")
+            else ("dismiss (keep in client), blocklist & re-search" if blocklist else "dismiss warning (keep in client)")
         )
 
         if is_dry:
@@ -360,147 +360,6 @@ class SonarrClient:
         except Exception:
             pass
         return files
-
-    async def _run_stage2_ai_or_mock_fallback(
-        self,
-        ai_provider: BaseAIProvider,
-        release_title: str,
-        folder_name: str,
-        all_messages: List[str],
-        series_info: Optional[Dict[str, Any]],
-        library_candidates: Optional[List[Dict[str, Any]]],
-        manual_items: List[Dict[str, Any]],
-        existing_disk_files: List[Dict[str, Any]],
-        all_episodes: List[Dict[str, Any]],
-        raw_disk_files: List[str],
-        initial_category: ErrorCategory,
-    ) -> Stage2DecisionResult:
-        """
-        Invoke Stage 2 unified AI evaluation (`evaluate_import_decision`).
-        If `ai_provider` is a test mock that only configured legacy methods (`parse_episode`, `verify_series_match`),
-        falls back gracefully to those mocks.
-        """
-        eval_fn = getattr(ai_provider, "evaluate_import_decision", None)
-        is_real_or_async_mock = isinstance(ai_provider, BaseAIProvider) or (
-            eval_fn is not None and asyncio.iscoroutinefunction(eval_fn)
-        )
-        if is_real_or_async_mock:
-            return await ai_provider.evaluate_import_decision(
-                media_type="series",
-                release_title=release_title,
-                folder_name=folder_name,
-                queue_messages=all_messages,
-                candidate_media={
-                    "id": series_info.get("id"),
-                    "title": series_info.get("title"),
-                    "year": series_info.get("year"),
-                    "aliases": [a.get("title") for a in series_info.get("alternateTitles", [])],
-                }
-                if series_info
-                else None,
-                library_candidates=library_candidates,
-                manual_import_files=[
-                    {
-                        "path": m.get("path"),
-                        "name": m.get("name") or Path(m.get("path", "")).name,
-                        "quality": (m.get("quality") or {}).get("quality", {}).get("name"),
-                        "customFormatScore": m.get("customFormatScore"),
-                        "languages": [l.get("name") for l in m.get("languages", []) if isinstance(l, dict)],
-                        "episodes": [
-                            {"id": e.get("id"), "season": e.get("seasonNumber"), "episode": e.get("episodeNumber")}
-                            for e in m.get("episodes", [])
-                        ],
-                        "rejections": [r.get("reason", "") for r in m.get("rejections", [])],
-                    }
-                    for m in manual_items
-                ],
-                existing_disk_files=existing_disk_files,
-                known_episodes=[
-                    {
-                        "id": e.get("id"),
-                        "season": e.get("seasonNumber"),
-                        "episode": e.get("episodeNumber"),
-                        "title": e.get("title"),
-                        "hasFile": e.get("hasFile", False),
-                    }
-                    for e in all_episodes[:100]
-                ],
-                raw_disk_files=raw_disk_files,
-            )
-
-        # Fallback for unit test mocks that only mock legacy methods
-        matched_id = series_info.get("id") if series_info else None
-        candidate_title = series_info.get("title", "") if series_info else ""
-        model_name = "MockAI"
-        confidence = 1.0
-        reasoning = "Evaluated via legacy mock"
-
-        if initial_category == ErrorCategory.ID_MATCH and hasattr(ai_provider, "verify_series_match"):
-            v_res = await ai_provider.verify_series_match(
-                release_title=release_title,
-                folder_name=folder_name,
-                candidate_series_title=candidate_title,
-                alternate_titles=[],
-                year=series_info.get("year") if series_info else None,
-            )
-            model_name = getattr(v_res, "model_name", None) or model_name
-            confidence = float(getattr(v_res, "confidence", 1.0))
-            reasoning = str(getattr(v_res, "reasoning", ""))
-            if not getattr(v_res, "is_match", False):
-                return Stage2DecisionResult(
-                    decision="reject_keep_seeding",
-                    matched_media_id=matched_id,
-                    files_to_import=[],
-                    category_tag="id_match",
-                    confidence=confidence,
-                    reasoning=reasoning,
-                    model_name=model_name,
-                )
-
-        approved: List[ApprovedFileItem] = []
-        known_seasons = sorted(list(set(e.get("seasonNumber", 1) for e in all_episodes)))
-        for m in manual_items:
-            f_path = m.get("path", "")
-            f_name = m.get("name") or Path(f_path).name
-            curr_eps = m.get("episodes", [])
-            if curr_eps:
-                approved.append(
-                    ApprovedFileItem(
-                        path=f_path,
-                        season_number=curr_eps[0].get("seasonNumber", 1),
-                        episode_numbers=[e.get("episodeNumber") for e in curr_eps if e.get("episodeNumber") is not None],
-                    )
-                )
-            elif hasattr(ai_provider, "parse_episode"):
-                ep_res = await ai_provider.parse_episode(
-                    file_name=f_name,
-                    folder_name=folder_name,
-                    series_title=candidate_title,
-                    known_seasons=known_seasons,
-                    known_episodes_in_season=all_episodes,
-                )
-                model_name = getattr(ep_res, "model_name", None) or model_name
-                confidence = float(getattr(ep_res, "confidence", 0.0))
-                reasoning = str(getattr(ep_res, "reasoning", ""))
-                ep_nums = getattr(ep_res, "episode_numbers", []) or []
-                if ep_nums:
-                    approved.append(
-                        ApprovedFileItem(
-                            path=f_path,
-                            season_number=getattr(ep_res, "season_number", 1),
-                            episode_numbers=list(ep_nums),
-                        )
-                    )
-
-        return Stage2DecisionResult(
-            decision="import" if approved else "reject_keep_seeding",
-            matched_media_id=matched_id,
-            files_to_import=approved,
-            category_tag="episode_parsed" if approved else "rejected",
-            confidence=confidence,
-            reasoning=reasoning,
-            model_name=model_name,
-        )
 
     def is_item_eligible(self, item: Dict[str, Any]) -> tuple[bool, str]:
         """
@@ -737,7 +596,7 @@ class SonarrClient:
                             confidence=triage.confidence,
                             model=model_label,
                             reasoning=triage.reasoning,
-                            details="Low-confidence suspicious item; dismissed & blocklisted (still seeding)",
+                            details="Low-confidence suspicious item; dismissed & blocklisted (kept in client)",
                             item_keys=item_keys,
                         )
                         return await self.resolve_queue_item(
@@ -791,7 +650,7 @@ class SonarrClient:
                         status="dry_run" if is_dry_run else "dismissed",
                         confidence=1.0,
                         model="Sonarr (Season Pack)",
-                        reasoning="All needed episodes accounted for; queue warning dismissed while keeping seeding.",
+                        reasoning="All needed episodes accounted for; queue warning dismissed while keeping files in client.",
                         details="Dismissed season pack warning",
                         item_keys=item_keys,
                     )
@@ -954,7 +813,7 @@ class SonarrClient:
                     confidence=1.0,
                     model="Sonarr (Quality Rule)",
                     reasoning=f"Rejected by Sonarr quality rules: {reason_str}",
-                    details="Dismissed & blocklisted (still seeding)",
+                    details="Dismissed & blocklisted (kept in client)",
                     item_keys=item_keys,
                 )
                 await self.resolve_queue_item(
@@ -1036,18 +895,47 @@ class SonarrClient:
             ]
 
             logger.info(f"  Running Stage 2 AI evaluation for '{title}'...")
-            stage2 = await self._run_stage2_ai_or_mock_fallback(
-                ai_provider=ai_provider,
+            stage2 = await ai_provider.evaluate_import_decision(
+                media_type="series",
                 release_title=title,
                 folder_name=folder_name,
-                all_messages=all_messages,
-                series_info=series_info,
+                queue_messages=all_messages,
+                candidate_media={
+                    "id": series_info.get("id"),
+                    "title": series_info.get("title"),
+                    "year": series_info.get("year"),
+                    "aliases": [a.get("title") for a in series_info.get("alternateTitles", [])],
+                }
+                if series_info
+                else None,
                 library_candidates=library_candidates,
-                manual_items=eligible_manual_items,
+                manual_import_files=[
+                    {
+                        "path": m.get("path"),
+                        "name": m.get("name") or Path(m.get("path", "")).name,
+                        "quality": (m.get("quality") or {}).get("quality", {}).get("name"),
+                        "customFormatScore": m.get("customFormatScore"),
+                        "languages": [l.get("name") for l in m.get("languages", []) if isinstance(l, dict)],
+                        "episodes": [
+                            {"id": e.get("id"), "season": e.get("seasonNumber"), "episode": e.get("episodeNumber")}
+                            for e in m.get("episodes", [])
+                        ],
+                        "rejections": [r.get("reason", "") for r in m.get("rejections", [])],
+                    }
+                    for m in eligible_manual_items
+                ],
                 existing_disk_files=existing_disk_files,
-                all_episodes=all_episodes,
+                known_episodes=[
+                    {
+                        "id": e.get("id"),
+                        "season": e.get("seasonNumber"),
+                        "episode": e.get("episodeNumber"),
+                        "title": e.get("title"),
+                        "hasFile": e.get("hasFile", False),
+                    }
+                    for e in all_episodes[:100]
+                ],
                 raw_disk_files=raw_disk_files,
-                initial_category=initial_category,
             )
             model_label = stage2.model_name or "AI"
 
@@ -1065,7 +953,7 @@ class SonarrClient:
                         confidence=stage2.confidence,
                         model=model_label,
                         reasoning=stage2.reasoning,
-                        details="Low confidence; dismissed & blocklisted (still seeding)",
+                        details="Low confidence; dismissed & blocklisted (kept in client)",
                         item_keys=item_keys,
                     )
                     await self.resolve_queue_item(
@@ -1112,7 +1000,7 @@ class SonarrClient:
                         confidence=stage2.confidence,
                         model=model_label,
                         reasoning=stage2.reasoning or "Could not resolve series ID in Sonarr library",
-                        details="Dismissed & blocklisted (still seeding)",
+                        details="Dismissed & blocklisted (kept in client)",
                         item_keys=item_keys,
                     )
                     await self.resolve_queue_item(
@@ -1228,7 +1116,7 @@ class SonarrClient:
                     confidence=stage2.confidence,
                     model=model_label,
                     reasoning=stage2.reasoning,
-                    details="Dismissed season pack warning (still seeding)",
+                    details="Dismissed season pack warning (kept in client)",
                     item_keys=item_keys,
                 )
                 await self.dismiss_queue_warning(
@@ -1239,7 +1127,7 @@ class SonarrClient:
                 )
                 return False
 
-            # Default Stage 2 rejection: 'reject_keep_seeding' (quality downgrade or wrong media)
+            # Default Stage 2 rejection: 'reject_keep_in_client' (quality downgrade or wrong media)
             cat_tag = stage2.category_tag or "dismissed"
             metrics.record_processed_item(
                 app="Sonarr",
@@ -1249,7 +1137,7 @@ class SonarrClient:
                 confidence=stage2.confidence,
                 model=model_label,
                 reasoning=stage2.reasoning,
-                details="Dismissed, blocklisted & re-searched (still seeding)",
+                details="Dismissed, blocklisted & re-searched (kept in client)",
                 item_keys=item_keys,
             )
             await self.resolve_queue_item(
@@ -1268,7 +1156,7 @@ class SonarrClient:
                 try:
                     shutil.rmtree(staging_dir_to_clean, ignore_errors=True)
                     logger.info(
-                        f"  🧹 Cleaned up extracted staging folder '{staging_dir_to_clean}'. Seeding archive preserved."
+                        f"  🧹 Cleaned up extracted staging folder '{staging_dir_to_clean}'. Original archive preserved."
                     )
                 except Exception as ce:
                     logger.debug(f"Failed to clean up staging folder '{staging_dir_to_clean}': {ce}")

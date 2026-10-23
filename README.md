@@ -22,7 +22,7 @@
 
 - **Two-Stage Hybrid Pipeline**: Lets Sonarr/Radarr handle normal downloads first, uses zero-token fast paths whenever Sonarr/Radarr can map unpacked files or enforce quality rules directly, and invokes AI (**Google Gemini** or local **Ollama**) only when ambiguity remains.
 - **Secure Sandbox Extraction**: Inspects `.rar`, `.zip`, `.7z`, and `.tar` headers in memory before extracting. Clean video archives are unpacked into a temporary `<stem>_extracted` staging folder, imported, and automatically cleaned up so disk space is never duplicated.
-- **Seeding-Safe Rejection Policy**:
+- **Safe Rejection Policy**:
   - **Imported**: Valid upgrades and unmapped episodes/movies are matched and imported automatically.
   - **Dismissed (Files Preserved)**: Quality/Custom Format downgrades, wrong media matches, and satisfied season packs are removed from the *arr queue (and blocklisted + re-searched when appropriate) **without deleting files from your download client**.
   - **Rejected (Deleted from Client)**: Only confirmed **virus/malware, sample-only, or corrupt** releases are deleted from the download client and blocklisted.
@@ -79,7 +79,7 @@ general:
   check_interval_seconds: 30        # Lightweight local queue sync interval (0 AI tokens)
   ai_cooldown_seconds: 4.0          # Minimum seconds between AI calls in the FIFO worker
   min_confidence: 0.85              # Minimum AI confidence (0.0 to 1.0)
-  reject_on_low_confidence: false   # false = leave low-confidence items in queue; true = blocklist & keep seeding
+  reject_on_low_confidence: false   # false = leave low-confidence items in queue; true = blocklist & keep in client
   log_level: "INFO"
 
 ai:
@@ -150,7 +150,7 @@ All settings can be configured in `/config/config.yml`, via the **⚙️ Setting
 | `general.check_interval_seconds` | `CHECK_INTERVAL_SECONDS` | `30` | Lightweight local *arr queue check interval in seconds (0 AI tokens). Webhooks & Retry trigger immediately. |
 | `general.ai_cooldown_seconds` | `AI_COOLDOWN_SECONDS` | `4.0` | Minimum cooldown in seconds between AI model calls in the FIFO worker to prevent rate-limit bursts. |
 | `general.min_confidence` | `MIN_CONFIDENCE` | `0.85` | Minimum AI confidence required (`0.0`–`1.0`) to import or delete files. |
-| `general.reject_on_low_confidence` | `REJECT_ON_LOW_CONFIDENCE` | `false` | `false` leaves low-confidence items in queue (`In Queue`); `true` dismisses & blocklists while keeping seeding. |
+| `general.reject_on_low_confidence` | `REJECT_ON_LOW_CONFIDENCE` | `false` | `false` leaves low-confidence items in queue (`In Queue`); `true` dismisses & blocklists while keeping files in client. |
 | `ai.provider` | `AI_PROVIDER` | `gemini` | Primary AI backend (`gemini` or `ollama`). |
 | `ai.fallback_enabled` | `AI_FALLBACK_ENABLED` | `true` | Automatically fail over to secondary provider on rate limits or errors. |
 | `ai.gemini.api_key` | `GEMINI_API_KEY` | `""` | Google Gemini API key. |
