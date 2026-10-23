@@ -113,6 +113,34 @@ When an `In Queue` item is retried and re-evaluated on the next scan cycle, its 
 
 ---
 
+## Configuration & Environment Variables
+
+All settings can be configured in `/config/config.yml` (see [`config.example.yml`](../config.example.yml)), via the **⚙️ Settings** Web UI tab (hot-reloaded immediately), or overridden with environment variables:
+
+| Setting | Env Variable | Default | Description |
+| :--- | :--- | :--- | :--- |
+| `general.dry_run` | `DRY_RUN` | `false` | Simulate all decisions without modifying *arr or deleting files. |
+| `general.check_interval_seconds` | `CHECK_INTERVAL_SECONDS` | `30` | Lightweight local *arr queue check interval in seconds (0 AI tokens). Webhooks & Retry trigger immediately. |
+| `general.ai_cooldown_seconds` | `AI_COOLDOWN_SECONDS` | `4.0` | Minimum cooldown in seconds between AI model calls in the FIFO worker to prevent rate-limit bursts. |
+| `general.min_confidence` | `MIN_CONFIDENCE` | `0.85` | Minimum AI confidence required (`0.0`–`1.0`) to import or delete files. |
+| `general.reject_on_low_confidence` | `REJECT_ON_LOW_CONFIDENCE` | `false` | `false` leaves low-confidence items in queue (`In Queue`); `true` dismisses & blocklists while keeping files in client. |
+| `general.log_level` | `LOG_LEVEL` | `INFO` | Logging verbosity (`DEBUG`, `INFO`, `WARNING`, `ERROR`). |
+| `ai.provider` | `AI_PROVIDER` | `gemini` | Primary AI backend (`gemini` or `ollama`). |
+| `ai.fallback_enabled` | `AI_FALLBACK_ENABLED` | `true` | Automatically fail over to secondary provider on rate limits or errors. |
+| `ai.gemini.api_key` | `GEMINI_API_KEY` | `""` | Google Gemini API key. |
+| `ai.gemini.model` | `GEMINI_MODEL` | `auto` | Gemini model name (`auto` resolves fastest active Flash model). |
+| `ai.ollama.base_url` | `OLLAMA_BASE_URL` | `http://localhost:11434` | Ollama server URL. |
+| `ai.ollama.model` | `OLLAMA_MODEL` | `qwen2.5:1.5b` | Ollama model tag. |
+| `sonarr.enabled` / `url` / `api_key` | `SONARR_ENABLED`, `SONARR_URL`, `SONARR_API_KEY` | — | Sonarr connection settings. |
+| `radarr.enabled` / `url` / `api_key` | `RADARR_ENABLED`, `RADARR_URL`, `RADARR_API_KEY` | — | Radarr connection settings. |
+| `extraction.enabled` | `EXTRACTION_ENABLED` | `true` | Enable in-memory archive inspection & sandbox extraction. |
+| `extraction.delete_after_import` | `EXTRACTION_DELETE_AFTER_IMPORT` | `true` | Clean up extracted staging folder once imported. |
+| `extraction.staging_suffix` | `EXTRACTION_STAGING_SUFFIX` | `_extracted` | Suffix for temporary sandbox extraction directories. |
+| `web.enabled` / `host` / `port` | `WEB_ENABLED`, `WEB_HOST`, `WEB_PORT` | `true` (`0.0.0.0:9890`) | Embedded Web UI and REST API server settings. |
+| `database.path` / `retention_days` | `DATABASE_PATH`, `DATABASE_RETENTION_DAYS` | `/config/aimportarr.db` (`30`d) | SQLite database path and history retention period. |
+
+---
+
 ## Component Map
 
 - [`src/main.py`](../src/main.py): Async polling loop, hot-reload callback handler, and startup initialization.

@@ -28,15 +28,11 @@
   - **Rejected (Deleted from Client)**: Only confirmed **virus/malware, sample-only, or corrupt** releases are deleted from the download client and blocklisted.
 - **Built-in Web UI & Live Settings (`:9890`)**: View processed history, inspect AI reasoning, retry items still in the queue, track AI token usage, and edit/hot-reload your configuration directly from the browser.
 
-> 📖 **Deep Dive**: See [**Architecture & Two-Stage AI Design (`docs/ARCHITECTURE.md`)**](docs/ARCHITECTURE.md) for the complete 4-step pipeline flowchart, decision rules, and component breakdown.
-
 ---
 
-## 🚀 Quick Setup
+## 🚀 Quick Setup (Docker Compose)
 
-### 1. Deploy with Docker Compose (Recommended)
-
-Create a `docker-compose.yml`:
+Create a `docker-compose.yml` and start the container (`docker compose up -d`):
 
 ```yaml
 services:
@@ -56,115 +52,13 @@ services:
       - TZ=UTC
 ```
 
-Start the container:
-
-```bash
-docker compose up -d
-```
-
-### 2. Configure via Web UI or `config.yml`
-
-Open **`http://<your-ip>:9890`** and click the **⚙️ Settings** tab to configure your API keys, connections, and policies in the browser (changes save to `/config/config.yml` and hot-reload immediately).
-
-Alternatively, create `config/config.yml` from [`config.example.yml`](config.example.yml):
-
-```bash
-mkdir -p config
-curl -sSL https://raw.githubusercontent.com/willyzha/aimportarr/main/config.example.yml -o config/config.yml
-```
-
-```yaml
-general:
-  dry_run: false                    # true = simulation mode, false = live execution
-  check_interval_seconds: 30        # Lightweight local queue sync interval (0 AI tokens)
-  ai_cooldown_seconds: 4.0          # Minimum seconds between AI calls in the FIFO worker
-  min_confidence: 0.85              # Minimum AI confidence (0.0 to 1.0)
-  reject_on_low_confidence: false   # false = leave low-confidence items in queue; true = blocklist & keep in client
-  log_level: "INFO"
-
-ai:
-  provider: "gemini"                # Primary: "gemini" or "ollama"
-  fallback_enabled: true            # Auto-fallback if primary provider hits rate limits or errors
-  gemini:
-    api_key: "YOUR_GEMINI_API_KEY"  # Free API key at https://aistudio.google.com/
-    model: "auto"                   # "auto" selects the fastest active Flash model
-  ollama:
-    base_url: "http://localhost:11434"
-    model: "qwen2.5:1.5b"
-
-sonarr:
-  enabled: true
-  url: "http://localhost:8989"
-  api_key: "YOUR_SONARR_API_KEY"
-
-radarr:
-  enabled: false
-  url: "http://localhost:7878"
-  api_key: "YOUR_RADARR_API_KEY"
-
-extraction:
-  enabled: true
-  delete_after_import: true
-  staging_suffix: "_extracted"
-```
+Then open **`http://<your-ip>:9890`** and go to the **⚙️ Settings** tab to configure your Sonarr, Radarr, and AI settings in the browser (changes save to `/config/config.yml` and hot-reload immediately).
 
 ---
 
-## 📦 Alternative Deployments
+## 📖 Documentation & Configuration Reference
 
-### Docker CLI (`docker run`)
-
-```bash
-docker run -d \
-  --name aimportarr \
-  --restart unless-stopped \
-  -p 9890:9890 \
-  -v /path/to/config:/config \
-  -v /path/to/downloads:/data/downloads \
-  -e PUID=1000 \
-  -e PGID=1000 \
-  -e TZ=UTC \
-  ghcr.io/willyzha/aimportarr:beta
-```
-
-### Unraid
-
-1. Open the Unraid WebGUI and go to the **Docker** tab → **Add Container**.
-2. Configure:
-   - **Name**: `aimportarr`
-   - **Repository**: `ghcr.io/willyzha/aimportarr:beta`
-   - **Port**: `9890` → `9890`
-   - **Path `/config`**: `/mnt/user/appdata/aimportarr`
-   - **Path `/data/downloads`**: `/mnt/user/Media/downloads` *(match your Sonarr/Radarr download container path, or map differences under **Path Mappings** in Settings)*
-3. Click **Apply**, then open `http://<unraid-ip>:9890` → **⚙️ Settings** to enter your Sonarr, Radarr, and AI credentials.
-
----
-
-## ⚙️ Configuration & Environment Variables
-
-All settings can be configured in `/config/config.yml`, via the **⚙️ Settings** Web UI tab, or overridden with environment variables:
-
-| Setting | Env Variable | Default | Description |
-| :--- | :--- | :--- | :--- |
-| `general.dry_run` | `DRY_RUN` | `false` | Simulate all decisions without modifying *arr or deleting files. |
-| `general.check_interval_seconds` | `CHECK_INTERVAL_SECONDS` | `30` | Lightweight local *arr queue check interval in seconds (0 AI tokens). Webhooks & Retry trigger immediately. |
-| `general.ai_cooldown_seconds` | `AI_COOLDOWN_SECONDS` | `4.0` | Minimum cooldown in seconds between AI model calls in the FIFO worker to prevent rate-limit bursts. |
-| `general.min_confidence` | `MIN_CONFIDENCE` | `0.85` | Minimum AI confidence required (`0.0`–`1.0`) to import or delete files. |
-| `general.reject_on_low_confidence` | `REJECT_ON_LOW_CONFIDENCE` | `false` | `false` leaves low-confidence items in queue (`In Queue`); `true` dismisses & blocklists while keeping files in client. |
-| `ai.provider` | `AI_PROVIDER` | `gemini` | Primary AI backend (`gemini` or `ollama`). |
-| `ai.fallback_enabled` | `AI_FALLBACK_ENABLED` | `true` | Automatically fail over to secondary provider on rate limits or errors. |
-| `ai.gemini.api_key` | `GEMINI_API_KEY` | `""` | Google Gemini API key. |
-| `ai.gemini.model` | `GEMINI_MODEL` | `auto` | Gemini model name (`auto` resolves fastest active Flash model). |
-| `ai.ollama.base_url` | `OLLAMA_BASE_URL` | `http://localhost:11434` | Ollama server URL. |
-| `ai.ollama.model` | `OLLAMA_MODEL` | `qwen2.5:1.5b` | Ollama model tag. |
-| `sonarr.enabled` / `url` / `api_key` | `SONARR_ENABLED`, `SONARR_URL`, `SONARR_API_KEY` | — | Sonarr connection settings. |
-| `radarr.enabled` / `url` / `api_key` | `RADARR_ENABLED`, `RADARR_URL`, `RADARR_API_KEY` | — | Radarr connection settings. |
-| `extraction.enabled` | `EXTRACTION_ENABLED` | `true` | Enable in-memory archive inspection & sandbox extraction. |
-| `database.path` / `retention_days` | `DATABASE_PATH`, `DATABASE_RETENTION_DAYS` | `/config/aimportarr.db` (`30`d) | SQLite database path and history retention period. |
-
----
-
-## 📄 Documentation & License
-
-- [**Architecture & Two-Stage AI Design (`docs/ARCHITECTURE.md`)**](docs/ARCHITECTURE.md)
+- [**Architecture & Two-Stage AI Design (`docs/ARCHITECTURE.md`)**](docs/ARCHITECTURE.md) — Detailed 4-step pipeline flowchart, FIFO queue & webhook design, and status lifecycle.
+- [**Configuration & Environment Variables (`docs/ARCHITECTURE.md#configuration--environment-variables`)**](docs/ARCHITECTURE.md#configuration--environment-variables) — Full reference of all settings and environment variable overrides.
+- [**Annotated Example Config (`config.example.yml`)**](config.example.yml) — Template YAML configuration file.
 - Licensed under the [MIT License](LICENSE).
