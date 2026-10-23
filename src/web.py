@@ -563,12 +563,14 @@ DASHBOARD_HTML = """<!DOCTYPE html>
       margin-top: 0.15rem;
     }
 
-    .reasoning-row {
+    .reasoning-row,
+    .token-detail-row {
       display: none;
       background-color: #0d1017;
     }
 
-    .reasoning-row.open {
+    .reasoning-row.open,
+    .token-detail-row.open {
       display: table-row;
     }
 
@@ -580,6 +582,52 @@ DASHBOARD_HTML = """<!DOCTYPE html>
       margin: 0.35rem 0;
       background-color: #121620;
       border-radius: 0 6px 6px 0;
+    }
+
+    .debug-msg-grid {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 0.85rem;
+      margin-top: 0.5rem;
+    }
+
+    @media (max-width: 900px) {
+      .debug-msg-grid {
+        grid-template-columns: 1fr;
+      }
+    }
+
+    .debug-msg-panel {
+      background-color: #0b0e14;
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      overflow: hidden;
+    }
+
+    .debug-msg-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 0.4rem 0.75rem;
+      background-color: #161b26;
+      border-bottom: 1px solid var(--border);
+      font-size: 0.72rem;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: 0.04em;
+    }
+
+    .debug-msg-pre {
+      margin: 0;
+      padding: 0.65rem 0.75rem;
+      font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+      font-size: 0.75rem;
+      line-height: 1.45;
+      color: #e2e8f0;
+      white-space: pre-wrap;
+      word-break: break-word;
+      max-height: 340px;
+      overflow-y: auto;
     }
 
     .clickable-row {
@@ -980,11 +1028,12 @@ DASHBOARD_HTML = """<!DOCTYPE html>
               <th style="width: 75px; text-align: right;">Total</th>
               <th style="width: 70px; text-align: right;">Latency</th>
               <th style="width: 75px; text-align: center;">Status</th>
+              <th style="width: 35px;"></th>
             </tr>
           </thead>
           <tbody id="token-table-body">
             <tr>
-              <td colspan="9" class="empty-state">
+              <td colspan="10" class="empty-state">
                 <div class="empty-icon">✨</div>
                 <div>No AI calls recorded yet.</div>
               </td>
@@ -1247,6 +1296,7 @@ DASHBOARD_HTML = """<!DOCTYPE html>
     let currentFilter = 'all';
     let refreshTimer = null;
     let openReasoningId = null;
+    let openTokenId = null;
 
     function formatNumber(num) {
       if (num === null || num === undefined) return '0';
@@ -1403,12 +1453,26 @@ DASHBOARD_HTML = """<!DOCTYPE html>
       }).join('');
     }
 
+    function toggleTokenDetails(rowId) {
+      if (openTokenId === rowId) {
+        openTokenId = null;
+      } else {
+        openTokenId = rowId;
+      }
+      document.querySelectorAll('.token-detail-row').forEach(el => {
+        el.classList.toggle('open', el.id === `token-detail-${openTokenId}`);
+      });
+      document.querySelectorAll('.token-chevron').forEach(el => {
+        el.innerText = el.id === `token-chevron-${openTokenId}` ? '▴' : '▾';
+      });
+    }
+
     function renderTokenTable(tokens) {
       const tbody = document.getElementById('token-table-body');
       if (!tokens || tokens.length === 0) {
         tbody.innerHTML = `
           <tr>
-            <td colspan="9" class="empty-state">
+            <td colspan="10" class="empty-state">
               <div class="empty-icon">✨</div>
               <div>No AI token calls recorded yet.</div>
             </td>
@@ -1424,9 +1488,12 @@ DASHBOARD_HTML = """<!DOCTYPE html>
         const thinkingHtml = (t.thinking_tokens && t.thinking_tokens > 0)
           ? `<span style="color: #a78bfa; font-feature-settings: 'tnum'; font-weight: 500;">${formatNumber(t.thinking_tokens)}</span>`
           : `<span style="color: var(--text-dim);">&mdash;</span>`;
+        const isOpen = openTokenId === t.id;
+        const inputText = t.prompt_text || 'No input message recorded for this entry.';
+        const outputText = t.response_text || 'No output message recorded for this entry.';
 
         return `
-          <tr>
+          <tr class="clickable-row" onclick="toggleTokenDetails(${t.id})">
             <td>${formatTime(t.timestamp)}</td>
             <td>
               <div style="font-weight: 600; font-family: monospace; font-size: 0.8rem;">${escapeHtml(t.operation)}</div>
@@ -1439,6 +1506,35 @@ DASHBOARD_HTML = """<!DOCTYPE html>
             <td style="font-weight: 700; color: var(--text-main); font-feature-settings: 'tnum'; text-align: right;">${formatNumber(t.total_tokens)}</td>
             <td style="color: var(--text-dim); text-align: right;">${latency}</td>
             <td style="text-align: center;">${statusBadge}</td>
+            <td id="token-chevron-${t.id}" class="token-chevron" style="color: var(--text-dim); font-size: 0.8rem;">${isOpen ? '▴' : '▾'}</td>
+          </tr>
+          <tr id="token-detail-${t.id}" class="token-detail-row ${isOpen ? 'open' : ''}">
+            <td colspan="10">
+              <div class="reasoning-box">
+                <div style="font-weight: 600; color: #a5b4fc; margin-bottom: 0.35rem;">
+                  🔍 AI Debug Trace &bull; <span style="font-family: monospace; font-size: 0.78rem; color: #c084fc;">${escapeHtml(t.operation)}</span>
+                </div>
+                <div class="debug-msg-grid">
+                  <div class="debug-msg-panel">
+                    <div class="debug-msg-header" style="color: #60a5fa;">
+                      <span>📥 Input Message (Prompt)</span>
+                      <span>${formatNumber(t.prompt_tokens)} tok</span>
+                    </div>
+                    <pre class="debug-msg-pre">${escapeHtml(inputText)}</pre>
+                  </div>
+                  <div class="debug-msg-panel">
+                    <div class="debug-msg-header" style="color: #34d399;">
+                      <span>📤 Output Message (Response)</span>
+                      <span>${formatNumber(t.completion_tokens)} tok</span>
+                    </div>
+                    <pre class="debug-msg-pre">${escapeHtml(outputText)}</pre>
+                  </div>
+                </div>
+                <div style="font-size: 0.7rem; color: var(--text-dim); margin-top: 0.45rem;">
+                  ID: #${t.id} &bull; Timestamp: ${t.timestamp} &bull; Model: ${escapeHtml(t.model)} &bull; Latency: ${latency}
+                </div>
+              </div>
+            </td>
           </tr>
         `;
       }).join('');

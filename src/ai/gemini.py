@@ -130,18 +130,19 @@ class GeminiProvider(BaseAIProvider):
         item_title: Optional[str] = None
     ) -> dict:
         today_str = datetime.now().strftime("%Y-%m-%d")
+        full_prompt = (
+            "You are an expert TV and Movie media parser assistant for the *arr suite (Sonarr/Radarr).\n"
+            f"Current Date: {today_str}.\n"
+            "Your job is to accurately match messy release filenames, Chinese/Asian Pinyin titles, and foreign characters to official media.\n"
+            f"{schema_desc}\n\n"
+            f"{prompt}"
+        )
         payload = {
             "contents": [
                 {
                     "parts": [
                         {
-                            "text": (
-                                "You are an expert TV and Movie media parser assistant for the *arr suite (Sonarr/Radarr).\n"
-                                f"Current Date: {today_str}.\n"
-                                "Your job is to accurately match messy release filenames, Chinese/Asian Pinyin titles, and foreign characters to official media.\n"
-                                f"{schema_desc}\n\n"
-                                f"{prompt}"
-                            )
+                            "text": full_prompt
                         }
                     ]
                 }
@@ -224,7 +225,9 @@ class GeminiProvider(BaseAIProvider):
                         total_tokens=t_tok,
                         duration_ms=duration_ms,
                         item_title=item_title,
-                        success=True
+                        success=True,
+                        prompt_text=full_prompt,
+                        response_text=raw_text,
                     )
 
                     return json.loads(clean_json)
@@ -252,7 +255,9 @@ class GeminiProvider(BaseAIProvider):
                 total_tokens=0,
                 duration_ms=0,
                 item_title=item_title,
-                success=False
+                success=False,
+                prompt_text=full_prompt,
+                response_text=str(last_error),
             )
             raise AIProviderError(f"Gemini API failed after {max_attempts} attempts: {last_error}") from last_error
 

@@ -103,18 +103,24 @@ class DatabaseManager:
                     total_tokens INTEGER DEFAULT 0,
                     duration_ms INTEGER DEFAULT 0,
                     item_title TEXT,
-                    success INTEGER DEFAULT 1
+                    success INTEGER DEFAULT 1,
+                    prompt_text TEXT DEFAULT '',
+                    response_text TEXT DEFAULT ''
                 );
                 """)
                 conn.execute("CREATE INDEX IF NOT EXISTS idx_token_timestamp ON token_usage(timestamp);")
                 conn.execute("CREATE INDEX IF NOT EXISTS idx_token_model ON token_usage(model);")
 
-                # Migration: Ensure thinking_tokens exists in existing databases
+                # Migration: Ensure thinking_tokens, prompt_text, and response_text exist in existing databases
                 try:
                     cursor = conn.execute("PRAGMA table_info(token_usage);")
                     col_names = [row["name"] for row in cursor.fetchall()]
                     if "thinking_tokens" not in col_names:
                         conn.execute("ALTER TABLE token_usage ADD COLUMN thinking_tokens INTEGER DEFAULT 0;")
+                    if "prompt_text" not in col_names:
+                        conn.execute("ALTER TABLE token_usage ADD COLUMN prompt_text TEXT DEFAULT '';")
+                    if "response_text" not in col_names:
+                        conn.execute("ALTER TABLE token_usage ADD COLUMN response_text TEXT DEFAULT '';")
                 except Exception as e:
                     logger.warning(f"Could not check/migrate token_usage table columns: {e}")
 
@@ -308,6 +314,8 @@ class DatabaseManager:
         item_title: Optional[str] = None,
         success: bool = True,
         thinking_tokens: int = 0,
+        prompt_text: Optional[str] = None,
+        response_text: Optional[str] = None,
     ) -> int:
         """Record an AI token usage transaction."""
         now_str = datetime.now(timezone.utc).isoformat()
@@ -316,8 +324,8 @@ class DatabaseManager:
             with conn:
                 cursor = conn.execute("""
                     INSERT INTO token_usage (
-                        timestamp, operation, model, prompt_tokens, thinking_tokens, completion_tokens, total_tokens, duration_ms, item_title, success
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        timestamp, operation, model, prompt_tokens, thinking_tokens, completion_tokens, total_tokens, duration_ms, item_title, success, prompt_text, response_text
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """, (
                     now_str,
                     operation,
@@ -329,6 +337,8 @@ class DatabaseManager:
                     duration_ms,
                     item_title or "",
                     1 if success else 0,
+                    prompt_text or "",
+                    response_text or "",
                 ))
                 return cursor.lastrowid
 
@@ -350,7 +360,7 @@ class DatabaseManager:
         with self._lock:
             conn = self._get_connection()
             cursor = conn.execute("""
-                SELECT id, timestamp, operation, model, prompt_tokens, thinking_tokens, completion_tokens, total_tokens, duration_ms, item_title, success
+                SELECT id, timestamp, operation, model, prompt_tokens, thinking_tokens, completion_tokens, total_tokens, duration_ms, item_title, success, prompt_text, response_text
                 FROM token_usage
                 ORDER BY id DESC
                 LIMIT ?

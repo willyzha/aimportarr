@@ -38,6 +38,7 @@ class OllamaProvider(BaseAIProvider):
         if self.num_gpu is not None:
             options["num_gpu"] = self.num_gpu
 
+        full_prompt = f"[System]\n{system_prompt}\n\n[User]\n{user_prompt}"
         payload = {
             "model": self.model,
             "messages": [
@@ -56,13 +57,13 @@ class OllamaProvider(BaseAIProvider):
                 resp.raise_for_status()
                 data = resp.json()
         except httpx.HTTPStatusError as e:
-            metrics.record_token_usage(operation=operation, model=self.model, prompt_tokens=0, completion_tokens=0, total_tokens=0, duration_ms=int((time.time() - start_time) * 1000), item_title=item_title, success=False)
+            metrics.record_token_usage(operation=operation, model=self.model, prompt_tokens=0, completion_tokens=0, total_tokens=0, duration_ms=int((time.time() - start_time) * 1000), item_title=item_title, success=False, prompt_text=full_prompt, response_text=str(e))
             raise AIProviderError(f"Ollama server returned HTTP {e.response.status_code}: {e.response.text}") from e
         except (httpx.RequestError, httpx.TimeoutException) as e:
-            metrics.record_token_usage(operation=operation, model=self.model, prompt_tokens=0, completion_tokens=0, total_tokens=0, duration_ms=int((time.time() - start_time) * 1000), item_title=item_title, success=False)
+            metrics.record_token_usage(operation=operation, model=self.model, prompt_tokens=0, completion_tokens=0, total_tokens=0, duration_ms=int((time.time() - start_time) * 1000), item_title=item_title, success=False, prompt_text=full_prompt, response_text=str(e))
             raise AIProviderError(f"Cannot connect to Ollama at '{self.chat_url}': {e}") from e
         except Exception as e:
-            metrics.record_token_usage(operation=operation, model=self.model, prompt_tokens=0, completion_tokens=0, total_tokens=0, duration_ms=int((time.time() - start_time) * 1000), item_title=item_title, success=False)
+            metrics.record_token_usage(operation=operation, model=self.model, prompt_tokens=0, completion_tokens=0, total_tokens=0, duration_ms=int((time.time() - start_time) * 1000), item_title=item_title, success=False, prompt_text=full_prompt, response_text=str(e))
             raise AIProviderError(f"Unexpected error calling Ollama: {e}") from e
 
         p_tok = data.get("prompt_eval_count", 0)
@@ -70,6 +71,9 @@ class OllamaProvider(BaseAIProvider):
         t_tok = p_tok + c_tok
         duration_ns = data.get("total_duration", 0)
         duration_ms = int(duration_ns / 1_000_000) if duration_ns else int((time.time() - start_time) * 1000)
+
+        message = data.get("message", {})
+        raw_text = message.get("content", "{}")
 
         metrics.record_token_usage(
             operation=operation,
@@ -79,11 +83,11 @@ class OllamaProvider(BaseAIProvider):
             total_tokens=t_tok,
             duration_ms=duration_ms,
             item_title=item_title,
-            success=True
+            success=True,
+            prompt_text=full_prompt,
+            response_text=raw_text,
         )
 
-        message = data.get("message", {})
-        raw_text = message.get("content", "{}")
         try:
             return json.loads(raw_text)
         except json.JSONDecodeError as e:

@@ -186,7 +186,9 @@ class ContainerSmokeTests(unittest.TestCase):
             total_tokens=800,
             duration_ms=320,
             item_title="Show.S01E01",
-            success=True
+            success=True,
+            prompt_text="Evaluate Show.S01E01",
+            response_text='{"decision": "IMPORT"}',
         )
 
         summary = tracker.get_summary()
@@ -211,6 +213,8 @@ class ContainerSmokeTests(unittest.TestCase):
         self.assertEqual(len(tokens), 1)
         self.assertEqual(tokens[0]["total_tokens"], 800)
         self.assertEqual(tokens[0]["thinking_tokens"], 300)
+        self.assertEqual(tokens[0]["prompt_text"], "Evaluate Show.S01E01")
+        self.assertEqual(tokens[0]["response_text"], '{"decision": "IMPORT"}')
 
     def test_web_server_endpoints(self):
         """Verify WebServerRunner serves dashboard HTML, metrics API, history API, and health API."""
@@ -498,7 +502,9 @@ class ContainerSmokeTests(unittest.TestCase):
                 total_tokens=170,
                 duration_ms=150,
                 item_title="Movie.Rejected.1",
-                success=True
+                success=True,
+                prompt_text="Test prompt",
+                response_text="Test response",
             )
             self.assertGreater(tok_id, 0)
 
@@ -511,6 +517,8 @@ class ContainerSmokeTests(unittest.TestCase):
             history = db.get_token_history(limit=5)
             self.assertEqual(len(history), 1)
             self.assertEqual(history[0]["thinking_tokens"], 50)
+            self.assertEqual(history[0]["prompt_text"], "Test prompt")
+            self.assertEqual(history[0]["response_text"], "Test response")
 
             # Test retention purge (insert old records directly with timestamp 40 days ago)
             old_time = (datetime.now(timezone.utc) - timedelta(days=40)).isoformat()

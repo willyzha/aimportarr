@@ -245,6 +245,8 @@ class MetricsTracker:
         item_title: Optional[str] = None,
         success: bool = True,
         thinking_tokens: int = 0,
+        prompt_text: Optional[str] = None,
+        response_text: Optional[str] = None,
     ) -> None:
         """Record an AI token usage transaction in SQLite and in-memory summary."""
         with self._lock:
@@ -293,6 +295,8 @@ class MetricsTracker:
                         item_title=item_title,
                         success=success,
                         thinking_tokens=thinking_tokens,
+                        prompt_text=prompt_text,
+                        response_text=response_text,
                     )
                 except Exception as e:
                     logger.error(f"Failed to record token usage to SQLite: {e}")
@@ -313,6 +317,8 @@ class MetricsTracker:
                 "duration_ms": duration_ms,
                 "item_title": item_title or "",
                 "success": success,
+                "prompt_text": prompt_text or "",
+                "response_text": response_text or "",
             }
             self.token_history.appendleft(record)
 
