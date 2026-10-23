@@ -58,11 +58,11 @@ radarr:
   api_key: "YOUR_RADARR_API_KEY"
 
 # ==========================================
-# Secure Archive Extraction
+# Archive Extraction
 # ==========================================
-# Automatically inspects archive files (.zip, .rar, .7z, .tar) in memory before extracting.
+# Automatically inspects archive files (.zip, .rar, .7z, .tar) before extracting.
 # If malware/executables are detected, immediately deletes from client and blocklists the release.
-# If valid media is verified, extracts into a safe sandbox staging folder and imports.
+# If valid media is verified, extracts into a temporary staging folder and imports.
 extraction:
   enabled: true
   delete_after_import: true # Clean up extracted video files once imported so disk space isn't duplicated

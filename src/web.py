@@ -1190,12 +1190,12 @@ DASHBOARD_HTML = """<!DOCTYPE html>
 
         <!-- Archive Extraction, Database & Path Mappings -->
         <div class="analytics-card">
-          <div class="analytics-card-title"><span>📦</span> Sandbox Extraction &amp; Storage</div>
+          <div class="analytics-card-title"><span>📦</span> Archive Extraction &amp; Storage</div>
 
           <div class="form-row">
             <div>
-              <div class="form-label" style="margin-bottom: 0;">Enable Sandbox Archive Extraction</div>
-              <div class="form-hint">Inspects and unpacks .rar/.zip/.7z archives while keeping original archives intact</div>
+              <div class="form-label" style="margin-bottom: 0;">Enable Archive Extraction</div>
+              <div class="form-hint">Inspects and unpacks .rar/.zip/.7z archives into a temporary staging folder while keeping original archives intact</div>
             </div>
             <label class="toggle-switch">
               <input type="checkbox" id="cfg-extract-enabled">

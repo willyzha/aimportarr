@@ -379,7 +379,7 @@ class RadarrClient:
         1. Let Radarr process normal downloads naturally.
         2. Stage 1 (Hybrid Archive & Malware Triage): Inspect disk/7z headers; auto-extract clean archives,
            and use Stage 1 AI when suspicious files or archive anomalies are detected.
-        3. (Optional) Extract archive in sandbox (<stem>_extracted).
+        3. (Optional) Extract archive into temporary staging directory (<stem>_extracted).
         4. Stage 2: Query /manualimport + existing on-disk movieFile quality. Fast-path unambiguous cases
            (cleanly mapped or hard quality downgrade) and invoke Stage 2 AI for everything else.
         """
@@ -433,7 +433,7 @@ class RadarrClient:
         logger.info(f"Processing stuck Radarr movie: '{title}' [{initial_category.value}] {mode_tag}")
 
         # ------------------------------------------------------------------
-        # STEP 2 & STEP 3: Stage 1 Triage & Optional Sandbox Extraction
+        # STEP 2 & STEP 3: Stage 1 Triage & Optional Archive Extraction
         # ------------------------------------------------------------------
         staging_dir_to_clean: Optional[Path] = None
         is_extracted_archive = False
@@ -448,12 +448,12 @@ class RadarrClient:
                     )
                 archive_file = find_archive_file(p_local)
                 if archive_file:
-                    logger.info(f"  🔍 Archive detected: '{archive_file.name}'. Inspecting contents in memory...")
+                    logger.info(f"  🔍 Archive detected: '{archive_file.name}'. Inspecting contents...")
                     inspection = await inspect_archive(archive_file)
                     if inspection and inspection.has_video_files and not inspection.has_suspicious_files:
-                        # Clean video archive -> deterministic sandbox extraction (0 AI tokens)
+                        # Clean video archive -> deterministic staging extraction (0 AI tokens)
                         logger.info(
-                            f"  📦 Valid media archive detected ({len(inspection.video_files)} video file(s)). Extracting in sandbox..."
+                            f"  📦 Valid media archive detected ({len(inspection.video_files)} video file(s)). Extracting to staging folder..."
                         )
                         staging_dir = archive_file.parent / f"{archive_file.stem}{self.extraction_config.staging_suffix}"
                         extract_ok = await extract_archive(archive_file, staging_dir)
@@ -463,7 +463,7 @@ class RadarrClient:
                         metrics.record_archive_extracted()
                         is_extracted_archive = True
                         staging_dir_to_clean = staging_dir
-                        logger.info(f"  ✔ Extraction complete in sandbox: '{staging_dir}'. Scanning for import...")
+                        logger.info(f"  ✔ Extraction complete: '{staging_dir}'. Scanning for import...")
                         try:
                             archive_rel_parent = archive_file.parent.relative_to(p_local)
                             remote_staging_dir = (

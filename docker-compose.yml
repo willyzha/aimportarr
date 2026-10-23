@@ -8,7 +8,7 @@ services:
       - "9890:9890" # Web UI, Metrics & Live Settings
     volumes:
       - ./config:/config
-      # Mount downloads directory matching Sonarr/Radarr paths for secure archive extraction:
+      # Mount downloads directory matching Sonarr/Radarr paths for archive extraction:
       # - /path/to/downloads:/data/downloads
     environment:
       - PUID=1000

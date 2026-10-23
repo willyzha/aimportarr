@@ -99,7 +99,7 @@ class OllamaProvider(BaseAIProvider):
     ) -> Stage1TriageResult:
         today_str = datetime.now().strftime("%Y-%m-%d")
         system_prompt = (
-            f"You are a media security and archive triage assistant for Sonarr and Radarr. Current date: {today_str}. "
+            f"You are a media and archive triage assistant for Sonarr and Radarr. Current date: {today_str}. "
             "Respond ONLY with a valid JSON object with keys: "
             "'action' ('extract' | 'no_extraction' | 'reject_delete'), "
             "'category_tag' ('malware_or_corrupt' | 'sample_only' | 'archive_extracted' | 'triage_passed'), "

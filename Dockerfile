@@ -1,9 +1,9 @@
 FROM python:3.12-slim
 
 LABEL maintainer="willyzha"
-LABEL description="AI-powered queue companion & secure archive unpacker for Sonarr and Radarr"
+LABEL description="AI-powered queue companion & archive unpacker for Sonarr and Radarr"
 LABEL org.opencontainers.image.title="AImportarr"
-LABEL org.opencontainers.image.description="AI-powered queue companion & secure archive unpacker for Sonarr and Radarr — automatically resolves stuck imports, extracts archives in a sandbox, and blocklists downgrades or malware."
+LABEL org.opencontainers.image.description="AI-powered queue companion & archive unpacker for Sonarr and Radarr — automatically resolves stuck imports, unpacks archives, and blocklists downgrades or malware."
 LABEL org.opencontainers.image.source="https://github.com/willyzha/aimportarr"
 LABEL org.opencontainers.image.licenses="MIT"
 

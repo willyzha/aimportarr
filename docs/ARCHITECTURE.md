@@ -8,7 +8,7 @@ AImportarr is an autonomous queue companion for **Sonarr** and **Radarr**. It mo
 
 1. **Sonarr & Radarr First (Zero-Token Fast Paths)**
    - AImportarr never overrides healthy downloads that Sonarr/Radarr are already importing normally.
-   - Clean archives (`.rar`, `.zip`, `.7z`, `.tar` containing video files and zero suspicious files) are unpacked into an isolated `<stem>_extracted` sandbox and passed back to Sonarr/Radarr's `/api/v3/manualimport` endpoint—using **0 AI tokens** when Sonarr/Radarr can map the unpacked video cleanly.
+   - Clean archives (`.rar`, `.zip`, `.7z`, `.tar` containing video files) are unpacked into a temporary `<stem>_extracted` staging folder and passed back to Sonarr/Radarr's `/api/v3/manualimport` endpoint—using **0 AI tokens** when Sonarr/Radarr can map the unpacked video cleanly.
 
 2. **Strict Client File Preservation & Deletion Policy**
    - **Rejected (`removeFromClient=true`, `blocklist=true`, `skipRedownload=false`)**: Files are deleted from the download client **only** when confirmed to be **virus/malware, sample-only, or corrupt/unusable**.
@@ -32,7 +32,7 @@ flowchart TD
     B -- "No (Downloading / Normal)" --> Z["Hands Off"]
     B -- "Yes" --> C["Step 2 (Stage 1): Hybrid Archive & Malware Triage"]
 
-    C -- "Clean Archive (.rar/.zip/.7z with video)" --> D["Step 3: Extract to Sandbox (<stem>_extracted)"]
+    C -- "Clean Archive (.rar/.zip/.7z with video)" --> D["Step 3: Extract to Staging Folder (<stem>_extracted)"]
     C -- "Unpacked Video Files" --> E["Query /manualimport + Existing On-Disk Quality"]
     C -- "Suspicious / 0 Videos / Unsupported Ext" --> C_AI["Stage 1 AI: evaluate_stage1_triage"]
 
@@ -43,7 +43,7 @@ flowchart TD
     D --> E
     E --> FP{"Step 4: Fast-Path Check"}
 
-    FP -- "All files mapped & 0 rejections" --> G["Status: imported\nExecute ManualImport & Clean Sandbox"]
+    FP -- "All files mapped & 0 rejections" --> G["Status: imported\nExecute ManualImport & Clean Staging"]
     FP -- "Mapped files rejected for Quality/CF Downgrade" --> R_KEEP["Status: dismissed\nKeep in Client, Blocklist & Re-Search\n(removeFromClient=false, blocklist=true)"]
     FP -- "Ambiguity / Unmapped / ID Match / Sample / 0 Files" --> F["Stage 2 AI: evaluate_import_decision\n(Includes Existing On-Disk File Quality)"]
 
@@ -73,17 +73,17 @@ AImportarr decouples **queue discovery** from **item processing** via a deduplic
 ### Step 2 (Stage 1): Archive & Malware Triage
 AImportarr inspects the local download directory (resolving `path_mappings` if configured):
 - **Fast-Path Unpacked**: If video files are already unpacked and no archives or suspicious extensions (`.exe`, `.scr`, `.bat`, `.vbs`, `.msi`, `.ps1`, `.lnk`, `.iso`) exist, Stage 1 AI is skipped.
-- **Fast-Path Clean Archive**: If an archive (`.rar`, `.zip`, `.7z`, `.tar`) is found, `inspect_archive()` reads its header table in memory without extracting to disk. If it contains video files and zero suspicious files, it proceeds directly to Step 3 sandbox extraction (0 AI tokens).
+- **Fast-Path Clean Archive**: If an archive (`.rar`, `.zip`, `.7z`, `.tar`) is found, `inspect_archive()` reads its header table without extracting to disk. If it contains video files and zero suspicious files, it proceeds directly to Step 3 staging extraction (0 AI tokens).
 - **Stage 1 AI (`evaluate_stage1_triage`)**: Triggered only when an archive contains suspicious files or 0 video streams, when loose suspicious files exist on disk, or when `/manualimport` finds 0 importable files.
   - Returns `extract`, `no_extraction`, or `reject_delete` (malware, corrupt, or sample-only).
 
-### Step 3: Sandbox Extraction & Automatic Cleanup
+### Step 3: Temporary Staging Extraction & Automatic Cleanup
 When extraction is needed:
-- Extracts only valid files into `<download_dir>/<archive_stem>_extracted` with strict path-traversal (Zip-Slip) validation.
+- Extracts video and subtitle files into `<download_dir>/<archive_stem>_extracted`.
 - In a `finally` block after Step 4 finishes, the temporary `_extracted` staging folder is deleted (`shutil.rmtree`) so disk space is never duplicated and the original archive remains untouched.
 
 ### Step 4 (Stage 2): `/manualimport` Fast-Path & Stage 2 AI Decision
-AImportarr queries `GET /api/v3/manualimport` (pointing at the sandbox folder if extracted, or the download folder otherwise) and retrieves existing on-disk file metadata (`episodefile` / `movieFile`):
+AImportarr queries `GET /api/v3/manualimport` (pointing at the staging folder if extracted, or the download folder otherwise) and retrieves existing on-disk file metadata (`episodefile` / `movieFile`):
 1. **Fast-Path A — Hard Quality Rejection (0 AI Tokens)**:
    - If Sonarr/Radarr mapped the target episodes/movie and rejected every candidate file due to quality cutoff or Custom Format score downgrade, AImportarr immediately records `status="dismissed"` (`category="quality_downgrade"`) and calls `DELETE /api/v3/queue/{id}?removeFromClient=false&blocklist=true&skipRedownload=false`.
 2. **Fast-Path B — Clean Match (0 AI Tokens)**:
@@ -133,9 +133,9 @@ All settings can be configured in `/config/config.yml` (see [`config.example.yml
 | `ai.ollama.model` | `OLLAMA_MODEL` | `qwen2.5:1.5b` | Ollama model tag. |
 | `sonarr.enabled` / `url` / `api_key` | `SONARR_ENABLED`, `SONARR_URL`, `SONARR_API_KEY` | — | Sonarr connection settings. |
 | `radarr.enabled` / `url` / `api_key` | `RADARR_ENABLED`, `RADARR_URL`, `RADARR_API_KEY` | — | Radarr connection settings. |
-| `extraction.enabled` | `EXTRACTION_ENABLED` | `true` | Enable in-memory archive inspection & sandbox extraction. |
+| `extraction.enabled` | `EXTRACTION_ENABLED` | `true` | Enable archive inspection & staging extraction. |
 | `extraction.delete_after_import` | `EXTRACTION_DELETE_AFTER_IMPORT` | `true` | Clean up extracted staging folder once imported. |
-| `extraction.staging_suffix` | `EXTRACTION_STAGING_SUFFIX` | `_extracted` | Suffix for temporary sandbox extraction directories. |
+| `extraction.staging_suffix` | `EXTRACTION_STAGING_SUFFIX` | `_extracted` | Suffix for temporary staging extraction directories. |
 | `web.enabled` / `host` / `port` | `WEB_ENABLED`, `WEB_HOST`, `WEB_PORT` | `true` (`0.0.0.0:9890`) | Embedded Web UI and REST API server settings. |
 | `database.path` / `retention_days` | `DATABASE_PATH`, `DATABASE_RETENTION_DAYS` | `/config/aimportarr.db` (`30`d) | SQLite database path and history retention period. |
 
@@ -146,7 +146,7 @@ All settings can be configured in `/config/config.yml` (see [`config.example.yml
 - [`src/main.py`](../src/main.py): Async polling loop, hot-reload callback handler, and startup initialization.
 - [`src/config.py`](../src/config.py): Pydantic configuration models, YAML loader/saver, and environment variable overrides.
 - [`src/sonarr.py`](../src/sonarr.py) & [`src/radarr.py`](../src/radarr.py): *arr REST API clients and the 4-step queue processing state machine.
-- [`src/extractor.py`](../src/extractor.py): In-memory archive header inspector (`7z l -slt`) and Zip-Slip-safe sandbox extractor.
+- [`src/extractor.py`](../src/extractor.py): Archive header inspector (`7z l -slt`) and staging folder extractor.
 - [`src/ai/`](../src/ai/):
   - [`base.py`](../src/ai/base.py): `AIProvider` interface, `Stage1TriageResult`, and `Stage2DecisionResult` schemas.
   - [`gemini.py`](../src/ai/gemini.py): Google Gemini provider with automatic fastest-model discovery and 404 self-healing.
