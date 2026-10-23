@@ -1,7 +1,11 @@
 FROM python:3.12-slim
 
 LABEL maintainer="willyzha"
-LABEL description="AImportarr - AI-powered media matching and automated importer for the *arr suite"
+LABEL description="AI-powered queue companion & secure archive unpacker for Sonarr and Radarr"
+LABEL org.opencontainers.image.title="AImportarr"
+LABEL org.opencontainers.image.description="AI-powered queue companion & secure archive unpacker for Sonarr and Radarr — automatically resolves stuck imports, extracts archives in a sandbox, and blocklists downgrades or malware while preserving seeding."
+LABEL org.opencontainers.image.source="https://github.com/willyzha/aimportarr"
+LABEL org.opencontainers.image.licenses="MIT"
 
 ENV PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1 \
