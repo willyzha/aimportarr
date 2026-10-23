@@ -117,24 +117,29 @@ class MetricsTracker:
         return False
 
     def mark_item_for_retry(self, item_id: int) -> bool:
-        """Flag a specific rejected/failed item for retry on the next queue scan cycle."""
+        """Flag a specific retryable item (skipped, failed, or dry_run) for retry on the next queue scan cycle."""
         with self._lock:
-            # Update memory history item if present
+            retryable = ("skipped", "failed", "dry_run")
+            matched_in_mem = False
             for item in self.processed_history:
                 if item.get("id") == item_id:
+                    if item.get("status") not in retryable:
+                        return False
                     item["retry_requested"] = 1
+                    matched_in_mem = True
                     break
 
             if self.db:
                 return self.db.mark_item_for_retry(item_id)
-            return True
+            return matched_in_mem
 
     def mark_all_rejected_for_retry(self) -> int:
-        """Flag all previously rejected, failed, or blocked items for retry."""
+        """Flag all retryable items (skipped, failed, or dry_run) still in the queue for retry."""
         with self._lock:
+            retryable = ("skipped", "failed", "dry_run")
             count = 0
             for item in self.processed_history:
-                if item.get("status") in ("rejected", "failed", "blocked"):
+                if item.get("status") in retryable and not item.get("retry_requested"):
                     item["retry_requested"] = 1
                     count += 1
 
@@ -220,6 +225,11 @@ class MetricsTracker:
                 "details": details or "",
                 "retry_requested": 0,
             }
+            # Remove any superseded in-memory entry for the same app+title
+            self.processed_history = collections.deque(
+                (r for r in self.processed_history if not (r.get("app") == app and r.get("title") == title)),
+                maxlen=self.max_history,
+            )
             self.processed_history.appendleft(record)
 
     def record_token_usage(

@@ -538,11 +538,11 @@ class RadarrClient:
                                 app="Radarr",
                                 title=title,
                                 category=triage.category_tag or "malware_or_corrupt",
-                                status="dry_run" if is_dry_run else "blocked",
+                                status="dry_run" if is_dry_run else "rejected",
                                 confidence=triage.confidence,
                                 model=model_label,
                                 reasoning=triage.reasoning,
-                                details=f"Deleted & blocklisted archive ({archive_file.name})",
+                                details=f"Deleted from torrent & blocklisted ({archive_file.name})",
                                 item_keys=item_keys,
                             )
                             return await self.delete_and_blocklist(
@@ -581,11 +581,11 @@ class RadarrClient:
                         app="Radarr",
                         title=title,
                         category=triage.category_tag or "malware_or_corrupt",
-                        status="dry_run" if is_dry_run else "blocked",
+                        status="dry_run" if is_dry_run else "rejected",
                         confidence=triage.confidence,
                         model=model_label,
                         reasoning=triage.reasoning,
-                        details="Deleted from client & blocklisted",
+                        details="Deleted from torrent & blocklisted",
                         item_keys=item_keys,
                     )
                     return await self.delete_and_blocklist(
@@ -600,11 +600,11 @@ class RadarrClient:
                             app="Radarr",
                             title=title,
                             category="low_confidence",
-                            status="dry_run" if is_dry_run else "rejected",
+                            status="dry_run" if is_dry_run else "dismissed",
                             confidence=triage.confidence,
                             model=model_label,
                             reasoning=triage.reasoning,
-                            details="Low-confidence suspicious item; dismissed & blocklisted (seeding kept)",
+                            details="Low-confidence suspicious item; dismissed & blocklisted (still seeding)",
                             item_keys=item_keys,
                         )
                         return await self.resolve_queue_item(
@@ -673,11 +673,11 @@ class RadarrClient:
                         app="Radarr",
                         title=title,
                         category=triage.category_tag or "sample_only",
-                        status="dry_run" if is_dry_run else "blocked",
+                        status="dry_run" if is_dry_run else "rejected",
                         confidence=triage.confidence,
                         model=model_label,
                         reasoning=triage.reasoning,
-                        details="0 valid videos; deleted from client & blocklisted",
+                        details="0 valid videos; deleted from torrent & blocklisted",
                         item_keys=item_keys,
                     )
                     return await self.delete_and_blocklist(
@@ -690,11 +690,11 @@ class RadarrClient:
                     app="Radarr",
                     title=title,
                     category="no_importable_files",
-                    status="rejected",
+                    status="skipped",
                     confidence=triage.confidence,
                     model=model_label,
                     reasoning=triage.reasoning or "Radarr manual import returned 0 importable files",
-                    details="0 files found",
+                    details="Left in queue (0 importable files found)",
                     item_keys=item_keys,
                 )
                 return False
@@ -767,11 +767,11 @@ class RadarrClient:
                     app="Radarr",
                     title=title,
                     category="quality_downgrade",
-                    status="dry_run" if is_dry_run else "rejected",
+                    status="dry_run" if is_dry_run else "dismissed",
                     confidence=1.0,
                     model="Radarr (Quality Rule)",
                     reasoning=f"Rejected by Radarr quality rules: {reason_str}",
-                    details="Dismissed & blocklisted (seeding preserved)",
+                    details="Dismissed & blocklisted (still seeding)",
                     item_keys=item_keys,
                 )
                 await self.resolve_queue_item(
@@ -866,11 +866,11 @@ class RadarrClient:
                         app="Radarr",
                         title=title,
                         category="low_confidence",
-                        status="dry_run" if is_dry_run else "rejected",
+                        status="dry_run" if is_dry_run else "dismissed",
                         confidence=stage2.confidence,
                         model=model_label,
                         reasoning=stage2.reasoning,
-                        details="Low confidence; dismissed & blocklisted (seeding preserved)",
+                        details="Low confidence; dismissed & blocklisted (still seeding)",
                         item_keys=item_keys,
                     )
                     await self.resolve_queue_item(
@@ -911,11 +911,11 @@ class RadarrClient:
                         app="Radarr",
                         title=title,
                         category="unknown_media",
-                        status="rejected",
+                        status="dry_run" if is_dry_run else "dismissed",
                         confidence=stage2.confidence,
                         model=model_label,
                         reasoning=stage2.reasoning or "Could not resolve movie ID in Radarr library",
-                        details="Dismissed & blocklisted (seeding preserved)",
+                        details="Dismissed & blocklisted (still seeding)",
                         item_keys=item_keys,
                     )
                     await self.resolve_queue_item(
@@ -980,11 +980,11 @@ class RadarrClient:
                     app="Radarr",
                     title=title,
                     category=cat_tag,
-                    status="dry_run" if is_dry_run else "blocked",
+                    status="dry_run" if is_dry_run else "rejected",
                     confidence=stage2.confidence,
                     model=model_label,
                     reasoning=stage2.reasoning,
-                    details="Deleted from client & blocklisted",
+                    details="Deleted from torrent & blocklisted",
                     item_keys=item_keys,
                 )
                 await self.delete_and_blocklist(
@@ -995,16 +995,16 @@ class RadarrClient:
                 )
                 return False
 
-            cat_tag = stage2.category_tag or "rejected"
+            cat_tag = stage2.category_tag or "dismissed"
             metrics.record_processed_item(
                 app="Radarr",
                 title=title,
                 category=cat_tag,
-                status="dry_run" if is_dry_run else "rejected",
+                status="dry_run" if is_dry_run else "dismissed",
                 confidence=stage2.confidence,
                 model=model_label,
                 reasoning=stage2.reasoning,
-                details="Dismissed, blocklisted & re-searched (seeding preserved)",
+                details="Dismissed, blocklisted & re-searched (still seeding)",
                 item_keys=item_keys,
             )
             await self.resolve_queue_item(

@@ -126,6 +126,23 @@ class DatabaseManager:
                 );
                 """)
 
+                # 5. Normalize legacy statuses and clear stuck retries on already-removed items
+                conn.execute("""
+                    UPDATE processed_items
+                    SET status = 'dismissed'
+                    WHERE status = 'rejected' AND (details LIKE '%seeding%' OR category = 'quality_downgrade');
+                """)
+                conn.execute("""
+                    UPDATE processed_items
+                    SET status = 'rejected'
+                    WHERE status = 'blocked';
+                """)
+                conn.execute("""
+                    UPDATE processed_items
+                    SET retry_requested = 0
+                    WHERE status IN ('imported', 'rejected', 'blocked', 'dismissed') AND retry_requested = 1;
+                """)
+
             logger.info(f"SQLite database initialized at '{self.db_path}' (Retention: {self.retention_days} days)")
             self.purge_old_records()
 
@@ -209,12 +226,11 @@ class DatabaseManager:
         with self._lock:
             conn = self._get_connection()
             with conn:
-                # Clear retry_requested on existing records matching these keys
+                # Remove superseded records matching these keys so retried items don't leave stale rows behind
                 if item_keys:
                     placeholders = ",".join("?" for _ in item_keys)
                     conn.execute(f"""
-                        UPDATE processed_items
-                        SET retry_requested = 0
+                        DELETE FROM processed_items
                         WHERE id IN (
                             SELECT processed_id FROM processed_item_keys WHERE item_key IN ({placeholders})
                         )
@@ -249,13 +265,15 @@ class DatabaseManager:
 
     def mark_item_for_retry(self, item_id: int) -> bool:
         """
-        Flag a processed item for retry. Allows AImportarr to re-scan and re-evaluate this release.
+        Flag a retryable processed item (skipped, failed, or dry_run) for retry.
+        Items already imported, rejected (deleted), or dismissed from the queue cannot be retried.
         """
         with self._lock:
             conn = self._get_connection()
             with conn:
                 cursor = conn.execute(
-                    "UPDATE processed_items SET retry_requested = 1 WHERE id = ?", (item_id,)
+                    "UPDATE processed_items SET retry_requested = 1 WHERE id = ? AND status IN ('skipped', 'failed', 'dry_run')",
+                    (item_id,),
                 )
                 success = cursor.rowcount > 0
                 if success:
@@ -264,7 +282,7 @@ class DatabaseManager:
 
     def mark_all_rejected_for_retry(self) -> int:
         """
-        Flag all previously rejected, blocked, or failed items for retry.
+        Flag all retryable items (skipped, failed, or dry_run) still in the queue for retry.
         """
         with self._lock:
             conn = self._get_connection()
@@ -272,11 +290,11 @@ class DatabaseManager:
                 cursor = conn.execute("""
                     UPDATE processed_items
                     SET retry_requested = 1
-                    WHERE status IN ('rejected', 'failed', 'blocked') AND retry_requested = 0
+                    WHERE status IN ('skipped', 'failed', 'dry_run') AND retry_requested = 0
                 """)
                 count = cursor.rowcount
                 if count > 0:
-                    logger.info(f"Marked {count} previously rejected items for retry on next queue scan cycle.")
+                    logger.info(f"Marked {count} retryable item(s) for retry on next queue scan cycle.")
                 return count
 
     def record_token_usage(

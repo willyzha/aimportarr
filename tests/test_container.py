@@ -312,18 +312,18 @@ class ContainerSmokeTests(unittest.TestCase):
                     self.assertTrue(res_cfg["config"]["general"]["reject_on_low_confidence"])
                     self.assertEqual(res_cfg["config"]["general"]["min_confidence"], 0.9)
 
-                # 6. REST API: POST /api/retry for single item
+                # 6. REST API: POST /api/retry for single retryable item (skipped/failed/dry_run)
                 test_tracker.record_processed_item(
                     app="Radarr",
-                    title="Failed.Movie.2024",
-                    category="unknown_media",
-                    status="rejected",
-                    details="Could not match"
+                    title="Skipped.Movie.2024",
+                    category="low_confidence",
+                    status="skipped",
+                    details="Left in queue"
                 )
                 hist = test_tracker.get_processed_history()
-                failed_id = hist[0]["id"]
+                skipped_id = hist[0]["id"]
 
-                post_data = json.dumps({"id": failed_id}).encode("utf-8")
+                post_data = json.dumps({"id": skipped_id}).encode("utf-8")
                 req = urllib.request.Request(
                     f"http://127.0.0.1:{port}/api/retry",
                     data=post_data,
@@ -334,6 +334,17 @@ class ContainerSmokeTests(unittest.TestCase):
                     res = json.loads(resp.read().decode("utf-8"))
                     self.assertEqual(res["status"], "ok")
                     self.assertTrue(res["success"])
+
+                # Verify that a rejected (deleted) item CANNOT be retried
+                test_tracker.record_processed_item(
+                    app="Radarr",
+                    title="Deleted.Malware.2024",
+                    category="malware_or_corrupt",
+                    status="rejected",
+                    details="Deleted from torrent & blocklisted"
+                )
+                rejected_id = test_tracker.get_processed_history()[0]["id"]
+                self.assertFalse(test_tracker.mark_item_for_retry(rejected_id))
 
                 # 7. REST API: POST /api/retry for all items
                 post_data = json.dumps({"all": True}).encode("utf-8")
@@ -370,16 +381,16 @@ class ContainerSmokeTests(unittest.TestCase):
             item_keys = ["dl:abc123", "path:/data/downloads/Test.Show.S01E01", "item:12:Test.Show"]
             self.assertFalse(db.is_item_attempted(item_keys))
 
-            # Record item as rejected
+            # Record item as skipped (still in queue, eligible for retry)
             item_id = db.record_processed_item(
                 app="Sonarr",
                 title="Test.Show.S01E01",
-                category="id_match",
-                status="rejected",
+                category="low_confidence",
+                status="skipped",
                 confidence=0.45,
                 model="gemini-flash",
-                reasoning="Title does not match series",
-                details="Rejected by AI",
+                reasoning="Low confidence",
+                details="Left in queue",
                 item_keys=item_keys
             )
             self.assertGreater(item_id, 0)
@@ -409,29 +420,47 @@ class ContainerSmokeTests(unittest.TestCase):
             )
             # Re-recording clears retry_requested, so it is once again marked as attempted
             self.assertTrue(db.is_item_attempted(item_keys))
+            # Imported item cannot be marked for retry
+            self.assertFalse(db.mark_item_for_retry(new_id))
 
-            # Test mark_all_rejected_for_retry
-            rej_id1 = db.record_processed_item(
+            # Test mark_all_rejected_for_retry only marks retryable (skipped/failed/dry_run) items, not rejected/dismissed
+            del_id = db.record_processed_item(
                 app="Radarr",
-                title="Movie.Rejected.1",
-                category="fake_or_malware",
-                status="blocked",
-                item_keys=["dl:rej1"]
-            )
-            rej_id2 = db.record_processed_item(
-                app="Radarr",
-                title="Movie.Rejected.2",
-                category="unknown_media",
+                title="Movie.Deleted.1",
+                category="malware_or_corrupt",
                 status="rejected",
-                item_keys=["dl:rej2"]
+                item_keys=["dl:del1"]
             )
-            self.assertTrue(db.is_item_attempted(["dl:rej1"]))
-            self.assertTrue(db.is_item_attempted(["dl:rej2"]))
+            dis_id = db.record_processed_item(
+                app="Radarr",
+                title="Movie.Dismissed.1",
+                category="quality_downgrade",
+                status="dismissed",
+                item_keys=["dl:dis1"]
+            )
+            skip_id1 = db.record_processed_item(
+                app="Radarr",
+                title="Movie.Skipped.1",
+                category="low_confidence",
+                status="skipped",
+                item_keys=["dl:skip1"]
+            )
+            fail_id2 = db.record_processed_item(
+                app="Radarr",
+                title="Movie.Failed.2",
+                category="id_match",
+                status="failed",
+                item_keys=["dl:fail2"]
+            )
+            self.assertFalse(db.mark_item_for_retry(del_id))
+            self.assertFalse(db.mark_item_for_retry(dis_id))
 
             count = db.mark_all_rejected_for_retry()
-            self.assertEqual(count, 3) # item_id (rejected) + rej_id1 (blocked) + rej_id2 (rejected)
-            self.assertFalse(db.is_item_attempted(["dl:rej1"]))
-            self.assertFalse(db.is_item_attempted(["dl:rej2"]))
+            self.assertEqual(count, 2) # skip_id1 + fail_id2
+            self.assertTrue(db.is_item_attempted(["dl:del1"]))
+            self.assertTrue(db.is_item_attempted(["dl:dis1"]))
+            self.assertFalse(db.is_item_attempted(["dl:skip1"]))
+            self.assertFalse(db.is_item_attempted(["dl:fail2"]))
 
             # Test token recording
             tok_id = db.record_token_usage(

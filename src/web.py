@@ -871,14 +871,14 @@ DASHBOARD_HTML = """<!DOCTYPE html>
         <div class="metric-sub" id="stat-dry-run">0 in Dry Run</div>
       </div>
 
-      <!-- Blocked / Rejected -->
+      <!-- Rejected / Dismissed -->
       <div class="metric-card">
         <div class="metric-card-header">
-          <span class="metric-title">Blocked & Rejected</span>
+          <span class="metric-title">Rejected &amp; Dismissed</span>
           <div class="metric-icon" style="background: var(--danger-bg); color: var(--danger);">🛡</div>
         </div>
         <div class="metric-value" style="color: #f87171;" id="stat-blocked">0</div>
-        <div class="metric-sub" id="stat-blocked-sub">Malware & Rejected</div>
+        <div class="metric-sub" id="stat-blocked-sub">0 Rejected (Deleted) | 0 Dismissed (Seeding)</div>
       </div>
 
       <!-- Total AI Tokens -->
@@ -923,17 +923,15 @@ DASHBOARD_HTML = """<!DOCTYPE html>
 
           <div class="filter-pills">
             <div class="filter-pill active" data-filter="all" onclick="setFilter('all')">All</div>
-            <div class="filter-pill" data-filter="imported" onclick="setFilter('imported')">Imported</div>
-            <div class="filter-pill" data-filter="dry_run" onclick="setFilter('dry_run')">Dry Run</div>
-            <div class="filter-pill" data-filter="blocked" onclick="setFilter('blocked')">Blocked</div>
-            <div class="filter-pill" data-filter="rejected" onclick="setFilter('rejected')">Rejected</div>
-            <div class="filter-pill" data-filter="dismissed" onclick="setFilter('dismissed')">Dismissed</div>
-            <div class="filter-pill" data-filter="skipped" onclick="setFilter('skipped')">Skipped</div>
+            <div class="filter-pill" data-filter="imported" onclick="setFilter('imported')" title="Imported into Sonarr/Radarr media library">Imported</div>
+            <div class="filter-pill" data-filter="dismissed" onclick="setFilter('dismissed')" title="Ignored/removed from *arr queue, still seeding in torrent client">Dismissed</div>
+            <div class="filter-pill" data-filter="rejected" onclick="setFilter('rejected')" title="Deleted from torrent client &amp; blocklisted">Rejected</div>
+            <div class="filter-pill" data-filter="in_queue" onclick="setFilter('in_queue')" title="Items still sitting in the *arr queue (skipped, failed, or dry run) — eligible for retry">In Queue</div>
           </div>
         </div>
 
-        <button class="btn btn-warning" id="btn-retry-all" onclick="retryAllRejected()" title="Allow all rejected, blocked, and failed items to be re-evaluated on next queue scan">
-          <span>🔄</span> Retry All Rejected
+        <button class="btn btn-warning" id="btn-retry-all" onclick="retryAllRejected()" title="Re-evaluate all items still sitting in the queue on the next scan">
+          <span>🔄</span> Retry All In Queue
         </button>
       </div>
 
@@ -1270,10 +1268,28 @@ DASHBOARD_HTML = """<!DOCTYPE html>
       filterHistory();
     }
 
+    function normalizeStatus(status) {
+      if (status === 'blocked') return 'rejected';
+      return status || 'skipped';
+    }
+
+    function getStatusTooltip(status) {
+      const s = normalizeStatus(status);
+      if (s === 'imported') return 'Imported into Sonarr/Radarr media library';
+      if (s === 'rejected') return 'Deleted from torrent client & blocklisted (malware, sample, or corrupt)';
+      if (s === 'dismissed') return 'Ignored/removed from *arr queue, still seeding in torrent client';
+      if (s === 'skipped') return 'Left in queue without action (eligible for retry)';
+      if (s === 'failed') return 'Manual import failed, still in queue (eligible for retry)';
+      if (s === 'dry_run') return 'Simulated in Dry Run mode, still in queue (eligible for retry)';
+      return s;
+    }
+
     function filterHistory() {
       const q = (document.getElementById('history-search').value || '').toLowerCase();
       const filtered = rawHistory.filter(item => {
-        const matchesFilter = (currentFilter === 'all') || (item.status === currentFilter);
+        const normStatus = normalizeStatus(item.status);
+        const matchesFilter = (currentFilter === 'all') ||
+          (currentFilter === 'in_queue' ? ['skipped', 'failed', 'dry_run'].includes(normStatus) : normStatus === currentFilter);
         const matchesSearch = !q ||
           (item.title || '').toLowerCase().includes(q) ||
           (item.category || '').toLowerCase().includes(q) ||
@@ -1318,11 +1334,14 @@ DASHBOARD_HTML = """<!DOCTYPE html>
           modelText = modelText.split(' with Fallback to ')[0];
         }
         const appClass = (item.app || '').toLowerCase() === 'sonarr' ? 'badge-sonarr' : 'badge-radarr';
-        const statusClass = `badge-${item.status || 'skipped'}`;
+        const normStatus = normalizeStatus(item.status);
+        const statusClass = `badge-${normStatus}`;
+        const statusTooltip = getStatusTooltip(normStatus);
         const isOpen = openReasoningId === item.id;
 
+        // Only offer Retry for items that have NOT been imported, rejected (deleted), or dismissed from the queue
         let actionCell = '<span style="color: var(--text-dim); font-size: 0.75rem;">--</span>';
-        if (['rejected', 'failed', 'blocked'].includes(item.status)) {
+        if (['skipped', 'failed', 'dry_run'].includes(normStatus)) {
           if (item.retry_requested) {
             actionCell = '<span class="badge" style="background: rgba(245, 158, 11, 0.15); color: #f59e0b; border: 1px solid rgba(245, 158, 11, 0.3); font-size: 0.65rem;">Pending Retry</span>';
           } else {
@@ -1339,7 +1358,7 @@ DASHBOARD_HTML = """<!DOCTYPE html>
               ${item.details ? `<div class="title-sub">${escapeHtml(item.details)}</div>` : ''}
             </td>
             <td><span class="badge badge-category">${item.category}</span></td>
-            <td><span class="badge ${statusClass}">${item.status}</span></td>
+            <td><span class="badge ${statusClass}" title="${escapeHtml(statusTooltip)}">${normStatus}</span></td>
             <td>
               <div style="font-weight: 600;">${confText}</div>
               <div style="font-size: 0.7rem; color: var(--text-dim);">${escapeHtml(modelText)}</div>
@@ -1490,8 +1509,10 @@ DASHBOARD_HTML = """<!DOCTYPE html>
           document.getElementById('stat-processed').innerText = formatNumber(summary.total_items_processed);
           document.getElementById('stat-imported').innerText = formatNumber(summary.total_imported);
           document.getElementById('stat-dry-run').innerText = `${formatNumber(summary.total_dry_run)} in Dry Run`;
-          document.getElementById('stat-blocked').innerText = formatNumber(summary.total_blocked + summary.total_rejected);
-          document.getElementById('stat-blocked-sub').innerText = `${formatNumber(summary.total_blocked)} Blocked | ${formatNumber(summary.total_rejected)} Rejected`;
+          const rejCount = (summary.total_rejected || 0) + (summary.total_blocked || 0);
+          const disCount = summary.total_dismissed || 0;
+          document.getElementById('stat-blocked').innerText = formatNumber(rejCount + disCount);
+          document.getElementById('stat-blocked-sub').innerText = `${formatNumber(rejCount)} Rejected (Deleted) | ${formatNumber(disCount)} Dismissed (Seeding)`;
           document.getElementById('stat-tokens').innerText = formatNumber(summary.total_tokens);
           const pTok = formatNumber(summary.total_prompt_tokens || 0);
           const thTok = formatNumber(summary.total_thinking_tokens || 0);
@@ -1571,7 +1592,7 @@ DASHBOARD_HTML = """<!DOCTYPE html>
     }
 
     async function retryAllRejected() {
-      if (!confirm('Mark all previously rejected, blocked, and failed items for retry on the next queue scan cycle?')) {
+      if (!confirm('Mark all skipped, failed, and dry-run items still sitting in the queue for retry on the next scan?')) {
         return;
       }
       try {
@@ -1582,10 +1603,10 @@ DASHBOARD_HTML = """<!DOCTYPE html>
         });
         const data = await res.json();
         if (res.ok && data.status === 'ok') {
-          showToast(data.message || `Marked ${data.count || 0} items for retry!`, 'success');
+          showToast(data.message || `Marked ${data.count || 0} item(s) for retry!`, 'success');
           fetchData(true);
         } else {
-          showToast('Failed to retry all rejected items', 'danger');
+          showToast('Failed to mark items for retry', 'danger');
         }
       } catch (e) {
         console.error(e);
@@ -1900,7 +1921,7 @@ class MetricsHTTPHandler(BaseHTTPRequestHandler):
                 count = self.metrics.mark_all_rejected_for_retry()
                 self._send_json({
                     "status": "ok",
-                    "message": f"Marked {count} rejected item(s) for retry on next scan.",
+                    "message": f"Marked {count} retryable item(s) for retry on next scan.",
                     "count": count
                 })
                 return
@@ -1921,7 +1942,10 @@ class MetricsHTTPHandler(BaseHTTPRequestHandler):
                         "success": True
                     })
                 else:
-                    self.send_error(HTTPStatus.NOT_FOUND, f"Item #{item_id} not found")
+                    self._send_json({
+                        "status": "error",
+                        "message": f"Item #{item_id} cannot be retried (already imported, rejected, or dismissed).",
+                    }, status=400)
                 return
 
             self.send_error(HTTPStatus.BAD_REQUEST, "Must specify 'id' or 'all: true'")

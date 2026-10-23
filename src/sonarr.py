@@ -625,11 +625,11 @@ class SonarrClient:
                                 app="Sonarr",
                                 title=title,
                                 category=triage.category_tag or "malware_or_corrupt",
-                                status="dry_run" if is_dry_run else "blocked",
+                                status="dry_run" if is_dry_run else "rejected",
                                 confidence=triage.confidence,
                                 model=model_label,
                                 reasoning=triage.reasoning,
-                                details=f"Deleted & blocklisted archive ({archive_file.name})",
+                                details=f"Deleted from torrent & blocklisted ({archive_file.name})",
                                 item_keys=item_keys,
                             )
                             return await self.delete_and_blocklist(
@@ -668,11 +668,11 @@ class SonarrClient:
                         app="Sonarr",
                         title=title,
                         category=triage.category_tag or "malware_or_corrupt",
-                        status="dry_run" if is_dry_run else "blocked",
+                        status="dry_run" if is_dry_run else "rejected",
                         confidence=triage.confidence,
                         model=model_label,
                         reasoning=triage.reasoning,
-                        details="Deleted from client & blocklisted",
+                        details="Deleted from torrent & blocklisted",
                         item_keys=item_keys,
                     )
                     return await self.delete_and_blocklist(
@@ -687,11 +687,11 @@ class SonarrClient:
                             app="Sonarr",
                             title=title,
                             category="low_confidence",
-                            status="dry_run" if is_dry_run else "rejected",
+                            status="dry_run" if is_dry_run else "dismissed",
                             confidence=triage.confidence,
                             model=model_label,
                             reasoning=triage.reasoning,
-                            details="Low-confidence suspicious item; dismissed & blocklisted (seeding kept)",
+                            details="Low-confidence suspicious item; dismissed & blocklisted (still seeding)",
                             item_keys=item_keys,
                         )
                         return await self.resolve_queue_item(
@@ -785,11 +785,11 @@ class SonarrClient:
                         app="Sonarr",
                         title=title,
                         category=triage.category_tag or "sample_only",
-                        status="dry_run" if is_dry_run else "blocked",
+                        status="dry_run" if is_dry_run else "rejected",
                         confidence=triage.confidence,
                         model=model_label,
                         reasoning=triage.reasoning,
-                        details="0 valid videos; deleted from client & blocklisted",
+                        details="0 valid videos; deleted from torrent & blocklisted",
                         item_keys=item_keys,
                     )
                     return await self.delete_and_blocklist(
@@ -802,11 +802,11 @@ class SonarrClient:
                     app="Sonarr",
                     title=title,
                     category="no_importable_files",
-                    status="rejected",
+                    status="skipped",
                     confidence=triage.confidence,
                     model=model_label,
                     reasoning=triage.reasoning or "Sonarr manual import returned 0 importable files",
-                    details="0 files found",
+                    details="Left in queue (0 importable files found)",
                     item_keys=item_keys,
                 )
                 return False
@@ -904,11 +904,11 @@ class SonarrClient:
                     app="Sonarr",
                     title=title,
                     category="quality_downgrade",
-                    status="dry_run" if is_dry_run else "rejected",
+                    status="dry_run" if is_dry_run else "dismissed",
                     confidence=1.0,
                     model="Sonarr (Quality Rule)",
                     reasoning=f"Rejected by Sonarr quality rules: {reason_str}",
-                    details="Dismissed & blocklisted (seeding preserved)",
+                    details="Dismissed & blocklisted (still seeding)",
                     item_keys=item_keys,
                 )
                 await self.resolve_queue_item(
@@ -1015,11 +1015,11 @@ class SonarrClient:
                         app="Sonarr",
                         title=title,
                         category="low_confidence",
-                        status="dry_run" if is_dry_run else "rejected",
+                        status="dry_run" if is_dry_run else "dismissed",
                         confidence=stage2.confidence,
                         model=model_label,
                         reasoning=stage2.reasoning,
-                        details="Low confidence; dismissed & blocklisted (seeding preserved)",
+                        details="Low confidence; dismissed & blocklisted (still seeding)",
                         item_keys=item_keys,
                     )
                     await self.resolve_queue_item(
@@ -1062,11 +1062,11 @@ class SonarrClient:
                         app="Sonarr",
                         title=title,
                         category="unknown_media",
-                        status="rejected",
+                        status="dry_run" if is_dry_run else "dismissed",
                         confidence=stage2.confidence,
                         model=model_label,
                         reasoning=stage2.reasoning or "Could not resolve series ID in Sonarr library",
-                        details="Dismissed & blocklisted (seeding preserved)",
+                        details="Dismissed & blocklisted (still seeding)",
                         item_keys=item_keys,
                     )
                     await self.resolve_queue_item(
@@ -1157,11 +1157,11 @@ class SonarrClient:
                     app="Sonarr",
                     title=title,
                     category=cat_tag,
-                    status="dry_run" if is_dry_run else "blocked",
+                    status="dry_run" if is_dry_run else "rejected",
                     confidence=stage2.confidence,
                     model=model_label,
                     reasoning=stage2.reasoning,
-                    details="Deleted from client & blocklisted",
+                    details="Deleted from torrent & blocklisted",
                     item_keys=item_keys,
                 )
                 await self.delete_and_blocklist(
@@ -1182,7 +1182,7 @@ class SonarrClient:
                     confidence=stage2.confidence,
                     model=model_label,
                     reasoning=stage2.reasoning,
-                    details="Dismissed season pack warning (seeding preserved)",
+                    details="Dismissed season pack warning (still seeding)",
                     item_keys=item_keys,
                 )
                 await self.dismiss_queue_warning(
@@ -1194,16 +1194,16 @@ class SonarrClient:
                 return False
 
             # Default Stage 2 rejection: 'reject_keep_seeding' (quality downgrade or wrong media)
-            cat_tag = stage2.category_tag or "rejected"
+            cat_tag = stage2.category_tag or "dismissed"
             metrics.record_processed_item(
                 app="Sonarr",
                 title=title,
                 category=cat_tag,
-                status="dry_run" if is_dry_run else "rejected",
+                status="dry_run" if is_dry_run else "dismissed",
                 confidence=stage2.confidence,
                 model=model_label,
                 reasoning=stage2.reasoning,
-                details="Dismissed, blocklisted & re-searched (seeding preserved)",
+                details="Dismissed, blocklisted & re-searched (still seeding)",
                 item_keys=item_keys,
             )
             await self.resolve_queue_item(
