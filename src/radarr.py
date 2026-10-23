@@ -10,7 +10,12 @@ from .ai.base import (
     Stage2DecisionResult,
     ApprovedFileItem,
 )
-from .classifier import classify_issue, ErrorCategory, QUALITY_REJECTION_KEYWORDS
+from .classifier import (
+    classify_issue,
+    ErrorCategory,
+    QUALITY_REJECTION_KEYWORDS,
+    ALREADY_IMPORTED_KEYWORDS,
+)
 from .config import ExtractionConfig
 from .extractor import (
     find_archive_file,
@@ -676,6 +681,7 @@ class RadarrClient:
             # Evaluate fast-path eligibility and hard quality rejections
             fast_path_import_files: List[Dict[str, Any]] = []
             quality_rejected_count = 0
+            already_imported_count = 0
             needs_ai_stage2 = False
             all_rejection_reasons: List[str] = []
 
@@ -692,6 +698,17 @@ class RadarrClient:
 
                 if any("matched to movie by id" in r.lower() or "matched by id" in r.lower() for r in rejections):
                     needs_ai_stage2 = True
+
+                already_imported_rejs = [
+                    r for r in rejections
+                    if any(k in r.lower() for k in ALREADY_IMPORTED_KEYWORDS)
+                ]
+                if already_imported_rejs:
+                    logger.info(
+                        f"  ✔ Skipping file '{f_name}': movie file already imported ({'; '.join(already_imported_rejs)})."
+                    )
+                    already_imported_count += 1
+                    continue
 
                 quality_rejs = [
                     r for r in rejections
@@ -718,9 +735,29 @@ class RadarrClient:
                 else:
                     needs_ai_stage2 = True
 
-            # FAST-PATH A: All candidate files were rejected by Radarr's hard quality/CF rules
-            if quality_rejected_count == len(manual_items):
+            # FAST-PATH A: All candidate files were either already imported or rejected by Radarr's hard quality/CF rules
+            if (quality_rejected_count + already_imported_count) == len(manual_items):
                 reason_str = "; ".join(sorted(set(all_rejection_reasons))) or "Existing file on disk has equal or higher quality"
+                if already_imported_count > 0:
+                    metrics.record_processed_item(
+                        app="Radarr",
+                        title=title,
+                        category="already_imported",
+                        status="dry_run" if is_dry_run else "dismissed",
+                        confidence=1.0,
+                        model="Radarr (Quality Rule)",
+                        reasoning=f"Movie file already imported ({reason_str})",
+                        details="Dismissed queue warning",
+                        item_keys=item_keys,
+                    )
+                    await self.dismiss_queue_warning(
+                        queue_id=queue_id,
+                        download_id=download_id,
+                        dry_run=is_dry_run,
+                        title=title,
+                    )
+                    return False
+
                 metrics.record_processed_item(
                     app="Radarr",
                     title=title,
@@ -766,6 +803,13 @@ class RadarrClient:
                     details=f"Imported {len(fast_path_import_files)} movie file(s) into '{candidate_title}'",
                     item_keys=item_keys,
                 )
+                if import_ok and (quality_rejected_count > 0 or already_imported_count > 0):
+                    await self.dismiss_queue_warning(
+                        queue_id=queue_id,
+                        download_id=download_id,
+                        dry_run=is_dry_run,
+                        title=title,
+                    )
                 return import_ok
 
             # ------------------------------------------------------------------
@@ -792,10 +836,11 @@ class RadarrClient:
                     for m in all_movies
                 ]
 
+            skip_rejection_keywords = QUALITY_REJECTION_KEYWORDS + ALREADY_IMPORTED_KEYWORDS
             eligible_manual_items = [
                 m for m in manual_items
                 if not any(
-                    any(k in r.get("reason", "").lower() for k in QUALITY_REJECTION_KEYWORDS)
+                    any(k in r.get("reason", "").lower() for k in skip_rejection_keywords)
                     for r in m.get("rejections", [])
                 )
             ]

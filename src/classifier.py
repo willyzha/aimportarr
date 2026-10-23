@@ -16,6 +16,8 @@ QUALITY_REJECTION_KEYWORDS = [
     "not an upgrade",
     "higher quality",
     "equal or higher quality",
+    "equal or higher preference",
+    "existing file on disk",
     "better quality",
     "quality not wanted",
     "language not wanted",
@@ -24,6 +26,12 @@ QUALITY_REJECTION_KEYWORDS = [
     "custom format score",
     "custom format cutoff",
     "quality profile",
+]
+
+ALREADY_IMPORTED_KEYWORDS = [
+    "already imported",
+    "episode file already imported",
+    "movie file already imported",
 ]
 
 def classify_issue(

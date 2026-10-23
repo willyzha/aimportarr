@@ -496,6 +496,205 @@ class QualityEnforcementTests(unittest.IsolatedAsyncioTestCase):
             self.assertTrue(mock_resolve.call_args.kwargs["blocklist"])
             self.assertFalse(mock_resolve.call_args.kwargs["skip_redownload"])
 
+    async def test_season_pack_already_imported_and_quality_rejected_fast_path_dismisses(self):
+        """
+        When Sonarr automatically imports needed episodes from a season pack ('Episode file already imported at ...')
+        and leaves the remaining files rejected due to higher Custom Format score on disk, Fast-Path A must
+        dismiss the leftover queue warning with 0 AI calls (removeFromClient=False, blocklist=False, skipRedownload=True).
+        """
+        manual_items = [
+            {
+                "path": "/data/downloads/Against The Current S01/Against The Current S01E01.mkv",
+                "name": "Against The Current S01E01.mkv",
+                "quality": {"quality": {"name": "WEBDL-1080p"}},
+                "customFormatScore": 0,
+                "episodes": [{"id": 23957, "seasonNumber": 1, "episodeNumber": 1}],
+                "series": {"id": 343, "title": "Against The Current"},
+                "rejections": [{"reason": "Episode file already imported at 10/23/2026 12:15:04"}],
+            },
+            {
+                "path": "/data/downloads/Against The Current S01/Against The Current S01E02.mkv",
+                "name": "Against The Current S01E02.mkv",
+                "quality": {"quality": {"name": "WEBDL-1080p"}},
+                "customFormatScore": 0,
+                "episodes": [{"id": 23958, "seasonNumber": 1, "episodeNumber": 2}],
+                "series": {"id": 343, "title": "Against The Current"},
+                "rejections": [
+                    {
+                        "reason": "Not a Custom Format upgrade for existing episode file(s). New: [] (0) do not improve on Existing: [DSNP, HD Streaming Boost] (150)"
+                    }
+                ],
+            },
+        ]
+        queue_item = {
+            "id": 9901,
+            "downloadId": "DL_ATC_S01",
+            "title": "Against The Current S01 (2026) 1080p WETV WEB-DL AAC H.264-Luvmichelle",
+            "trackedDownloadStatus": "warning",
+            "trackedDownloadState": "importPending",
+            "statusMessages": [
+                {
+                    "messages": [
+                        "Not a Custom Format upgrade for existing episode file(s). New: [] (0) do not improve on Existing: [DSNP, HD Streaming Boost] (150)"
+                    ]
+                }
+            ],
+            "series": {"id": 343, "title": "Against The Current", "year": 2026},
+            "outputPath": "/data/downloads/Against The Current S01 (2026) 1080p WETV WEB-DL AAC H.264-Luvmichelle",
+        }
+        all_episodes = [
+            {"id": 23957, "seasonNumber": 1, "episodeNumber": 1, "hasFile": True, "monitored": True},
+            {"id": 23958, "seasonNumber": 1, "episodeNumber": 2, "hasFile": True, "monitored": True},
+        ]
+
+        with patch.object(self.sonarr, "get_manual_import_items", new_callable=AsyncMock, return_value=manual_items), \
+             patch.object(self.sonarr, "get_series_episodes", new_callable=AsyncMock, return_value=all_episodes), \
+             patch.object(self.sonarr, "get_episode_files", new_callable=AsyncMock, return_value=[]), \
+             patch.object(self.sonarr, "resolve_queue_item", new_callable=AsyncMock) as mock_resolve:
+            mock_resolve.return_value = True
+            await self.sonarr.process_queue_item(item=queue_item, ai_provider=self.mock_ai)
+
+            # 0 AI calls!
+            self.mock_ai.evaluate_import_decision.assert_not_called()
+            # Dismissed without blocklisting or deleting from client
+            mock_resolve.assert_called_once()
+            self.assertFalse(mock_resolve.call_args.kwargs["remove_from_client"])
+            self.assertFalse(mock_resolve.call_args.kwargs["blocklist"])
+            self.assertTrue(mock_resolve.call_args.kwargs["skip_redownload"])
+
+    async def test_season_pack_mix_already_imported_and_clean_file_fast_path_b(self):
+        """
+        When a season pack has a mix of 'already imported', 'Not a Custom Format upgrade', and 1 clean
+        unimported episode, Fast-Path B imports only the 1 clean episode with 0 AI calls and dismisses the warning.
+        """
+        manual_items = [
+            {
+                "path": "/data/downloads/Pack/S01E01.mkv",
+                "name": "S01E01.mkv",
+                "quality": {"quality": {"name": "WEBDL-1080p"}},
+                "episodes": [{"id": 101, "seasonNumber": 1, "episodeNumber": 1}],
+                "series": {"id": 343, "title": "Show"},
+                "rejections": [{"reason": "Episode file already imported at 10/23/2026 12:15:04"}],
+            },
+            {
+                "path": "/data/downloads/Pack/S01E02.mkv",
+                "name": "S01E02.mkv",
+                "quality": {"quality": {"name": "WEBDL-1080p"}},
+                "episodes": [{"id": 102, "seasonNumber": 1, "episodeNumber": 2}],
+                "series": {"id": 343, "title": "Show"},
+                "rejections": [{"reason": "Not a Custom Format upgrade for existing episode file(s)"}],
+            },
+            {
+                "path": "/data/downloads/Pack/S01E03.mkv",
+                "name": "S01E03.mkv",
+                "quality": {"quality": {"name": "WEBDL-1080p"}},
+                "episodes": [{"id": 103, "seasonNumber": 1, "episodeNumber": 3}],
+                "series": {"id": 343, "title": "Show"},
+                "rejections": [],
+            },
+        ]
+        queue_item = {
+            "id": 9902,
+            "downloadId": "DL_PACK_MIX",
+            "title": "Show S01 1080p WEB-DL",
+            "trackedDownloadStatus": "warning",
+            "trackedDownloadState": "importPending",
+            "statusMessages": [{"messages": ["Not a Custom Format upgrade for existing episode file(s)"]}],
+            "series": {"id": 343, "title": "Show", "year": 2026},
+            "outputPath": "/data/downloads/Pack",
+        }
+
+        with patch.object(self.sonarr, "get_manual_import_items", new_callable=AsyncMock, return_value=manual_items), \
+             patch.object(self.sonarr, "get_series_episodes", new_callable=AsyncMock, return_value=[]), \
+             patch.object(self.sonarr, "get_episode_files", new_callable=AsyncMock, return_value=[]), \
+             patch.object(self.sonarr, "trigger_manual_import", new_callable=AsyncMock, return_value=True) as mock_import, \
+             patch.object(self.sonarr, "dismiss_queue_warning", new_callable=AsyncMock, return_value=True) as mock_dismiss:
+            res = await self.sonarr.process_queue_item(item=queue_item, ai_provider=self.mock_ai)
+
+            self.assertTrue(res)
+            self.mock_ai.evaluate_import_decision.assert_not_called()
+            mock_import.assert_called_once()
+            imported_files = mock_import.call_args.args[0]
+            self.assertEqual(len(imported_files), 1)
+            self.assertEqual(imported_files[0]["path"], "/data/downloads/Pack/S01E03.mkv")
+            mock_dismiss.assert_called_once()
+
+    async def test_stage3_output_interpreter_repairs_malformed_ollama_response(self):
+        """
+        Verify that when Stage 2 returns a malformed JSON object (e.g. 'action' instead of 'decision',
+        missing 'confidence', episode ID in 'matched_media_id', and string in 'files_to_import'),
+        Stage 3 AI Output Interpreter is invoked to repair it into a valid Stage2DecisionResult.
+        """
+        from src.ai.ollama import OllamaProvider
+
+        provider = OllamaProvider(base_url="http://localhost:11434", model="qwen2.5:1.5b")
+
+        # First call (Stage 2) returns the exact malformed JSON from the user's trace
+        malformed_stage2 = {
+            "action": "import",
+            "matched_media_id": 23957,
+            "files_to_import": ["Episode 1"],
+        }
+        # Second call (Stage 3 Output Interpreter) repairs it using the Reference Context
+        repaired_stage3 = {
+            "decision": "import",
+            "matched_media_id": 343,
+            "files_to_import": [
+                {
+                    "path": "/data/downloads/Against The Current S01/Against The Current S01E01.mkv",
+                    "season_number": 1,
+                    "episode_numbers": [1],
+                }
+            ],
+            "category_tag": "episode_parsed",
+            "confidence": 0.92,
+            "reasoning": "Repaired malformed Stage 2 response: matched series 343 and mapped Episode 1 path.",
+        }
+
+        with patch.object(
+            provider,
+            "_call_ollama_with_raw",
+            new_callable=AsyncMock,
+            return_value=(malformed_stage2, '{"action": "import", "matched_media_id": 23957, "files_to_import": ["Episode 1"]}', None),
+        ) as mock_stage2_call, patch.object(
+            provider,
+            "_call_ollama",
+            new_callable=AsyncMock,
+            return_value=repaired_stage3,
+        ) as mock_stage3_call:
+            result = await provider.evaluate_import_decision(
+                media_type="series",
+                release_title="Against The Current S01",
+                folder_name="Against The Current S01",
+                queue_messages=["Episode was not found"],
+                candidate_media={"id": 343, "title": "Against The Current", "year": 2026},
+                library_candidates=[],
+                manual_import_files=[
+                    {
+                        "path": "/data/downloads/Against The Current S01/Against The Current S01E01.mkv",
+                        "name": "Against The Current S01E01.mkv",
+                        "episodes": [{"id": 23957, "season": 1, "episode": 1}],
+                    }
+                ],
+                existing_disk_files=[],
+                known_episodes=[
+                    {"id": i, "season": 1, "episode": i, "title": f"Episode {i}", "hasFile": True}
+                    for i in range(1, 48)
+                ],
+            )
+
+            mock_stage2_call.assert_called_once()
+            mock_stage3_call.assert_called_once()
+            self.assertEqual(mock_stage3_call.call_args.kwargs["operation"], "stage3_output_interpreter")
+            self.assertEqual(result.decision, "import")
+            self.assertEqual(result.matched_media_id, 343)
+            self.assertEqual(result.confidence, 0.92)
+            self.assertEqual(len(result.files_to_import), 1)
+            self.assertEqual(
+                result.files_to_import[0].path,
+                "/data/downloads/Against The Current S01/Against The Current S01E01.mkv",
+            )
+
 
 if __name__ == "__main__":
     unittest.main()

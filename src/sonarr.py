@@ -10,7 +10,12 @@ from .ai.base import (
     Stage2DecisionResult,
     ApprovedFileItem,
 )
-from .classifier import classify_issue, ErrorCategory, QUALITY_REJECTION_KEYWORDS
+from .classifier import (
+    classify_issue,
+    ErrorCategory,
+    QUALITY_REJECTION_KEYWORDS,
+    ALREADY_IMPORTED_KEYWORDS,
+)
 from .config import ExtractionConfig
 from .extractor import (
     find_archive_file,
@@ -737,6 +742,7 @@ class SonarrClient:
             # Evaluate fast-path eligibility and hard quality rejections
             fast_path_import_files: List[Dict[str, Any]] = []
             quality_rejected_count = 0
+            already_imported_count = 0
             needs_ai_stage2 = False
             all_rejection_reasons: List[str] = []
 
@@ -754,6 +760,17 @@ class SonarrClient:
 
                 if any("matched to series by id" in r.lower() or "matched by id" in r.lower() for r in rejections):
                     needs_ai_stage2 = True
+
+                already_imported_rejs = [
+                    r for r in rejections
+                    if any(k in r.lower() for k in ALREADY_IMPORTED_KEYWORDS)
+                ]
+                if already_imported_rejs:
+                    logger.info(
+                        f"  ✔ Skipping file '{f_name}': episode already imported ({'; '.join(already_imported_rejs)})."
+                    )
+                    already_imported_count += 1
+                    continue
 
                 quality_rejs = [
                     r for r in rejections
@@ -782,14 +799,33 @@ class SonarrClient:
                 else:
                     needs_ai_stage2 = True
 
-            # FAST-PATH A: All candidate files were rejected by Sonarr's hard quality/CF rules
-            if quality_rejected_count == len(manual_items):
+            # FAST-PATH A: All candidate files were either already imported or rejected by Sonarr's hard quality/CF rules
+            if (quality_rejected_count + already_imported_count) == len(manual_items):
                 reason_str = "; ".join(sorted(set(all_rejection_reasons))) or "Existing file on disk has equal or higher quality"
-                if initial_category == ErrorCategory.MISSING_EPISODES:
+                pack_seasons = {
+                    ep.get("seasonNumber")
+                    for m in manual_items
+                    for ep in (m.get("episodes") or [])
+                    if ep.get("seasonNumber") is not None
+                }
+                is_satisfied_season_pack = False
+                if (len(manual_items) > 1 or bool(item.get("fullSeason"))) and pack_seasons and all_episodes:
+                    season_monitored_eps = [
+                        e for e in all_episodes
+                        if e.get("seasonNumber") in pack_seasons and e.get("monitored", True)
+                    ]
+                    if season_monitored_eps and all(e.get("hasFile", False) for e in season_monitored_eps):
+                        is_satisfied_season_pack = True
+
+                if (
+                    initial_category == ErrorCategory.MISSING_EPISODES
+                    or already_imported_count > 0
+                    or is_satisfied_season_pack
+                ):
                     metrics.record_processed_item(
                         app="Sonarr",
                         title=title,
-                        category="season_pack",
+                        category="season_pack" if len(manual_items) > 1 else "already_imported",
                         status="dry_run" if is_dry_run else "dismissed",
                         confidence=1.0,
                         model="Sonarr (Quality Rule)",
@@ -831,7 +867,9 @@ class SonarrClient:
             if not needs_ai_stage2 and fast_path_import_files:
                 decider = "Sonarr (Extracted Archive)" if is_extracted_archive else "Sonarr (Direct Match)"
                 cat_tag = "archive_extracted" if is_extracted_archive else (
-                    "season_pack" if initial_category == ErrorCategory.MISSING_EPISODES else "direct_match"
+                    "season_pack"
+                    if (initial_category == ErrorCategory.MISSING_EPISODES or already_imported_count > 0 or quality_rejected_count > 0)
+                    else "direct_match"
                 )
                 candidate_title = series_info.get("title", "") if series_info else title
                 logger.info(
@@ -852,7 +890,11 @@ class SonarrClient:
                     details=f"Imported {len(fast_path_import_files)} episode file(s) into '{candidate_title}'",
                     item_keys=item_keys,
                 )
-                if import_ok and (initial_category == ErrorCategory.MISSING_EPISODES or quality_rejected_count > 0):
+                if import_ok and (
+                    initial_category == ErrorCategory.MISSING_EPISODES
+                    or quality_rejected_count > 0
+                    or already_imported_count > 0
+                ):
                     await self.dismiss_queue_warning(
                         queue_id=queue_id,
                         download_id=download_id,
@@ -885,11 +927,12 @@ class SonarrClient:
                     for s in all_series
                 ]
 
-            # Filter out hard quality-rejected files before asking Stage 2 AI
+            # Filter out hard quality-rejected and already-imported files before asking Stage 2 AI
+            skip_rejection_keywords = QUALITY_REJECTION_KEYWORDS + ALREADY_IMPORTED_KEYWORDS
             eligible_manual_items = [
                 m for m in manual_items
                 if not any(
-                    any(k in r.get("reason", "").lower() for k in QUALITY_REJECTION_KEYWORDS)
+                    any(k in r.get("reason", "").lower() for k in skip_rejection_keywords)
                     for r in m.get("rejections", [])
                 )
             ]
@@ -933,7 +976,7 @@ class SonarrClient:
                         "title": e.get("title"),
                         "hasFile": e.get("hasFile", False),
                     }
-                    for e in all_episodes[:100]
+                    for e in all_episodes
                 ],
                 raw_disk_files=raw_disk_files,
             )
