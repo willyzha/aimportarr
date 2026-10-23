@@ -63,7 +63,7 @@ flowchart TD
 ### Step 1: Event-Driven Discovery & Throttled FIFO Queue
 AImportarr decouples **queue discovery** from **item processing** via a deduplicated `asyncio.Queue` (FIFO):
 - **Instant Triggers (0s Wait)**:
-  - **Sonarr/Radarr Webhooks (`POST /api/webhook`)**: Configure a Webhook in Sonarr/Radarr (*Settings → Connect → + → Webhook*, Method: `POST`) pointing to `http://<aimportarr-ip>:9890/api/webhook` with **On Manual Interaction Required** (and optionally **On Import Complete** for partial season packs) enabled to wake AImportarr the moment an import stalls.
+  - **Sonarr/Radarr Webhooks (`POST /api/webhook`)**: Configure a Webhook in Sonarr/Radarr (*Settings → Connect → + → Webhook*, Method: `POST`) pointing to `http://<aimportarr-ip>:9890/api/webhook` with **On Manual Interaction Required** enabled in both apps (and **On Import Complete** enabled in Sonarr for partial season packs) to wake AImportarr the moment an import stalls.
   - **UI Retry & Scan Now (`POST /api/retry`, `POST /api/scan`)**: Clicking **🔄 Retry**, **Retry All In Queue**, or **⚡ Scan Now** immediately wakes the discovery loop and enqueues eligible items.
   - **Lightweight Local Sync (`check_interval_seconds: 30`)**: Periodically checks `GET /api/v3/queue` over the LAN (0 AI tokens), filtering out downloading or already-resolved SQLite items via `is_item_eligible()` before touching the FIFO queue.
 - **Single-Worker FIFO Consumer & AI Rate-Limiter**:

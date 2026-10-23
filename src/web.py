@@ -1081,7 +1081,7 @@ DASHBOARD_HTML = """<!DOCTYPE html>
             <input type="text" id="cfg-webhook-url" class="form-input" readonly onclick="this.select()" value="http://localhost:9890/api/webhook">
             <div class="form-hint">
               Add in Sonarr/Radarr (<strong>Settings &rarr; Connect &rarr; + &rarr; Webhook</strong>, Method: <code>POST</code>) for instant 0s event-driven processing.<br>
-              <strong>Triggers to enable:</strong> Check <strong>On Manual Interaction Required</strong> (required) and <strong>On Import Complete</strong> (recommended for partial season packs). Leave all other triggers unchecked.
+              <strong>Triggers to enable:</strong> In both Sonarr &amp; Radarr, check <strong>On Manual Interaction Required</strong>. In Sonarr only, also check <strong>On Import Complete</strong> (for partial season packs). Leave all other triggers unchecked.
             </div>
           </div>
 
