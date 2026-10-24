@@ -791,6 +791,7 @@ class SonarrClient:
             already_imported_count = 0
             needs_ai_stage2 = False
             all_rejection_reasons: List[str] = []
+            all_ep_map = {e.get("id"): e for e in all_episodes if e.get("id")}
 
             if not series_info or initial_category == ErrorCategory.ID_MATCH:
                 needs_ai_stage2 = True
@@ -818,18 +819,40 @@ class SonarrClient:
                     already_imported_count += 1
                     continue
 
-                quality_rejs = [
-                    r for r in rejections
-                    if any(k in r.lower() for k in QUALITY_REJECTION_KEYWORDS)
-                ]
-                if quality_rejs:
+                # Check if this file maps to missing episode(s) on disk (hasFile == False)
+                mapped_ep_objs = [all_ep_map.get(ep.get("id")) or ep for ep in curr_episodes]
+                all_mapped_missing = bool(mapped_ep_objs) and all(not ep.get("hasFile", False) for ep in mapped_ep_objs)
+
+                is_existing_downgrade = any(
+                    any(p in r.lower() for p in (
+                        "existing file on disk",
+                        "equal or higher quality",
+                        "equal or higher preference",
+                        "not an upgrade",
+                        "not a custom format upgrade",
+                    ))
+                    for r in rejections
+                )
+
+                if is_existing_downgrade or (not all_mapped_missing and any(
+                    any(k in r.lower() for k in QUALITY_REJECTION_KEYWORDS) for r in rejections
+                )):
+                    quality_rejs = [
+                        r for r in rejections
+                        if any(k in r.lower() for k in QUALITY_REJECTION_KEYWORDS)
+                    ]
                     logger.warning(
-                        f"  ✖ Skipping file '{f_name}': Sonarr quality rule rejected import ({'; '.join(quality_rejs)})."
+                        f"  ✖ Skipping file '{f_name}': Sonarr quality rule rejected import ({'; '.join(quality_rejs or rejections)})."
                     )
                     quality_rejected_count += 1
                     continue
 
-                if curr_episodes and not rejections and not needs_ai_stage2:
+                if curr_episodes and not needs_ai_stage2:
+                    if rejections:
+                        logger.info(
+                            f"  ✔ Allowing lower-quality file '{f_name}' to backfill missing episode(s) "
+                            f"{[ep.get('episodeNumber') for ep in curr_episodes]} (overrode Sonarr profile: {'; '.join(rejections)})"
+                        )
                     ep_ids = [ep.get("id") for ep in curr_episodes]
                     payload_item = {
                         "path": f_path,
@@ -974,8 +997,25 @@ class SonarrClient:
                     for s in all_series
                 ]
 
-            # Filter out hard quality-rejected and already-imported files before asking Stage 2 AI
-            skip_rejection_keywords = QUALITY_REJECTION_KEYWORDS + ALREADY_IMPORTED_KEYWORDS
+            # Filter out files before asking Stage 2 AI:
+            # - Always filter out already-imported files and files that downgrade existing on-disk files.
+            # - If there are missing episodes in the series, keep files with profile/cutoff rejections so AI can match them!
+            has_missing_episodes = any(not e.get("hasFile", False) for e in all_episodes if e.get("monitored", True))
+            if has_missing_episodes:
+                skip_rejection_keywords = [
+                    "already imported",
+                    "episode file already imported",
+                    "movie file already imported",
+                    "existing file on disk",
+                    "higher quality",
+                    "equal or higher quality",
+                    "equal or higher preference",
+                    "not an upgrade",
+                    "not a custom format upgrade",
+                ]
+            else:
+                skip_rejection_keywords = QUALITY_REJECTION_KEYWORDS + ALREADY_IMPORTED_KEYWORDS
+
             eligible_manual_items = [
                 m for m in manual_items
                 if not any(
@@ -1271,6 +1311,9 @@ class SonarrClient:
         indexer_id: int,
         dry_run: Optional[bool] = None,
         title: str = "",
+        series_id: Optional[int] = None,
+        episode_ids: Optional[List[int]] = None,
+        release: Optional[Dict[str, Any]] = None,
     ) -> bool:
         """Force-grab a specific release via POST /api/v3/release (overriding existing-file rejections)."""
         if not guid or indexer_id is None:
@@ -1279,16 +1322,43 @@ class SonarrClient:
         is_dry = self.dry_run if dry_run is None else dry_run
         if is_dry:
             logger.info(
-                f"  [DRY RUN] Would force-grab season pack '{title}' (GUID: {guid}, Indexer: {indexer_id})"
+                f"  [DRY RUN] Would force-grab release '{title}' (GUID: {guid}, Indexer: {indexer_id}, SeriesId: {series_id})"
             )
             return True
 
+        payload: Dict[str, Any] = {
+            "guid": guid,
+            "indexerId": int(indexer_id),
+        }
+        if series_id:
+            payload["seriesId"] = int(series_id)
+        if episode_ids:
+            payload["episodeIds"] = [int(eid) for eid in episode_ids]
+
+        if release:
+            for field in (
+                "title",
+                "downloadUrl",
+                "protocol",
+                "publishDate",
+                "size",
+                "indexer",
+                "infoUrl",
+                "commentUrl",
+            ):
+                val = release.get(field)
+                if val is not None and field not in payload:
+                    payload[field] = val
+
         try:
-            await self._post("release", {"guid": guid, "indexerId": int(indexer_id)})
-            logger.info(f"  ✔ Force-grabbed season pack '{title}' (Indexer: {indexer_id})")
+            await self._post("release", payload)
+            logger.info(f"  ✔ Force-grabbed release '{title}' (Indexer: {indexer_id}, SeriesId: {series_id})")
             return True
         except Exception as e:
-            logger.error(f"  ✖ Failed to force-grab season pack '{title}': {e}")
+            err_msg = str(e)
+            if hasattr(e, "response") and getattr(e.response, "text", None):
+                err_msg += f" - Response: {e.response.text}"
+            logger.error(f"  ✖ Failed to force-grab release '{title}': {err_msg}")
             return False
 
     @staticmethod
@@ -1613,11 +1683,19 @@ class SonarrClient:
 
                 if winning_pack:
                     pack_title = winning_pack.get("title") or season_label
+                    missing_ep_ids = [
+                        e.get("id")
+                        for e in season_eps
+                        if e.get("monitored", True) and not e.get("hasFile", False) and e.get("id")
+                    ]
                     grab_ok = await self.grab_release(
                         guid=str(winning_pack.get("guid")),
                         indexer_id=int(winning_pack.get("indexerId", 0)),
                         dry_run=is_dry_run,
                         title=pack_title,
+                        series_id=series_id,
+                        episode_ids=missing_ep_ids,
+                        release=winning_pack,
                     )
                     status_str = "dry_run" if is_dry_run else ("imported" if grab_ok else "failed")
                     metrics.record_processed_item(
@@ -1978,11 +2056,16 @@ class SonarrClient:
             rel_title = winning_rel.get("title") or f"Release {guid}"
 
             if guid not in grabbed_guids:
+                target_ep = next((e for e in missing_eps if e.get("episodeNumber") == ep_num), None)
+                ep_ids = [target_ep.get("id")] if target_ep and target_ep.get("id") else []
                 grab_ok = await self.grab_release(
                     guid=guid,
                     indexer_id=int(winning_rel.get("indexerId", 0)),
                     dry_run=is_dry_run,
                     title=rel_title,
+                    series_id=int(series.get("id", 0)) if series else None,
+                    episode_ids=ep_ids,
+                    release=winning_rel,
                 )
                 grabbed_guids.add(guid)
                 if grab_ok:
@@ -2123,11 +2206,15 @@ class SonarrClient:
 
             if winning_rel:
                 rel_title = winning_rel.get("title") or ep_label
+                ep_ids = [ep_id] if ep_id else []
                 grab_ok = await self.grab_release(
                     guid=str(winning_rel.get("guid")),
                     indexer_id=int(winning_rel.get("indexerId", 0)),
                     dry_run=is_dry_run,
                     title=rel_title,
+                    series_id=int(series.get("id", 0)) if series else None,
+                    episode_ids=ep_ids,
+                    release=winning_rel,
                 )
                 status_str = "dry_run" if is_dry_run else ("imported" if grab_ok else "failed")
                 if grab_ok:

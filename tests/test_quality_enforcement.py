@@ -652,6 +652,9 @@ class QualityEnforcementTests(unittest.IsolatedAsyncioTestCase):
                 indexer_id=2,
                 dry_run=False,
                 title="Test.Show.S01.1080p.WEB-DL",
+                series_id=10,
+                episode_ids=[102],
+                release=releases_s1[1],
             )
 
         # Tier 2 AI Fallback test: reset cooldown memory and return only 'Unknown Series' season pack
@@ -693,6 +696,9 @@ class QualityEnforcementTests(unittest.IsolatedAsyncioTestCase):
                 indexer_id=3,
                 dry_run=False,
                 title="CeShiJu.S01.Complete.1080p.WEB-DL",
+                series_id=10,
+                episode_ids=[102],
+                release=releases_unknown[0],
             )
 
     async def test_satisfied_season_pack_with_quality_rejection_dismisses_without_blocklist(self):
@@ -1088,6 +1094,9 @@ class QualityEnforcementTests(unittest.IsolatedAsyncioTestCase):
                 indexer_id=2,
                 dry_run=False,
                 title="Ongoing.Show.S02E02.1080p.WEB-DL",
+                series_id=20,
+                episode_ids=[202],
+                release=releases_ep202[1],
             )
 
         # 2. Tier 2 Bulk AI Fallback: Unknown Series candidate releases evaluated via evaluate_backfill_episodes_bulk
@@ -1138,6 +1147,9 @@ class QualityEnforcementTests(unittest.IsolatedAsyncioTestCase):
                 indexer_id=3,
                 dry_run=False,
                 title="LianZaiJu.S02E02.1080p.WEB-DL",
+                series_id=20,
+                episode_ids=[202],
+                release=releases_ep202_unknown[0],
             )
 
         # 3. Targeted Fallback Safety Net: If bulk season search returns no matches, falls back to targeted search
@@ -1158,6 +1170,9 @@ class QualityEnforcementTests(unittest.IsolatedAsyncioTestCase):
                 indexer_id=2,
                 dry_run=False,
                 title="Ongoing.Show.S02E02.1080p.WEB-DL",
+                series_id=20,
+                episode_ids=[202],
+                release=releases_ep202[1],
             )
 
     def test_classify_episode_release_tiers_and_rejections(self):
@@ -1346,6 +1361,119 @@ class QualityEnforcementTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(len(call_kwargs["missing_eps"]), 1)
             self.assertEqual(call_kwargs["missing_eps"][0]["id"], 302)
             self.assertEqual(call_kwargs["preloaded_releases"], [])
+
+    async def test_grab_release_payload_structure_and_error_handling(self):
+        """Verify grab_release constructs full ReleaseResource payload including seriesId, episodeIds, and metadata."""
+        winning_rel = {
+            "guid": "guid-test-123",
+            "indexerId": 7,
+            "title": "Star vs The Forces of Evil complete S01 and 2 720p",
+            "protocol": "torrent",
+            "downloadUrl": "magnet:?xt=urn:btih:xyz",
+            "publishDate": "2026-10-24T00:00:00Z",
+            "size": 5000000000,
+        }
+
+        with patch.object(self.sonarr, "_post", new_callable=AsyncMock) as mock_post:
+            ok = await self.sonarr.grab_release(
+                guid="guid-test-123",
+                indexer_id=7,
+                dry_run=False,
+                title="Star vs The Forces of Evil complete S01 and 2 720p",
+                series_id=308,
+                episode_ids=[101, 102],
+                release=winning_rel,
+            )
+            self.assertTrue(ok)
+            mock_post.assert_called_once_with(
+                "release",
+                {
+                    "guid": "guid-test-123",
+                    "indexerId": 7,
+                    "seriesId": 308,
+                    "episodeIds": [101, 102],
+                    "title": "Star vs The Forces of Evil complete S01 and 2 720p",
+                    "downloadUrl": "magnet:?xt=urn:btih:xyz",
+                    "protocol": "torrent",
+                    "publishDate": "2026-10-24T00:00:00Z",
+                    "size": 5000000000,
+                },
+            )
+
+        # Verify error handling extracts response text if HTTP error occurs
+        mock_resp = MagicMock()
+        mock_resp.text = '{"message": "Unknown Series"}'
+        mock_err = Exception("HTTP 400 Bad Request")
+        mock_err.response = mock_resp
+
+        with patch.object(self.sonarr, "_post", new_callable=AsyncMock, side_effect=mock_err):
+            with patch("src.sonarr.logger.error") as mock_log_err:
+                failed = await self.sonarr.grab_release(
+                    guid="guid-test-123",
+                    indexer_id=7,
+                    dry_run=False,
+                    title="Failed Rel",
+                    series_id=308,
+                )
+                self.assertFalse(failed)
+                mock_log_err.assert_called_once()
+                self.assertIn('{"message": "Unknown Series"}', mock_log_err.call_args[0][0])
+
+    async def test_queue_imports_lower_quality_file_for_missing_episode_while_preserving_existing(self):
+        """Verify season pack imports a lower-quality file to fill a missing episode while skipping existing higher-quality episodes."""
+        series_info = {"id": 308, "title": "Star vs. the Forces of Evil", "path": "/data/media/Star"}
+        all_episodes = [
+            {"id": 101, "seasonNumber": 1, "episodeNumber": 1, "hasFile": True, "monitored": True},
+            {"id": 102, "seasonNumber": 1, "episodeNumber": 2, "hasFile": False, "monitored": True},
+        ]
+        # Episode 1 already has higher quality file on disk
+        # Episode 2 is missing, but Sonarr's manualimport gave it a profile rejection (HDTV-720p not wanted in profile)
+        manual_items = [
+            {
+                "path": "/downloads/Star.S01/Star.S01E01.720p.mkv",
+                "name": "Star.S01E01.720p.mkv",
+                "rejections": [{"reason": "Existing file on disk has equal or higher quality"}],
+                "episodes": [{"id": 101, "seasonNumber": 1, "episodeNumber": 1}],
+                "series": series_info,
+                "quality": {"quality": {"id": 1, "name": "HDTV-720p"}},
+            },
+            {
+                "path": "/downloads/Star.S01/Star.S01E02.720p.mkv",
+                "name": "Star.S01E02.720p.mkv",
+                "rejections": [{"reason": "HDTV-720p is not wanted in profile"}],
+                "episodes": [{"id": 102, "seasonNumber": 1, "episodeNumber": 2}],
+                "series": series_info,
+                "quality": {"quality": {"id": 1, "name": "HDTV-720p"}},
+            },
+        ]
+
+        queue_item = {
+            "id": 999,
+            "title": "Star vs The Forces of Evil complete S01 and 2 720p",
+            "status": "warning",
+            "trackedDownloadStatus": "warning",
+            "statusMessages": [{"messages": ["One or more episodes expected in this release were not imported"]}],
+            "series": series_info,
+            "outputPath": "/downloads/Star.S01",
+            "downloadId": "dl-star-1",
+        }
+
+        with patch.object(self.sonarr, "get_manual_import_items", new_callable=AsyncMock, return_value=manual_items), \
+             patch.object(self.sonarr, "get_series_episodes", new_callable=AsyncMock, return_value=all_episodes), \
+             patch.object(self.sonarr, "get_episode_files", new_callable=AsyncMock, return_value=[]), \
+             patch.object(self.sonarr, "trigger_manual_import", new_callable=AsyncMock, return_value=True) as mock_trigger, \
+             patch.object(self.sonarr, "dismiss_queue_warning", new_callable=AsyncMock, return_value=True) as mock_dismiss:
+
+            imported = await self.sonarr.process_queue_item(item=queue_item, ai_provider=self.mock_ai)
+            self.assertTrue(imported)
+            # Only Episode 2 (the missing episode) must be imported! Episode 1 must NOT be overwritten!
+            mock_trigger.assert_called_once()
+            files_sent = mock_trigger.call_args[0][0]
+            self.assertEqual(len(files_sent), 1)
+            self.assertEqual(files_sent[0]["episodeIds"], [102])
+            self.assertEqual(files_sent[0]["path"], "/downloads/Star.S01/Star.S01E02.720p.mkv")
+            # Leftover warning for Episode 1 is dismissed cleanly
+            mock_dismiss.assert_called_once()
 
 
 if __name__ == "__main__":
