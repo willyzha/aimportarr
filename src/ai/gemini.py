@@ -1,6 +1,7 @@
 import asyncio
 import json
 import logging
+import math
 import re
 import time
 from datetime import datetime
@@ -25,6 +26,35 @@ from .base import (
 )
 
 logger = logging.getLogger("aimportarr.ai.gemini")
+
+
+def extract_gemini_error_details(e: Exception) -> Tuple[str, str]:
+    """Extract structured (error_code, detailed_reason) from a Gemini exception."""
+    if hasattr(e, "response") and getattr(e.response, "status_code", None) is not None:
+        status = e.response.status_code
+        err_body = getattr(e.response, "text", "")
+        try:
+            err_json = e.response.json()
+            if isinstance(err_json, dict) and "error" in err_json:
+                err_obj = err_json["error"]
+                if isinstance(err_obj, dict):
+                    g_status = err_obj.get("status")  # e.g. "RESOURCE_EXHAUSTED", "INVALID_ARGUMENT"
+                    g_msg = err_obj.get("message")
+                    code_label = f"HTTP {status} ({g_status})" if g_status else f"HTTP {status}"
+                    return code_label, f"Gemini API returned {code_label}: {g_msg or err_body}"
+        except Exception:
+            pass
+        return f"HTTP {status}", f"Gemini API returned HTTP {status}: {err_body or str(e)}"
+    err_name = type(e).__name__.lower()
+    if "timeout" in err_name:
+        return "TIMEOUT", f"Gemini API request timed out: {e}"
+    elif "connect" in err_name:
+        return "CONNECT_ERROR", f"Failed to connect to Google Gemini API: {e}"
+    elif "request" in err_name:
+        return "NETWORK_ERROR", f"Network request error contacting Gemini: {e}"
+    else:
+        err_type = type(e).__name__
+        return err_type, f"{err_type}: {e}"
 
 
 class GeminiProvider(BaseAIProvider):
@@ -164,6 +194,7 @@ class GeminiProvider(BaseAIProvider):
 
         max_attempts = 4
         last_error = None
+        overall_start_time = time.time()
 
         for attempt in range(max_attempts):
             if self.model in ("auto", "smallest", ""):
@@ -218,6 +249,8 @@ class GeminiProvider(BaseAIProvider):
 
                     usage = data.get("usageMetadata", {})
                     p_tok = usage.get("promptTokenCount", 0)
+                    if p_tok == 0 and full_prompt:
+                        p_tok = max(1, math.ceil(len(full_prompt) / 3.8))
                     c_tok = usage.get("candidatesTokenCount", 0)
                     th_tok = usage.get("thoughtsTokenCount", 0)
                     t_tok = usage.get("totalTokenCount", p_tok + c_tok + th_tok)
@@ -247,7 +280,23 @@ class GeminiProvider(BaseAIProvider):
             except httpx.HTTPStatusError as e:
                 status = e.response.status_code
                 if status in (401, 403):
-                    raise AIProviderError(f"Gemini API Key is invalid or unauthorized (HTTP {status})") from e
+                    dur_ms = int((time.time() - overall_start_time) * 1000)
+                    err_code, err_msg = extract_gemini_error_details(e)
+                    p_tok = max(1, math.ceil(len(full_prompt) / 3.8))
+                    metrics.record_token_usage(
+                        operation=operation,
+                        model=self._resolved_model or self.model,
+                        prompt_tokens=p_tok,
+                        completion_tokens=0,
+                        total_tokens=p_tok,
+                        duration_ms=dur_ms,
+                        item_title=item_title,
+                        success=False,
+                        error_code=err_code,
+                        prompt_text=full_prompt,
+                        response_text=err_msg,
+                    )
+                    raise AIProviderError(f"Gemini API Key is invalid or unauthorized ({err_code})") from e
                 last_error = e
             except (httpx.RequestError, httpx.TimeoutException) as e:
                 last_error = e
@@ -256,21 +305,38 @@ class GeminiProvider(BaseAIProvider):
                 last_error = e
                 break
 
+        dur_ms = int((time.time() - overall_start_time) * 1000)
+        p_tok = max(1, math.ceil(len(full_prompt) / 3.8))
         if last_error:
+            err_code, err_msg = extract_gemini_error_details(last_error)
             metrics.record_token_usage(
                 operation=operation,
                 model=self._resolved_model or self.model,
-                prompt_tokens=0,
+                prompt_tokens=p_tok,
                 completion_tokens=0,
-                total_tokens=0,
-                duration_ms=0,
+                total_tokens=p_tok,
+                duration_ms=dur_ms,
                 item_title=item_title,
                 success=False,
+                error_code=err_code,
                 prompt_text=full_prompt,
-                response_text=str(last_error),
+                response_text=err_msg,
             )
-            raise AIProviderError(f"Gemini API failed after {max_attempts} attempts: {last_error}") from last_error
+            raise AIProviderError(f"Gemini API failed after {max_attempts} attempts: {err_msg}") from last_error
 
+        metrics.record_token_usage(
+            operation=operation,
+            model=self._resolved_model or self.model,
+            prompt_tokens=p_tok,
+            completion_tokens=0,
+            total_tokens=p_tok,
+            duration_ms=dur_ms,
+            item_title=item_title,
+            success=False,
+            error_code="RATE_LIMITED_ALL",
+            prompt_text=full_prompt,
+            response_text="Gemini API failed: all candidate models exhausted or rate-limited",
+        )
         raise AIProviderError("Gemini API failed: all candidate models exhausted or rate-limited")
 
     async def _call_gemini(

@@ -771,6 +771,44 @@ DASHBOARD_HTML = """<!DOCTYPE html>
       overflow-y: auto;
     }
 
+    .debug-error-banner {
+      background: rgba(239, 68, 68, 0.12);
+      border: 1px solid rgba(239, 68, 68, 0.35);
+      border-radius: 6px;
+      padding: 0.65rem 0.85rem;
+      margin-top: 0.5rem;
+      margin-bottom: 0.65rem;
+    }
+
+    .debug-error-title {
+      display: flex;
+      align-items: center;
+      gap: 0.45rem;
+      font-size: 0.82rem;
+      font-weight: 700;
+      color: #f87171;
+      margin-bottom: 0.3rem;
+    }
+
+    .debug-error-code {
+      font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+      font-size: 0.75rem;
+      background: rgba(239, 68, 68, 0.25);
+      color: #fecaca;
+      padding: 0.1rem 0.4rem;
+      border-radius: 4px;
+      border: 1px solid rgba(239, 68, 68, 0.4);
+    }
+
+    .debug-error-reason {
+      font-size: 0.76rem;
+      color: #fca5a5;
+      line-height: 1.45;
+      white-space: pre-wrap;
+      word-break: break-word;
+      font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+    }
+
     .clickable-row {
       cursor: pointer;
     }
@@ -1768,9 +1806,13 @@ DASHBOARD_HTML = """<!DOCTYPE html>
       }
 
       tbody.innerHTML = tokens.map(t => {
-        const statusBadge = t.success
-          ? '<span class="badge badge-imported">Success</span>'
-          : '<span class="badge badge-blocked">Failed</span>';
+        let statusBadge;
+        if (t.success) {
+          statusBadge = '<span class="badge badge-imported">Success</span>';
+        } else {
+          const codeLabel = t.error_code ? escapeHtml(t.error_code) : 'Failed';
+          statusBadge = `<span class="badge badge-blocked" title="${escapeHtml(t.response_text || 'AI Call Failed')}">✖ ${codeLabel}</span>`;
+        }
         const latency = t.duration_ms ? `${t.duration_ms}ms` : '--';
         const thinkingHtml = (t.thinking_tokens && t.thinking_tokens > 0)
           ? `<span style="color: #a78bfa; font-feature-settings: 'tnum'; font-weight: 500;">${formatNumber(t.thinking_tokens)}</span>`
@@ -1778,6 +1820,16 @@ DASHBOARD_HTML = """<!DOCTYPE html>
         const isOpen = openTokenId === t.id;
         const inputText = t.prompt_text || 'No input message recorded for this entry.';
         const outputText = t.response_text || 'No output message recorded for this entry.';
+
+        const errorBannerHtml = !t.success ? `
+          <div class="debug-error-banner">
+            <div class="debug-error-title">
+              <span>🚨</span>
+              <span>AI Call Failed ${t.error_code ? `&bull; Error Code: <code class="debug-error-code">${escapeHtml(t.error_code)}</code>` : ''}</span>
+            </div>
+            <div class="debug-error-reason">${escapeHtml(t.response_text || 'No error details recorded.')}</div>
+          </div>
+        ` : '';
 
         return `
           <tr class="clickable-row" onclick="toggleTokenDetails(${t.id})">
@@ -1798,9 +1850,13 @@ DASHBOARD_HTML = """<!DOCTYPE html>
           <tr id="token-detail-${t.id}" class="token-detail-row ${isOpen ? 'open' : ''}">
             <td colspan="10">
               <div class="reasoning-box">
-                <div style="font-weight: 600; color: #a5b4fc; margin-bottom: 0.35rem;">
-                  🔍 AI Debug Trace &bull; <span style="font-family: monospace; font-size: 0.78rem; color: #c084fc;">${escapeHtml(t.operation)}</span>
+                <div style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 0.35rem; flex-wrap: wrap; gap: 0.4rem;">
+                  <div style="font-weight: 600; color: #a5b4fc;">
+                    🔍 AI Debug Trace &bull; <span style="font-family: monospace; font-size: 0.78rem; color: #c084fc;">${escapeHtml(t.operation)}</span>
+                  </div>
+                  ${!t.success && t.error_code ? `<span class="debug-error-code">${escapeHtml(t.error_code)}</span>` : ''}
                 </div>
+                ${errorBannerHtml}
                 <div class="debug-msg-grid">
                   <div class="debug-msg-panel">
                     <div class="debug-msg-header" style="color: #60a5fa;">
@@ -1810,15 +1866,15 @@ DASHBOARD_HTML = """<!DOCTYPE html>
                     <pre class="debug-msg-pre">${escapeHtml(inputText)}</pre>
                   </div>
                   <div class="debug-msg-panel">
-                    <div class="debug-msg-header" style="color: #34d399;">
-                      <span>📤 Output Message (Response)</span>
-                      <span>${formatNumber(t.completion_tokens)} tok</span>
+                    <div class="debug-msg-header" style="color: ${t.success ? '#34d399' : '#f87171'};">
+                      <span>${t.success ? '📤 Output Message (Response)' : '⚠️ Error Details & Server Response'}</span>
+                      <span>${t.success ? `${formatNumber(t.completion_tokens)} tok` : (t.error_code ? escapeHtml(t.error_code) : 'Failed')}</span>
                     </div>
-                    <pre class="debug-msg-pre">${escapeHtml(outputText)}</pre>
+                    <pre class="debug-msg-pre" style="${t.success ? '' : 'color: #fca5a5; background: rgba(239, 68, 68, 0.05);'}">${escapeHtml(outputText)}</pre>
                   </div>
                 </div>
                 <div style="font-size: 0.7rem; color: var(--text-dim); margin-top: 0.45rem;">
-                  ID: #${t.id} &bull; Timestamp: ${t.timestamp} &bull; Model: ${escapeHtml(t.model)} &bull; Latency: ${latency}
+                  ID: #${t.id} &bull; Timestamp: ${t.timestamp} &bull; Model: ${escapeHtml(t.model)} &bull; Latency: ${latency} ${t.error_code ? `&bull; Error: ${escapeHtml(t.error_code)}` : ''}
                 </div>
               </div>
             </td>

@@ -604,5 +604,90 @@ class ContainerSmokeTests(unittest.TestCase):
         self.assertIn('data-filter="season_backfill"', RENDERED_DASHBOARD_HTML)
         self.assertIn('data-filter="episode_retry"', RENDERED_DASHBOARD_HTML)
 
+    def test_ai_debug_trace_error_details_and_nonzero_tokens(self):
+        """Verify errors record error_code, detailed response_text, and non-zero estimated prompt tokens."""
+        import json
+        import tempfile
+        from src.database import DatabaseManager
+        from src.metrics import MetricsTracker
+        from src.ai.gemini import extract_gemini_error_details
+        from src.ai.ollama import extract_ollama_error_details
+        from src.web import RENDERED_DASHBOARD_HTML
+
+        class MockResponse:
+            def __init__(self, status_code, json_data, text=""):
+                self.status_code = status_code
+                self._json = json_data
+                self.text = text or json.dumps(json_data)
+
+            def json(self):
+                return self._json
+
+        class MockHttpError(Exception):
+            def __init__(self, message, response):
+                super().__init__(message)
+                self.response = response
+
+        # 1. Test error detail extraction
+        # Mock Gemini 429 quota error
+        resp_429 = MockResponse(
+            429,
+            json_data={"error": {"code": 429, "message": "Resource has been exhausted (e.g. check quota).", "status": "RESOURCE_EXHAUSTED"}},
+        )
+        err_429 = MockHttpError("Client error '429 Too Many Requests'", response=resp_429)
+        code, desc = extract_gemini_error_details(err_429)
+        self.assertIn("429", code)
+        self.assertIn("RESOURCE_EXHAUSTED", code)
+        self.assertIn("Resource has been exhausted", desc)
+
+        # Mock Ollama 500 context length error
+        resp_500 = MockResponse(500, json_data={"error": "context length exceeded"})
+        err_ol = MockHttpError("Client error '500 Internal Server Error'", response=resp_500)
+        code_ol, desc_ol = extract_ollama_error_details(err_ol)
+        self.assertEqual(code_ol, "HTTP 500")
+        self.assertIn("context length exceeded", desc_ol)
+
+        # 2. Test token recording with prompt_tokens=0 on error -> estimates non-zero input tokens
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db_path = f"{tmpdir}/test_tokens.db"
+            db = DatabaseManager(db_path=db_path, retention_days=7)
+            metrics_tracker = MetricsTracker(db_manager=db)
+
+            sample_prompt = "You are an expert TV parser. Match the following 20 releases to Series X."
+            metrics_tracker.record_token_usage(
+                operation="evaluate_backfill_episodes_bulk",
+                model="gemini-2.5-flash",
+                prompt_tokens=0,  # simulate API failure returning 0 tokens
+                completion_tokens=0,
+                total_tokens=0,
+                duration_ms=120,
+                item_title="Series X S01 Bulk",
+                success=False,
+                error_code="HTTP 429 (RESOURCE_EXHAUSTED)",
+                prompt_text=sample_prompt,
+                response_text=desc,
+            )
+
+            # In-memory record
+            tok_record = metrics_tracker.token_history[0]
+            self.assertGreater(tok_record["prompt_tokens"], 0)
+            self.assertEqual(tok_record["error_code"], "HTTP 429 (RESOURCE_EXHAUSTED)")
+            self.assertFalse(tok_record["success"])
+            self.assertIn("RESOURCE_EXHAUSTED", tok_record["response_text"])
+
+            # SQLite persisted record
+            db_history = db.get_token_history(limit=5)
+            self.assertEqual(len(db_history), 1)
+            self.assertGreater(db_history[0]["prompt_tokens"], 0)
+            self.assertEqual(db_history[0]["error_code"], "HTTP 429 (RESOURCE_EXHAUSTED)")
+            self.assertEqual(db_history[0]["success"], 0)
+
+            db.close()
+
+        # 3. Web UI markup verification
+        self.assertIn("debug-error-banner", RENDERED_DASHBOARD_HTML)
+        self.assertIn("debug-error-code", RENDERED_DASHBOARD_HTML)
+        self.assertIn("debug-error-reason", RENDERED_DASHBOARD_HTML)
+
 if __name__ == "__main__":
     unittest.main()

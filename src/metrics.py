@@ -1,6 +1,8 @@
 import collections
 from datetime import datetime, timezone
 import logging
+import math
+import re
 import threading
 from typing import Any, Dict, List, Optional
 
@@ -8,6 +10,13 @@ from .database import DatabaseManager
 from . import __version__
 
 logger = logging.getLogger("aimportarr.metrics")
+
+
+def estimate_tokens(text: Optional[str]) -> int:
+    """Estimate token count from raw text (approx 3.8 characters per token)."""
+    if not text:
+        return 0
+    return max(1, math.ceil(len(text.strip()) / 3.8))
 
 class MetricsTracker:
     """
@@ -321,14 +330,35 @@ class MetricsTracker:
         thinking_tokens: int = 0,
         prompt_text: Optional[str] = None,
         response_text: Optional[str] = None,
+        error_code: Optional[str] = None,
     ) -> None:
         """Record an AI token usage transaction in SQLite and in-memory summary."""
         with self._lock:
+            # Bug 2 fix: Even if there's an error, as long as something was sent, prompt_tokens must not be 0
+            p_tok = max(0, prompt_tokens)
+            if p_tok == 0 and prompt_text:
+                p_tok = estimate_tokens(prompt_text)
+
+            c_tok = max(0, completion_tokens)
+            th_tok = max(0, thinking_tokens)
+            t_tok = max(total_tokens, p_tok + c_tok + th_tok)
+
+            # Auto-derive error_code if not provided and call failed
+            if not success and not error_code:
+                if response_text:
+                    m = re.search(r"\b(HTTP\s+\d+|TIMEOUT|CONNECT_ERROR|NETWORK_ERROR|JSON_DECODE_ERROR|SCHEMA_VALIDATION_ERROR)\b", response_text, re.IGNORECASE)
+                    if m:
+                        error_code = m.group(1).upper()
+                    else:
+                        error_code = "FAILED"
+                else:
+                    error_code = "FAILED"
+
             self.total_ai_calls += 1
-            self.total_prompt_tokens += max(0, prompt_tokens)
-            self.total_thinking_tokens += max(0, thinking_tokens)
-            self.total_completion_tokens += max(0, completion_tokens)
-            self.total_tokens += max(0, total_tokens)
+            self.total_prompt_tokens += p_tok
+            self.total_thinking_tokens += th_tok
+            self.total_completion_tokens += c_tok
+            self.total_tokens += t_tok
 
             # Model breakdown
             if model not in self.tokens_by_model:
@@ -341,10 +371,10 @@ class MetricsTracker:
                 }
             m = self.tokens_by_model[model]
             m["calls"] += 1
-            m["prompt_tokens"] += max(0, prompt_tokens)
-            m["thinking_tokens"] = m.get("thinking_tokens", 0) + max(0, thinking_tokens)
-            m["completion_tokens"] += max(0, completion_tokens)
-            m["total_tokens"] += max(0, total_tokens)
+            m["prompt_tokens"] += p_tok
+            m["thinking_tokens"] = m.get("thinking_tokens", 0) + th_tok
+            m["completion_tokens"] += c_tok
+            m["total_tokens"] += t_tok
 
             # Operation breakdown
             if operation not in self.tokens_by_operation:
@@ -354,7 +384,7 @@ class MetricsTracker:
                 }
             op = self.tokens_by_operation[operation]
             op["calls"] += 1
-            op["total_tokens"] += max(0, total_tokens)
+            op["total_tokens"] += t_tok
 
             tok_id = None
             if self.db:
@@ -362,15 +392,16 @@ class MetricsTracker:
                     tok_id = self.db.record_token_usage(
                         operation=operation,
                         model=model,
-                        prompt_tokens=prompt_tokens,
-                        completion_tokens=completion_tokens,
-                        total_tokens=total_tokens,
+                        prompt_tokens=p_tok,
+                        completion_tokens=c_tok,
+                        total_tokens=t_tok,
                         duration_ms=duration_ms,
                         item_title=item_title,
                         success=success,
-                        thinking_tokens=thinking_tokens,
+                        thinking_tokens=th_tok,
                         prompt_text=prompt_text,
                         response_text=response_text,
+                        error_code=error_code,
                     )
                 except Exception as e:
                     logger.error(f"Failed to record token usage to SQLite: {e}")
@@ -384,13 +415,14 @@ class MetricsTracker:
                 "timestamp": datetime.now(timezone.utc).isoformat(),
                 "operation": operation,
                 "model": model,
-                "prompt_tokens": prompt_tokens,
-                "thinking_tokens": thinking_tokens,
-                "completion_tokens": completion_tokens,
-                "total_tokens": total_tokens,
+                "prompt_tokens": p_tok,
+                "thinking_tokens": th_tok,
+                "completion_tokens": c_tok,
+                "total_tokens": t_tok,
                 "duration_ms": duration_ms,
                 "item_title": item_title or "",
                 "success": success,
+                "error_code": error_code or "",
                 "prompt_text": prompt_text or "",
                 "response_text": response_text or "",
             }

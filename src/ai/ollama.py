@@ -1,5 +1,6 @@
 import json
 import logging
+import math
 import time
 from datetime import datetime
 from typing import List, Optional, Dict, Any, Tuple
@@ -23,6 +24,31 @@ from .base import (
 )
 
 logger = logging.getLogger("aimportarr.ai.ollama")
+
+
+def extract_ollama_error_details(e: Exception) -> Tuple[str, str]:
+    """Extract structured (error_code, detailed_reason) from an Ollama exception."""
+    if hasattr(e, "response") and getattr(e.response, "status_code", None) is not None:
+        status = e.response.status_code
+        err_body = getattr(e.response, "text", "")
+        try:
+            err_json = e.response.json()
+            if isinstance(err_json, dict) and "error" in err_json:
+                msg = err_json["error"]
+                return f"HTTP {status}", f"Ollama returned HTTP {status}: {msg}"
+        except Exception:
+            pass
+        return f"HTTP {status}", f"Ollama returned HTTP {status}: {err_body or str(e)}"
+    err_name = type(e).__name__.lower()
+    if "timeout" in err_name:
+        return "TIMEOUT", f"Ollama API request timed out after 60s: {e}"
+    elif "connect" in err_name:
+        return "CONNECT_ERROR", f"Cannot connect to Ollama server (connection refused): {e}"
+    elif "request" in err_name:
+        return "NETWORK_ERROR", f"Network error communicating with Ollama: {e}"
+    else:
+        err_type = type(e).__name__
+        return err_type, f"{err_type}: {e}"
 
 
 class OllamaProvider(BaseAIProvider):
@@ -65,17 +91,32 @@ class OllamaProvider(BaseAIProvider):
                 resp = await client.post(self.chat_url, json=payload)
                 resp.raise_for_status()
                 data = resp.json()
-        except httpx.HTTPStatusError as e:
-            metrics.record_token_usage(operation=operation, model=self.model, prompt_tokens=0, completion_tokens=0, total_tokens=0, duration_ms=int((time.time() - start_time) * 1000), item_title=item_title, success=False, prompt_text=full_prompt, response_text=str(e))
-            raise AIProviderError(f"Ollama server returned HTTP {e.response.status_code}: {e.response.text}") from e
-        except (httpx.RequestError, httpx.TimeoutException) as e:
-            metrics.record_token_usage(operation=operation, model=self.model, prompt_tokens=0, completion_tokens=0, total_tokens=0, duration_ms=int((time.time() - start_time) * 1000), item_title=item_title, success=False, prompt_text=full_prompt, response_text=str(e))
-            raise AIProviderError(f"Cannot connect to Ollama at '{self.chat_url}': {e}") from e
         except Exception as e:
-            metrics.record_token_usage(operation=operation, model=self.model, prompt_tokens=0, completion_tokens=0, total_tokens=0, duration_ms=int((time.time() - start_time) * 1000), item_title=item_title, success=False, prompt_text=full_prompt, response_text=str(e))
-            raise AIProviderError(f"Unexpected error calling Ollama: {e}") from e
+            duration_ms = int((time.time() - start_time) * 1000)
+            err_code, err_msg = extract_ollama_error_details(e)
+            p_tok = max(1, math.ceil(len(full_prompt) / 3.8))
+            metrics.record_token_usage(
+                operation=operation,
+                model=self.model,
+                prompt_tokens=p_tok,
+                completion_tokens=0,
+                total_tokens=p_tok,
+                duration_ms=duration_ms,
+                item_title=item_title,
+                success=False,
+                error_code=err_code,
+                prompt_text=full_prompt,
+                response_text=err_msg,
+            )
+            if isinstance(e, httpx.HTTPStatusError):
+                raise AIProviderError(f"Ollama server returned {err_code}: {err_msg}") from e
+            elif isinstance(e, (httpx.RequestError, httpx.TimeoutException)):
+                raise AIProviderError(f"Cannot connect to Ollama at '{self.chat_url}': {err_msg}") from e
+            raise AIProviderError(f"Unexpected error calling Ollama: {err_msg}") from e
 
         p_tok = data.get("prompt_eval_count", 0)
+        if p_tok == 0 and full_prompt:
+            p_tok = max(1, math.ceil(len(full_prompt) / 3.8))
         c_tok = data.get("eval_count", 0)
         t_tok = p_tok + c_tok
         duration_ns = data.get("total_duration", 0)
