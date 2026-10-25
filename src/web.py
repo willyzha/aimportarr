@@ -1615,7 +1615,35 @@ DASHBOARD_HTML = """<!DOCTYPE html>
             <input type="password" id="cfg-sonarr-key" class="form-input" placeholder="Sonarr API Key">
           </div>
 
-          <div style="background: rgba(56, 189, 248, 0.05); border: 1px solid rgba(56, 189, 248, 0.2); border-radius: 8px; padding: 0.85rem; margin-top: 0.75rem;">
+          <hr style="border: none; border-top: 1px solid var(--border); margin: 1rem 0;">
+
+          <div class="form-row">
+            <div>
+              <div class="form-label" style="margin-bottom: 0; color: var(--radarr);">Enable Radarr</div>
+            </div>
+            <label class="toggle-switch">
+              <input type="checkbox" id="cfg-radarr-enabled">
+              <span class="toggle-slider"></span>
+            </label>
+          </div>
+
+          <div class="form-group" style="margin-top: 0.6rem;">
+            <label class="form-label" for="cfg-radarr-url">Radarr URL</label>
+            <input type="text" id="cfg-radarr-url" class="form-input" placeholder="http://localhost:7878">
+          </div>
+
+          <div class="form-group">
+            <label class="form-label" for="cfg-radarr-key">Radarr API Key</label>
+            <input type="password" id="cfg-radarr-key" class="form-input" placeholder="Radarr API Key">
+          </div>
+        </div>
+
+        <!-- Sonarr Automated Search & Backfill -->
+        <div class="analytics-card">
+          <div class="analytics-card-title"><span>⚡</span> Sonarr Automated Backfill &amp; Episode Retry</div>
+          <div class="form-hint" style="margin-bottom: 1rem;">Automated background routines to recover missing episodes and completed seasons from Sonarr indexers.</div>
+
+          <div style="background: rgba(56, 189, 248, 0.05); border: 1px solid rgba(56, 189, 248, 0.2); border-radius: 8px; padding: 0.85rem; margin-bottom: 0.85rem;">
             <div class="form-row" style="margin-bottom: 0.65rem;">
               <div>
                 <div class="form-label" style="margin-bottom: 0; color: var(--sonarr);">📦 Season Pack Backfill</div>
@@ -1652,7 +1680,7 @@ DASHBOARD_HTML = """<!DOCTYPE html>
             </div>
           </div>
 
-          <div style="background: rgba(99, 102, 241, 0.05); border: 1px solid rgba(99, 102, 241, 0.2); border-radius: 8px; padding: 0.85rem; margin-top: 0.75rem;">
+          <div style="background: rgba(99, 102, 241, 0.05); border: 1px solid rgba(99, 102, 241, 0.2); border-radius: 8px; padding: 0.85rem;">
             <div class="form-row" style="margin-bottom: 0.65rem;">
               <div>
                 <div class="form-label" style="margin-bottom: 0; color: var(--sonarr);">🔎 Missing Episode Retry (Ongoing Seasons)</div>
@@ -1687,28 +1715,6 @@ DASHBOARD_HTML = """<!DOCTYPE html>
             <div style="margin-top: 0.35rem; display: flex; justify-content: flex-end;">
               <button type="button" class="btn btn-sm" onclick="triggerEpisodeRetryNow()" title="Run an immediate Missing Episode Retry check for ongoing seasons">🔎 Retry Missing Episodes Now</button>
             </div>
-          </div>
-
-          <hr style="border: none; border-top: 1px solid var(--border); margin: 1rem 0;">
-
-          <div class="form-row">
-            <div>
-              <div class="form-label" style="margin-bottom: 0; color: var(--radarr);">Enable Radarr</div>
-            </div>
-            <label class="toggle-switch">
-              <input type="checkbox" id="cfg-radarr-enabled">
-              <span class="toggle-slider"></span>
-            </label>
-          </div>
-
-          <div class="form-group" style="margin-top: 0.6rem;">
-            <label class="form-label" for="cfg-radarr-url">Radarr URL</label>
-            <input type="text" id="cfg-radarr-url" class="form-input" placeholder="http://localhost:7878">
-          </div>
-
-          <div class="form-group">
-            <label class="form-label" for="cfg-radarr-key">Radarr API Key</label>
-            <input type="password" id="cfg-radarr-key" class="form-input" placeholder="Radarr API Key">
           </div>
         </div>
 
