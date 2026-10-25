@@ -458,3 +458,14 @@ class BaseAIProvider(ABC):
         identify the best matching valid release for each missing episode in a single AI call.
         """
         return BackfillBulkEpisodesMatchResult(matches=[], model_name=self.name)
+
+    async def evaluate_missing_movie(
+        self,
+        movie_info: Dict[str, Any],
+        candidate_releases: List[Dict[str, Any]],
+    ) -> BackfillPackMatchResult:
+        """
+        AI Fallback for Radarr Missing Movie Search: Given a target movie and a list of
+        'Unknown Movie' / rejected releases from Radarr search, identify the best matching valid movie release.
+        """
+        return BackfillPackMatchResult(matched_guid=None, confidence=0.0, reasoning="Not implemented")

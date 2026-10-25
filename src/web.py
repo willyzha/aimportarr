@@ -1289,6 +1289,31 @@ DASHBOARD_HTML = """<!DOCTYPE html>
             <div><span class="task-meta-label">Next Scheduled:</span> <span class="task-meta-value" id="task-episode-retry-next-run">--</span></div>
           </div>
         </div>
+
+        <!-- Missing Movie Search Task Card (Radarr) -->
+        <div class="task-card" id="task-movie-search-card">
+          <div class="task-card-top">
+            <div class="task-info">
+              <div class="task-title-row">
+                <span class="task-name">🎬 Missing Movie Search</span>
+                <span class="badge task-badge-idle" id="task-movie-search-badge">Idle</span>
+              </div>
+              <div class="task-desc">Interactive search + AI release matching for monitored missing movies in Radarr</div>
+            </div>
+            <button class="btn btn-sm" id="btn-trigger-movie-search" onclick="triggerMovieSearchNow()" title="Run Missing Movie Search scan now">
+              <span>▶</span> Search Movies
+            </button>
+          </div>
+          <div class="task-progress-box" id="task-movie-search-progress-box" style="display: none;">
+            <div class="task-spinner"></div>
+            <span class="task-progress-text" id="task-movie-search-progress-text">Scanning library...</span>
+          </div>
+          <div class="task-meta-row">
+            <div><span class="task-meta-label">Last Run:</span> <span class="task-meta-value" id="task-movie-search-last-run">Never</span></div>
+            <div><span class="task-meta-label">Last Grabbed:</span> <span class="task-meta-value" id="task-movie-search-last-grabbed">0 movies</span></div>
+            <div><span class="task-meta-label">Next Scheduled:</span> <span class="task-meta-value" id="task-movie-search-next-run">--</span></div>
+          </div>
+        </div>
       </div>
     </div>
 
@@ -1333,6 +1358,7 @@ DASHBOARD_HTML = """<!DOCTYPE html>
             <div class="filter-pill" data-filter="in_queue" onclick="setFilter('in_queue')" title="Items still sitting in the *arr queue (skipped, failed, or dry run) — eligible for retry">In Queue</div>
             <div class="filter-pill" data-filter="season_backfill" onclick="setFilter('season_backfill')" title="Season Pack Backfill items">📦 Backfill</div>
             <div class="filter-pill" data-filter="episode_retry" onclick="setFilter('episode_retry')" title="Missing Episode Retry items">🔎 Episode Retry</div>
+            <div class="filter-pill" data-filter="missing_movie" onclick="setFilter('missing_movie')" title="Missing Movie Search items">🎬 Movie Search</div>
           </div>
         </div>
 
@@ -1831,6 +1857,49 @@ DASHBOARD_HTML = """<!DOCTYPE html>
 
             <div style="margin-top: 0.35rem; display: flex; justify-content: flex-end;">
               <button type="button" class="btn btn-sm" onclick="triggerEpisodeRetryNow()" title="Run an immediate Missing Episode Retry check for ongoing seasons">🔎 Retry Missing Episodes Now</button>
+            </div>
+          </div>
+        </div>
+
+        <!-- Radarr Automated Movie Search -->
+        <div class="analytics-card">
+          <div class="analytics-card-title"><span>🎬</span> Radarr Automated Movie Search</div>
+          <div class="form-hint" style="margin-bottom: 1rem;">Automated background routine to search and grab released missing movies from Radarr indexers with AI fallback.</div>
+
+          <div style="background: rgba(251, 146, 60, 0.05); border: 1px solid rgba(251, 146, 60, 0.2); border-radius: 8px; padding: 0.85rem;">
+            <div class="form-row" style="margin-bottom: 0.65rem;">
+              <div>
+                <div class="form-label" style="margin-bottom: 0; color: var(--radarr);">🎬 Missing Movie Search</div>
+                <div class="form-hint">Search indexers for monitored missing movies, evaluating accepted releases and using AI for 'Unknown Movie' or foreign/alias title rejections</div>
+              </div>
+              <label class="toggle-switch">
+                <input type="checkbox" id="cfg-radarr-movie-search-enabled">
+                <span class="toggle-slider"></span>
+              </label>
+            </div>
+
+            <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 0.65rem;">
+              <div class="form-group" style="margin-bottom: 0.5rem;">
+                <label class="form-label" for="cfg-radarr-movie-search-cron">Cron Schedule</label>
+                <input type="text" id="cfg-radarr-movie-search-cron" class="form-input" value="0 3 * * *" placeholder="0 3 * * *">
+                <div class="form-hint" style="font-size:0.75rem;">Standard 5-part cron (e.g. 0 3 * * * = daily at 3 AM)</div>
+              </div>
+              <div class="form-group" style="margin-bottom: 0.5rem;">
+                <label class="form-label" for="cfg-radarr-movie-search-delay">Post-Release Grace (days)</label>
+                <input type="number" min="0" id="cfg-radarr-movie-search-delay" class="form-input" value="1">
+              </div>
+              <div class="form-group" style="margin-bottom: 0.5rem;">
+                <label class="form-label" for="cfg-radarr-movie-search-max">Max Movies / Run</label>
+                <input type="number" min="1" id="cfg-radarr-movie-search-max" class="form-input" value="5">
+              </div>
+              <div class="form-group" style="margin-bottom: 0.5rem;">
+                <label class="form-label" for="cfg-radarr-movie-search-cooldown">Movie Cooldown (days)</label>
+                <input type="number" min="1" id="cfg-radarr-movie-search-cooldown" class="form-input" value="7">
+              </div>
+            </div>
+
+            <div style="margin-top: 0.35rem; display: flex; justify-content: flex-end;">
+              <button type="button" class="btn btn-sm" onclick="triggerMovieSearchNow()" title="Run an immediate Missing Movie Search check for Radarr in the background">🎬 Search Missing Movies Now</button>
             </div>
           </div>
         </div>
@@ -2446,6 +2515,19 @@ DASHBOARD_HTML = """<!DOCTYPE html>
           lastGrabbedId: 'task-episode-retry-last-grabbed',
           nextRunId: 'task-episode-retry-next-run',
           grabLabel: 'episodes'
+        },
+        {
+          key: 'missing_movie_search',
+          cardId: 'task-movie-search-card',
+          badgeId: 'task-movie-search-badge',
+          btnId: 'btn-trigger-movie-search',
+          btnLabel: 'Search Movies',
+          progressBoxId: 'task-movie-search-progress-box',
+          progressTextId: 'task-movie-search-progress-text',
+          lastRunId: 'task-movie-search-last-run',
+          lastGrabbedId: 'task-movie-search-last-grabbed',
+          nextRunId: 'task-movie-search-next-run',
+          grabLabel: 'movies'
         }
       ];
 
@@ -2643,6 +2725,26 @@ DASHBOARD_HTML = """<!DOCTYPE html>
       }
     }
 
+    async function triggerMovieSearchNow() {
+      const btn = document.getElementById('btn-trigger-movie-search');
+      if (btn) btn.disabled = true;
+      try {
+        const res = await fetch('/api/movie-search', { method: 'POST' });
+        const data = await res.json();
+        if (res.ok && data.status === 'ok') {
+          showToast('Missing Movie Search check started in background!', 'success');
+          setTimeout(() => fetchData(true), 400);
+        } else {
+          showToast(data.message || 'Failed to trigger Missing Movie Search', 'danger');
+        }
+      } catch (e) {
+        console.error(e);
+        showToast('Network error triggering Missing Movie Search', 'danger');
+      } finally {
+        if (btn) btn.disabled = false;
+      }
+    }
+
     async function retryItem(id) {
       try {
         const res = await fetch('/api/retry', {
@@ -2759,6 +2861,12 @@ DASHBOARD_HTML = """<!DOCTYPE html>
         document.getElementById('cfg-radarr-enabled').checked = Boolean(r.enabled);
         document.getElementById('cfg-radarr-url').value = r.url || 'http://localhost:7878';
         document.getElementById('cfg-radarr-key').value = r.api_key || '';
+        const mms = r.missing_movie_search || {};
+        document.getElementById('cfg-radarr-movie-search-enabled').checked = Boolean(mms.enabled);
+        document.getElementById('cfg-radarr-movie-search-cron').value = mms.cron || '0 3 * * *';
+        document.getElementById('cfg-radarr-movie-search-delay').value = mms.min_release_delay_days ?? 1;
+        document.getElementById('cfg-radarr-movie-search-max').value = mms.max_movies_per_run ?? 5;
+        document.getElementById('cfg-radarr-movie-search-cooldown').value = mms.movie_cooldown_days ?? 7;
 
         document.getElementById('cfg-extract-enabled').checked = ex.enabled !== false;
         document.getElementById('cfg-extract-delete').checked = ex.delete_after_import !== false;
@@ -2827,7 +2935,14 @@ DASHBOARD_HTML = """<!DOCTYPE html>
         radarr: {
           enabled: document.getElementById('cfg-radarr-enabled').checked,
           url: document.getElementById('cfg-radarr-url').value.trim(),
-          api_key: document.getElementById('cfg-radarr-key').value.trim()
+          api_key: document.getElementById('cfg-radarr-key').value.trim(),
+          missing_movie_search: {
+            enabled: document.getElementById('cfg-radarr-movie-search-enabled').checked,
+            cron: document.getElementById('cfg-radarr-movie-search-cron').value.trim() || '0 3 * * *',
+            min_release_delay_days: parseInt(document.getElementById('cfg-radarr-movie-search-delay').value, 10) ?? 1,
+            max_movies_per_run: parseInt(document.getElementById('cfg-radarr-movie-search-max').value, 10) || 5,
+            movie_cooldown_days: parseInt(document.getElementById('cfg-radarr-movie-search-cooldown').value, 10) || 7
+          }
         },
         extraction: {
           enabled: document.getElementById('cfg-extract-enabled').checked,
@@ -3800,6 +3915,15 @@ class MetricsHTTPHandler(BaseHTTPRequestHandler):
             self._send_json({
                 "status": "ok",
                 "message": "Missing Episode Retry check triggered.",
+            })
+            return
+
+        if path == "/api/movie-search":
+            if self.on_trigger_scan:
+                self.on_trigger_scan("movie_search")
+            self._send_json({
+                "status": "ok",
+                "message": "Missing Movie Search check triggered.",
             })
             return
 

@@ -1,8 +1,9 @@
 import asyncio
 import logging
 import shutil
+from datetime import datetime, timezone, timedelta
 from pathlib import Path
-from typing import List, Dict, Any, Optional
+from typing import List, Dict, Any, Optional, Tuple
 import httpx
 from .ai.base import (
     BaseAIProvider,
@@ -16,7 +17,7 @@ from .classifier import (
     QUALITY_REJECTION_KEYWORDS,
     ALREADY_IMPORTED_KEYWORDS,
 )
-from .config import ExtractionConfig
+from .config import ExtractionConfig, MissingMovieSearchConfig
 from .extractor import (
     find_archive_file,
     inspect_archive,
@@ -39,6 +40,7 @@ class RadarrClient:
         dry_run: bool = False,
         reject_on_low_confidence: bool = False,
         extraction_config: Optional[ExtractionConfig] = None,
+        missing_movie_config: Optional[MissingMovieSearchConfig] = None,
         path_mappings: Optional[List[Any]] = None,
         categories: Optional[Any] = None,  # Ignored legacy parameter if passed by external callers
     ):
@@ -48,9 +50,11 @@ class RadarrClient:
         self.dry_run = bool(dry_run)
         self.reject_on_low_confidence = bool(reject_on_low_confidence)
         self.extraction_config = extraction_config or ExtractionConfig()
+        self.missing_movie_config = missing_movie_config or MissingMovieSearchConfig()
         self.path_mappings = path_mappings or []
         self._dismissed_downloads: set = set()
         self._attempted_items: set = set()
+        self._attempted_movie_retry_keys: set = set()
         self.headers = {
             "X-Api-Key": self.api_key,
             "Content-Type": "application/json",
@@ -1047,3 +1051,361 @@ class RadarrClient:
                     )
                 except Exception as ce:
                     logger.debug(f"Failed to clean up staging folder '{staging_dir_to_clean}': {ce}")
+
+    # =========================================================================
+    # Missing Movie Search Engine (Radarr)
+    # =========================================================================
+
+    async def get_movie_releases(self, movie_id: int) -> List[Dict[str, Any]]:
+        """Query Radarr's Interactive Search endpoint for all releases of a specific movie."""
+        url = f"{self.base_url}/api/v3/release"
+        params = {"movieId": movie_id}
+        async with httpx.AsyncClient(timeout=90.0) as client:
+            resp = await client.get(url, headers=self.headers, params=params)
+            resp.raise_for_status()
+            data = resp.json()
+            return data if isinstance(data, list) else []
+
+    async def grab_release(
+        self,
+        guid: str,
+        indexer_id: int,
+        movie_id: int,
+        dry_run: Optional[bool] = None,
+        title: str = "",
+        release: Optional[Dict[str, Any]] = None,
+    ) -> bool:
+        """Force-grab a specific release via POST /api/v3/release."""
+        if not guid or indexer_id is None or not movie_id:
+            return False
+
+        is_dry = self.dry_run if dry_run is None else dry_run
+        if is_dry:
+            logger.info(
+                f"  [DRY RUN] Would force-grab release '{title}' (GUID: {guid}, Indexer: {indexer_id}, MovieId: {movie_id})"
+            )
+            return True
+
+        payload: Dict[str, Any] = {
+            "guid": guid,
+            "indexerId": int(indexer_id),
+            "movieId": int(movie_id),
+        }
+        if release:
+            for field in (
+                "title",
+                "downloadUrl",
+                "protocol",
+                "publishDate",
+                "size",
+                "indexer",
+                "infoUrl",
+                "commentUrl",
+            ):
+                val = release.get(field)
+                if val is not None and field not in payload:
+                    payload[field] = val
+
+        url = f"{self.base_url}/api/v3/release"
+        async with httpx.AsyncClient(timeout=60.0) as client:
+            resp = await client.post(url, headers=self.headers, json=payload)
+            if resp.status_code in (200, 201):
+                logger.info(f"  ✔ Force-grabbed release '{title}' (Indexer: {indexer_id}, MovieId: {movie_id})")
+                return True
+            else:
+                logger.warning(
+                    f"  ⚠️ Force-grab failed for release '{title}' (HTTP {resp.status_code}): {resp.text}"
+                )
+                return False
+
+    @staticmethod
+    def _rank_movie_release(release: Dict[str, Any]) -> Tuple[int, int, int, int]:
+        """Rank releases by customFormatScore, qualityWeight, seeders, and size."""
+        score = int(release.get("customFormatScore") or 0)
+        qw = int(release.get("qualityWeight") or (release.get("quality", {}).get("quality", {}).get("id") or 0))
+        seeders = int(release.get("seeders") or 0)
+        size = int(release.get("size") or 0)
+        return (score, qw, seeders, size)
+
+    @staticmethod
+    def classify_movie_release(release: Dict[str, Any], movie: Dict[str, Any]) -> str:
+        """
+        Classify a Radarr release candidate into:
+        - 'rejected': obvious junk, 0 bytes, etc.
+        - 'tier1_eligible': approved by Radarr or rejected solely by quality/upgrade rules with clean title match
+        - 'tier2_candidate': potential match rejected by Radarr (unknown movie, alias, foreign title)
+        """
+        title = (release.get("title") or "").strip()
+        size = int(release.get("size") or 0)
+        if not title or size < 100 * 1024 * 1024:  # Less than 100MB is likely sample/trailer
+            return "rejected"
+
+        rejections = [str(r).lower() for r in (release.get("rejections") or [])]
+        is_approved = bool(release.get("approved"))
+
+        if is_approved:
+            return "tier1_eligible"
+
+        # Check if rejections are ONLY quality/upgrade related
+        only_quality_rejections = bool(rejections) and all(
+            any(kw in r for kw in (
+                "existing file on disk",
+                "custom format",
+                "quality",
+                "upgrade",
+                "cutoff",
+            ))
+            for r in rejections
+        )
+        movie_title = (movie.get("title") or "").lower()
+        clean_title = (movie.get("cleanTitle") or "").lower()
+        title_lower = title.lower()
+
+        if only_quality_rejections and (movie_title in title_lower or clean_title in title_lower):
+            return "tier1_eligible"
+
+        return "tier2_candidate"
+
+    @staticmethod
+    def is_movie_eligible_for_search(movie: Dict[str, Any], min_release_delay_days: int = 1) -> bool:
+        """Determine if a movie is monitored, missing from disk, and released past the grace period."""
+        if not movie.get("monitored") or movie.get("hasFile"):
+            return False
+
+        status = str(movie.get("status") or "").lower()
+        is_available = bool(movie.get("isAvailable"))
+
+        # Look for release dates (digital, physical, or inCinemas)
+        now = datetime.now(timezone.utc)
+        delay = timedelta(days=max(0, min_release_delay_days))
+        dates_to_check = []
+        for field in ("digitalRelease", "physicalRelease", "inCinemas"):
+            val = movie.get(field)
+            if val and isinstance(val, str):
+                try:
+                    dt = datetime.fromisoformat(val.replace("Z", "+00:00"))
+                    if dt.tzinfo is None:
+                        dt = dt.replace(tzinfo=timezone.utc)
+                    dates_to_check.append(dt)
+                except Exception:
+                    pass
+
+        if dates_to_check:
+            earliest = min(dates_to_check)
+            if now >= (earliest + delay):
+                return True
+            return False
+
+        # If no explicit dates, fallback to status
+        return is_available or status == "released"
+
+    async def run_missing_movie_search(
+        self,
+        ai_provider: Optional[BaseAIProvider] = None,
+        dry_run: Optional[bool] = None,
+        force: bool = False,
+    ) -> int:
+        """
+        Scan Radarr library for monitored missing movies and search/grab qualifying releases.
+        1. Find released missing movies not in cooldown.
+        2. Query Radarr indexers via GET /api/v3/release?movieId=X.
+        3. Match Tier 1 approved releases in-memory for 0 AI tokens.
+        4. For remaining movies with candidate releases, evaluate via AI movie matcher.
+        5. Force-grab winning release and update cooldown/metrics.
+        """
+        is_dry_run = self.dry_run if dry_run is None else dry_run
+        if not self.missing_movie_config.enabled and not force:
+            logger.debug("Missing movie search is disabled in config.")
+            return 0
+
+        cooldown_days = max(1, int(self.missing_movie_config.movie_cooldown_days))
+        max_movies = max(1, int(self.missing_movie_config.max_movies_per_run))
+        delay_days = max(0, int(self.missing_movie_config.min_release_delay_days))
+
+        metrics.update_task_status(
+            "missing_movie_search",
+            state="running",
+            progress="Scanning Radarr library for missing movies...",
+        )
+        logger.info(
+            f"🎬 Running Radarr Missing Movie Search (Max movies: {max_movies}, Release delay: {delay_days}d, Cooldown: {cooldown_days}d)..."
+        )
+
+        try:
+            all_movies = await self.get_all_movies()
+        except Exception as e:
+            logger.error(f"  ❌ Failed to fetch movies from Radarr: {e}")
+            metrics.update_task_status("missing_movie_search", state="idle", progress=f"Error fetching movies: {e}")
+            return 0
+
+        # Filter eligible movies
+        eligible_movies = [
+            m for m in all_movies
+            if self.is_movie_eligible_for_search(m, delay_days)
+        ]
+
+        active_movies: List[Dict[str, Any]] = []
+        for m in eligible_movies:
+            mid = m.get("id")
+            if not mid:
+                continue
+            retry_key = f"movie_retry:radarr:{mid}"
+            if metrics.is_item_attempted_within_days([retry_key], days=cooldown_days):
+                continue
+            if not metrics.db and retry_key in self._attempted_movie_retry_keys:
+                continue
+            active_movies.append(m)
+
+        if not active_movies:
+            logger.info("  ✔ No eligible missing movies due for search (all satisfied, unreleased, or on cooldown).")
+            metrics.update_task_status("missing_movie_search", state="idle", progress="No movies due for search.")
+            return 0
+
+        # Prioritize and take up to max_movies
+        target_movies = active_movies[:max_movies]
+        logger.info(f"  🎬 Found {len(active_movies)} eligible missing movie(s). Processing top {len(target_movies)}...")
+
+        grabbed_count = 0
+        for m in target_movies:
+            mid = int(m["id"])
+            title = m.get("title") or f"Movie #{mid}"
+            year = m.get("year") or ""
+            movie_label = f"{title} ({year})" if year else title
+            retry_key = f"movie_retry:radarr:{mid}"
+
+            metrics.update_task_status(
+                "missing_movie_search",
+                progress=f"Searching releases for '{movie_label}'...",
+            )
+            logger.info(f"  🔎 Searching releases for missing movie '{movie_label}'...")
+
+            try:
+                releases = await self.get_movie_releases(mid)
+            except Exception as e:
+                logger.warning(f"  ⚠️ Failed to fetch releases for '{movie_label}': {e}")
+                releases = []
+
+            if not releases:
+                logger.info(f"  ℹ️ No indexer releases found for '{movie_label}'. Marking cooldown.")
+                metrics.record_processed_item(
+                    app="Radarr",
+                    title=movie_label,
+                    category="missing_movie",
+                    status="skipped",
+                    confidence=None,
+                    model="Radarr (Interactive Search)",
+                    reasoning=f"No indexer releases found for missing movie '{movie_label}'.",
+                    details=f"Checked Radarr indexers; 0 releases returned.",
+                    item_keys=[retry_key],
+                )
+                self._attempted_movie_retry_keys.add(retry_key)
+                continue
+
+            # Classify releases
+            tier1_candidates = []
+            tier2_candidates = []
+            for rel in releases:
+                cls = self.classify_movie_release(rel, m)
+                if cls == "tier1_eligible":
+                    tier1_candidates.append(rel)
+                elif cls == "tier2_candidate":
+                    tier2_candidates.append(rel)
+
+            winning_rel = None
+            decider_model = ""
+            conf = 0.0
+            reason = ""
+
+            # Tier 1 in-memory match (0 AI tokens)
+            if tier1_candidates:
+                tier1_candidates.sort(key=self._rank_movie_release, reverse=True)
+                winning_rel = tier1_candidates[0]
+                decider_model = "Radarr (Direct Match)"
+                conf = 1.0
+                reason = f"Selected top approved release '{winning_rel.get('title')}' for missing movie '{movie_label}'."
+                logger.info(f"  ✔ Tier 1 match found for '{movie_label}': '{winning_rel.get('title')}'")
+
+            # Tier 2 AI matcher fallback
+            elif tier2_candidates and ai_provider:
+                logger.info(f"  🤖 Evaluating {len(tier2_candidates)} rejected candidate(s) for '{movie_label}' with AI...")
+                movie_info = {
+                    "id": mid,
+                    "title": title,
+                    "originalTitle": m.get("originalTitle"),
+                    "year": year,
+                    "aliases": [a.get("title") for a in (m.get("alternateTitles") or []) if a.get("title")],
+                }
+                compact_candidates = [
+                    {
+                        "guid": r.get("guid"),
+                        "title": r.get("title"),
+                        "quality": r.get("quality", {}).get("quality", {}).get("name", "Unknown"),
+                        "customFormatScore": r.get("customFormatScore", 0),
+                        "qualityWeight": r.get("qualityWeight", 0),
+                        "seeders": r.get("seeders", 0),
+                        "size": r.get("size", 0),
+                    }
+                    for r in tier2_candidates[:25]
+                ]
+                try:
+                    match_result = await ai_provider.evaluate_missing_movie(movie_info, compact_candidates)
+                    if match_result.matched_guid and match_result.confidence >= self.min_confidence:
+                        winning_rel = next((r for r in tier2_candidates if r.get("guid") == match_result.matched_guid), None)
+                        if winning_rel:
+                            decider_model = match_result.model_name
+                            conf = match_result.confidence
+                            reason = match_result.reasoning
+                            logger.info(
+                                f"  ✔ Stage 2 AI matched '{winning_rel.get('title')}' for '{movie_label}' "
+                                f"(Model: {decider_model}, Confidence: {int(conf * 100)}%)"
+                            )
+                except Exception as e:
+                    logger.warning(f"  ⚠️ AI movie matching failed for '{movie_label}': {e}")
+
+            if winning_rel:
+                grab_ok = await self.grab_release(
+                    guid=winning_rel.get("guid"),
+                    indexer_id=winning_rel.get("indexerId"),
+                    movie_id=mid,
+                    dry_run=is_dry_run,
+                    title=winning_rel.get("title", ""),
+                    release=winning_rel,
+                )
+                if grab_ok:
+                    grabbed_count += 1
+                    status = "dry_run" if is_dry_run else "imported"
+                    metrics.record_processed_item(
+                        app="Radarr",
+                        title=movie_label,
+                        category="missing_movie",
+                        status=status,
+                        confidence=conf,
+                        model=decider_model,
+                        reasoning=reason,
+                        details=f"Grabbed release: {winning_rel.get('title')}",
+                        item_keys=[retry_key],
+                    )
+                    self._attempted_movie_retry_keys.add(retry_key)
+            else:
+                logger.info(f"  ℹ️ No qualifying release found for '{movie_label}'. Marking cooldown.")
+                metrics.record_processed_item(
+                    app="Radarr",
+                    title=movie_label,
+                    category="missing_movie",
+                    status="skipped",
+                    confidence=conf if conf > 0 else None,
+                    model=decider_model or "Radarr (Interactive Search)",
+                    reasoning=f"No qualifying release found among {len(releases)} candidate(s) for '{movie_label}'.",
+                    details=f"Checked {len(releases)} release(s); none passed criteria.",
+                    item_keys=[retry_key],
+                )
+                self._attempted_movie_retry_keys.add(retry_key)
+
+        metrics.update_task_status(
+            "missing_movie_search",
+            state="idle",
+            progress=f"Grabbed {grabbed_count} movie(s)",
+            last_run=datetime.now(timezone.utc).isoformat(),
+            items_grabbed=grabbed_count,
+        )
+        return grabbed_count

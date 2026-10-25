@@ -768,3 +768,60 @@ class GeminiProvider(BaseAIProvider):
             if isinstance(m, dict) and m.get("episode_number") is not None
         ]
         return BackfillBulkEpisodesMatchResult(matches=matches, model_name=self.name)
+
+    async def evaluate_missing_movie(
+        self,
+        movie_info: Dict[str, Any],
+        candidate_releases: List[Dict[str, Any]],
+    ) -> BackfillPackMatchResult:
+        schema = (
+            "Return JSON adhering strictly to this schema:\n"
+            "{\n"
+            '  "reasoning": "step-by-step analysis: 1. check movie title & aliases; 2. check release year (allow ±1 year for festival/streaming/theatrical variance); 3. verify full movie release (not trailer/sample/OST); 4. quality comparison and conclusion",\n'
+            '  "matched_guid": "exact guid from candidate_releases or null if none match",\n'
+            '  "confidence": float (0.0 to 1.0)\n'
+            "}"
+        )
+        prompt = (
+            f"Target Movie: {json.dumps(movie_info, ensure_ascii=False)}\n"
+            f"Candidate Movie Releases (flagged by Radarr as 'Unknown Movie' or rejected):\n"
+            f"{json.dumps(candidate_releases[:25], ensure_ascii=False, indent=2)}\n\n"
+            "Task:\n"
+            "1. Movie Identity: Verify that the candidate release belongs to Target Movie (accounting for alternate titles, original foreign titles, Romaji, Chinese Pinyin, translated names, or year variations ±1 year).\n"
+            "2. Content Verification: Candidate release MUST be a full movie release. Reject trailers, samples, soundtracks/OST, featurettes, or different movies.\n"
+            "3. If multiple candidates are valid matches for Target Movie, pick the one with highest customFormatScore / qualityWeight / seeders.\n"
+            "4. If none of the candidates match Target Movie, return matched_guid: null with confidence 0.0.\n\n"
+            f"REQUIRED JSON OUTPUT SCHEMA:\n{schema}"
+        )
+        movie_label = f"{movie_info.get('title', 'Movie')} ({movie_info.get('year', '')})"
+        data, raw_text, parse_err = await self._call_gemini_with_raw(
+            prompt,
+            schema,
+            operation="evaluate_missing_movie",
+            item_title=movie_label,
+        )
+        val_errors = [parse_err] if parse_err else validate_backfill_payload(data, candidate_releases)
+        if val_errors:
+            data = await self._repair_with_stage3(
+                stage_name="evaluate_missing_movie",
+                raw_output=raw_text,
+                validation_errors=val_errors,
+                target_schema=schema,
+                reference_context={
+                    "target_movie": movie_info,
+                    "candidate_releases": candidate_releases[:25],
+                },
+                item_title=movie_label,
+            )
+            post_errors = validate_backfill_payload(data, candidate_releases)
+            if post_errors:
+                raise AIProviderError(
+                    f"Stage 3 AI Output Interpreter failed to repair movie match output: {'; '.join(post_errors)}"
+                )
+        assert isinstance(data, dict)
+        return BackfillPackMatchResult(
+            matched_guid=str(data["matched_guid"]) if data.get("matched_guid") else None,
+            confidence=float(data.get("confidence", 0.0)),
+            reasoning=str(data.get("reasoning", "")),
+            model_name=self.name,
+        )

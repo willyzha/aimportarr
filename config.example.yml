@@ -72,6 +72,14 @@ radarr:
   enabled: false
   url: "http://localhost:7878"
   api_key: "YOUR_RADARR_API_KEY"
+  # Optional: Periodically search and grab missing monitored movies
+  # (with Tier 1 deterministic match and Tier 2 AI evaluation for custom/non-standard release titles).
+  missing_movie_search:
+    enabled: false
+    cron: "0 3 * * *"  # Standard 5-part cron (e.g. "0 3 * * *" for daily at 3:00 AM)
+    min_release_delay_days: 1
+    max_movies_per_run: 5
+    movie_cooldown_days: 7
 
 # ==========================================
 # Archive Extraction

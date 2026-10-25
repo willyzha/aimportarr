@@ -75,6 +75,7 @@ def build_runtime_clients(config: AppConfig):
                 dry_run=config.general.dry_run,
                 reject_on_low_confidence=config.general.reject_on_low_confidence,
                 extraction_config=config.extraction,
+                missing_movie_config=config.radarr.missing_movie_search,
                 path_mappings=config.path_mappings,
             )
             logger.info(f"Radarr client configured for: {config.radarr.url}")
@@ -203,22 +204,34 @@ async def discover_and_enqueue(
     return enqueued_count
 
 
-async def backfill_worker_loop(
+async def automation_worker_loop(
     backfill_event: asyncio.Event,
     episode_retry_event: asyncio.Event,
-    state: Dict[str, Any],
-    config: AppConfig,
+    movie_search_event: Optional[asyncio.Event] = None,
+    state: Optional[Dict[str, Any]] = None,
+    config: Optional[AppConfig] = None,
+    **kwargs,
 ):
     """
-    Background worker for Sonarr Season Pack Backfill and Ongoing Season Missing Episode Retry:
-    - Runs on-demand when `backfill_event` or `episode_retry_event` is set.
-    - Runs automatically on each feature's configured `cron` schedule when enabled.
-    - Does NOT trigger on container startup; calculates next scheduled run time and waits.
+    Background worker for automated search and backfill routines:
+    1. Sonarr Season Pack Backfill
+    2. Sonarr Ongoing Season Missing Episode Retry
+    3. Radarr Missing Movie Search
+    - Runs on-demand when an event is set or automatically on each feature's configured cron schedule.
     """
+    if movie_search_event is None:
+        movie_search_event = asyncio.Event()
+    if state is None:
+        state = {}
+    if config is None:
+        config = AppConfig()
+
     next_bf_run: Optional[datetime] = None
     next_mer_run: Optional[datetime] = None
+    next_mms_run: Optional[datetime] = None
     last_bf_cron: Optional[str] = None
     last_mer_cron: Optional[str] = None
+    last_mms_cron: Optional[str] = None
 
     while running:
         try:
@@ -226,9 +239,12 @@ async def backfill_worker_loop(
             backfill_event.clear()
             manual_ep_retry = episode_retry_event.is_set()
             episode_retry_event.clear()
+            manual_movie_search = movie_search_event.is_set()
+            movie_search_event.clear()
 
             now_utc = datetime.now(timezone.utc)
             curr_sonarr: Optional[SonarrClient] = state.get("sonarr_client")
+            curr_radarr: Optional[RadarrClient] = state.get("radarr_client")
             curr_ai = state.get("ai_provider")
 
             # 1. Completed Seasons: Season Pack Backfill
@@ -346,15 +362,77 @@ async def backfill_worker_loop(
                         next_run=next_mer_run.isoformat(),
                     )
 
+            # 3. Missing Movies: Missing Movie Search (Radarr)
+            mms_cfg = config.radarr.missing_movie_search
+            mms_enabled = config.radarr.enabled and mms_cfg.enabled
+            now_utc = datetime.now(timezone.utc)
+            if not mms_enabled:
+                metrics.update_task_status("missing_movie_search", state="disabled")
+                next_mms_run = None
+            else:
+                if mms_cfg.cron != last_mms_cron:
+                    last_mms_cron = mms_cfg.cron
+                    next_mms_run = None
+
+                if next_mms_run is None:
+                    try:
+                        next_mms_run = get_next_cron_run(mms_cfg.cron, now_utc)
+                        metrics.update_task_status(
+                            "missing_movie_search",
+                            state="idle",
+                            next_run=next_mms_run.isoformat(),
+                        )
+                    except Exception as e:
+                        logger.error(f"Invalid cron expression for missing_movie_search '{mms_cfg.cron}': {e}")
+                        metrics.update_task_status(
+                            "missing_movie_search",
+                            state="idle",
+                            progress=f"Invalid cron: {mms_cfg.cron}",
+                        )
+
+            mms_due = mms_enabled and next_mms_run is not None and now_utc >= next_mms_run
+
+            if (manual_movie_search or mms_due) and curr_radarr and running and mms_enabled:
+                t0 = time.monotonic()
+                metrics.update_task_status(
+                    "missing_movie_search",
+                    state="running",
+                    last_run=now_utc.isoformat(),
+                )
+                try:
+                    grabbed = await curr_radarr.run_missing_movie_search(ai_provider=curr_ai)
+                    dur = time.monotonic() - t0
+                    next_mms_run = get_next_cron_run(mms_cfg.cron, datetime.now(timezone.utc))
+                    metrics.update_task_status(
+                        "missing_movie_search",
+                        state="idle",
+                        duration_sec=dur,
+                        items_grabbed=grabbed,
+                        next_run=next_mms_run.isoformat(),
+                    )
+                except Exception as e:
+                    logger.error(f"Error during Radarr Missing Movie Search: {e}")
+                    next_mms_run = get_next_cron_run(mms_cfg.cron, datetime.now(timezone.utc))
+                    metrics.update_task_status(
+                        "missing_movie_search",
+                        state="idle",
+                        progress=f"Error: {e}",
+                        next_run=next_mms_run.isoformat(),
+                    )
+
             for _ in range(5):
-                if not running or backfill_event.is_set() or episode_retry_event.is_set():
+                if not running or backfill_event.is_set() or episode_retry_event.is_set() or movie_search_event.is_set():
                     break
                 await asyncio.sleep(1.0)
         except asyncio.CancelledError:
             break
         except Exception as e:
-            logger.error(f"Unexpected error in backfill_worker_loop: {e}")
+            logger.error(f"Unexpected error in automation_worker_loop: {e}")
             await asyncio.sleep(5.0)
+
+
+# Backward compatibility alias
+backfill_worker_loop = automation_worker_loop
 
 
 async def main():
@@ -410,6 +488,7 @@ async def main():
     scan_event = asyncio.Event()
     backfill_event = asyncio.Event()
     episode_retry_event = asyncio.Event()
+    movie_search_event = asyncio.Event()
     fifo_queue: asyncio.Queue[Tuple[str, Dict[str, Any], str]] = asyncio.Queue()
     in_flight_keys: Set[str] = set()
 
@@ -428,6 +507,10 @@ async def main():
             logger.info("Immediate Missing Episode Retry check requested from Web UI.")
             loop.call_soon_threadsafe(episode_retry_event.set)
             return
+        if source == "movie_search":
+            logger.info("Immediate Missing Movie Search check requested from Web UI.")
+            loop.call_soon_threadsafe(movie_search_event.set)
+            return
         logger.debug(f"Immediate queue scan requested (source: {source})")
         loop.call_soon_threadsafe(scan_event.set)
         if source.startswith("retry"):
@@ -435,6 +518,8 @@ async def main():
                 loop.call_soon_threadsafe(backfill_event.set)
             if config.sonarr.missing_episode_retry.enabled:
                 loop.call_soon_threadsafe(episode_retry_event.set)
+            if config.radarr.missing_movie_search.enabled:
+                loop.call_soon_threadsafe(movie_search_event.set)
 
     def on_config_updated(updated_config: AppConfig):
         logger.info("Hot-reloading runtime clients from updated Web UI configuration...")
@@ -459,12 +544,12 @@ async def main():
         except Exception as we:
             logger.error(f"Failed to start Web UI server on {config.web.host}:{config.web.port}: {we}")
 
-    # Start the single-worker FIFO consumer task and Season Pack Backfill worker task
+    # Start the single-worker FIFO consumer task and automated search/backfill worker task
     worker_task = asyncio.create_task(
         fifo_worker_loop(fifo_queue, in_flight_keys, state, config)
     )
-    backfill_task = asyncio.create_task(
-        backfill_worker_loop(backfill_event, episode_retry_event, state, config)
+    automation_task = asyncio.create_task(
+        automation_worker_loop(backfill_event, episode_retry_event, movie_search_event, state, config)
     )
 
     try:
@@ -484,13 +569,13 @@ async def main():
                     pass
     finally:
         worker_task.cancel()
-        backfill_task.cancel()
+        automation_task.cancel()
         try:
             await worker_task
         except asyncio.CancelledError:
             pass
         try:
-            await backfill_task
+            await automation_task
         except asyncio.CancelledError:
             pass
         if web_server:

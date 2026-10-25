@@ -60,6 +60,22 @@ class MissingEpisodeRetryConfig(BaseModel):
         super().__init__(**kwargs)
 
 
+class MissingMovieSearchConfig(BaseModel):
+    model_config = {"extra": "ignore"}
+    enabled: bool = False
+    cron: str = "0 3 * * *"
+    min_release_delay_days: int = 1
+    max_movies_per_run: int = 5
+    movie_cooldown_days: int = 7
+
+    def __init__(self, **kwargs):
+        if "cron" not in kwargs and "interval_hours" in kwargs and kwargs["interval_hours"] is not None:
+            kwargs["cron"] = interval_hours_to_cron(kwargs["interval_hours"])
+        elif "cron" in kwargs and kwargs["cron"]:
+            kwargs["cron"] = normalize_cron_expr(str(kwargs["cron"]), fallback="0 3 * * *")
+        super().__init__(**kwargs)
+
+
 class SonarrConfig(BaseModel):
     model_config = {"extra": "ignore"}
     enabled: bool = True
@@ -73,6 +89,7 @@ class RadarrConfig(BaseModel):
     enabled: bool = False
     url: str = "http://localhost:7878"
     api_key: str = ""
+    missing_movie_search: MissingMovieSearchConfig = Field(default_factory=MissingMovieSearchConfig)
 
 class ExtractionConfig(BaseModel):
     enabled: bool = True
@@ -130,7 +147,10 @@ class AppConfig(BaseModel):
                 s_d["missing_episode_retry"] = MissingEpisodeRetryConfig(**s_d["missing_episode_retry"])
             kwargs["sonarr"] = SonarrConfig(**s_d)
         if isinstance(kwargs.get("radarr"), dict):
-            kwargs["radarr"] = RadarrConfig(**kwargs["radarr"])
+            r_d = dict(kwargs["radarr"])
+            if isinstance(r_d.get("missing_movie_search"), dict):
+                r_d["missing_movie_search"] = MissingMovieSearchConfig(**r_d["missing_movie_search"])
+            kwargs["radarr"] = RadarrConfig(**r_d)
         if isinstance(kwargs.get("extraction"), dict):
             kwargs["extraction"] = ExtractionConfig(**kwargs["extraction"])
         if isinstance(kwargs.get("web"), dict):
@@ -215,6 +235,13 @@ def config_to_dict(config: AppConfig) -> Dict[str, Any]:
             "enabled": bool(config.radarr.enabled),
             "url": str(config.radarr.url),
             "api_key": str(config.radarr.api_key),
+            "missing_movie_search": {
+                "enabled": bool(config.radarr.missing_movie_search.enabled),
+                "cron": str(config.radarr.missing_movie_search.cron),
+                "min_release_delay_days": int(config.radarr.missing_movie_search.min_release_delay_days),
+                "max_movies_per_run": int(config.radarr.missing_movie_search.max_movies_per_run),
+                "movie_cooldown_days": int(config.radarr.missing_movie_search.movie_cooldown_days),
+            },
         },
         "extraction": {
             "enabled": bool(config.extraction.enabled),
@@ -319,6 +346,20 @@ def update_config_from_dict(config: AppConfig, data: Dict[str, Any]) -> AppConfi
             config.radarr.url = str(r["url"]).strip().rstrip("/")
         if "api_key" in r and r["api_key"] is not None:
             config.radarr.api_key = str(r["api_key"]).strip()
+        if "missing_movie_search" in r and isinstance(r["missing_movie_search"], dict):
+            mms = r["missing_movie_search"]
+            if "enabled" in mms and mms["enabled"] is not None:
+                config.radarr.missing_movie_search.enabled = bool(mms["enabled"])
+            if "cron" in mms and mms["cron"] is not None and str(mms["cron"]).strip():
+                config.radarr.missing_movie_search.cron = normalize_cron_expr(str(mms["cron"]), fallback="0 3 * * *")
+            elif "interval_hours" in mms and mms["interval_hours"] is not None:
+                config.radarr.missing_movie_search.cron = interval_hours_to_cron(int(mms["interval_hours"]))
+            if "min_release_delay_days" in mms and mms["min_release_delay_days"] is not None:
+                config.radarr.missing_movie_search.min_release_delay_days = max(0, int(mms["min_release_delay_days"]))
+            if "max_movies_per_run" in mms and mms["max_movies_per_run"] is not None:
+                config.radarr.missing_movie_search.max_movies_per_run = max(1, int(mms["max_movies_per_run"]))
+            if "movie_cooldown_days" in mms and mms["movie_cooldown_days"] is not None:
+                config.radarr.missing_movie_search.movie_cooldown_days = max(1, int(mms["movie_cooldown_days"]))
 
     if "extraction" in data and isinstance(data["extraction"], dict):
         ex = data["extraction"]

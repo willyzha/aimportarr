@@ -205,3 +205,30 @@ class FallbackProvider(BaseAIProvider):
             except Exception as fe:
                 logger.error(f"Fallback AI provider '{self.fallback.name}' also failed: {fe}")
                 return BackfillBulkEpisodesMatchResult(matches=[], model_name=self.fallback.name)
+
+    async def evaluate_missing_movie(
+        self,
+        movie_info: Dict[str, Any],
+        candidate_releases: List[Dict[str, Any]],
+    ) -> BackfillPackMatchResult:
+        try:
+            return await self.primary.evaluate_missing_movie(
+                movie_info=movie_info,
+                candidate_releases=candidate_releases,
+            )
+        except (AIProviderError, Exception) as e:
+            if not self.fallback:
+                logger.error(f"Primary AI provider '{self.primary.name}' failed: {e}. No fallback configured.")
+                return BackfillPackMatchResult(matched_guid=None, confidence=0.0, reasoning=f"AI error: {e}")
+
+            logger.warning(
+                f"Primary AI provider '{self.primary.name}' failed: {e}. Automatically falling back to '{self.fallback.name}'..."
+            )
+            try:
+                return await self.fallback.evaluate_missing_movie(
+                    movie_info=movie_info,
+                    candidate_releases=candidate_releases,
+                )
+            except Exception as fe:
+                logger.error(f"Fallback AI provider '{self.fallback.name}' also failed: {fe}")
+                return BackfillPackMatchResult(matched_guid=None, confidence=0.0, reasoning=f"Both primary and fallback failed: {fe}")

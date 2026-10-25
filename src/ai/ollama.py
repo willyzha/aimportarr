@@ -742,3 +742,98 @@ class OllamaProvider(BaseAIProvider):
                     )
 
         return BackfillBulkEpisodesMatchResult(matches=all_matches, model_name=self.name)
+
+    async def evaluate_missing_movie(
+        self,
+        movie_info: Dict[str, Any],
+        candidate_releases: List[Dict[str, Any]],
+    ) -> BackfillPackMatchResult:
+        if not candidate_releases:
+            return BackfillPackMatchResult(
+                matched_guid=None,
+                confidence=0.0,
+                reasoning="No candidate releases provided for movie evaluation.",
+                model_name=self.name,
+            )
+
+        today_str = datetime.now().strftime("%Y-%m-%d")
+        target_schema = (
+            "{\n"
+            '  "reasoning": "step-by-step analysis: 1. check movie title & aliases; 2. check release year (allow ±1 year for variance); 3. verify full movie release (not trailer/sample/OST); 4. quality comparison and conclusion",\n'
+            '  "matched_guid": "exact guid string from Candidate Releases or null",\n'
+            '  "confidence": float (0.0 to 1.0)\n'
+            "}"
+        )
+        system_prompt = (
+            f"You are an expert movie release matcher for Radarr. Current date: {today_str}. "
+            "Respond ONLY with a valid JSON object with keys: 'reasoning' (string), 'matched_guid' (string or null), and 'confidence' (float 0.0-1.0)."
+        )
+
+        movie_label = f"{movie_info.get('title', 'Movie')} ({movie_info.get('year', '')})"
+        chunk_size = 5
+        chunks = [
+            candidate_releases[i : i + chunk_size]
+            for i in range(0, min(len(candidate_releases), 25), chunk_size)
+        ]
+        if not chunks:
+            chunks = [candidate_releases[:5]]
+
+        best_result: Optional[BackfillPackMatchResult] = None
+
+        for chunk_idx, chunk in enumerate(chunks):
+            chunk_label = f"{movie_label} (Batch {chunk_idx + 1}/{len(chunks)})"
+            user_prompt = (
+                f"Target Movie: {json.dumps(movie_info, ensure_ascii=False)}\n"
+                f"Candidate Releases (Batch {chunk_idx + 1}): {json.dumps(chunk, ensure_ascii=False)}\n\n"
+                "Task:\n"
+                "1. Movie Identity: Verify that the candidate release belongs to Target Movie (accounting for aliases, Romaji, Pinyin, English, and foreign titles, or year variations ±1 year).\n"
+                "2. Content Verification: Candidate release MUST be a full movie release. Reject trailers, samples, soundtracks/OST, featurettes, or different movies.\n"
+                "3. If multiple candidates in this batch match Target Movie, pick the one with highest customFormatScore / qualityWeight / seeders.\n"
+                "4. If none of the candidates in this batch match Target Movie, return matched_guid: null with confidence 0.0.\n\n"
+                f"REQUIRED JSON OUTPUT SCHEMA:\n{target_schema}"
+            )
+            res, raw_text, parse_err = await self._call_ollama_with_raw(
+                system_prompt,
+                user_prompt,
+                operation="evaluate_missing_movie",
+                item_title=chunk_label,
+            )
+            val_errors = [parse_err] if parse_err else validate_backfill_payload(res, chunk)
+            if val_errors:
+                res = await self._repair_with_stage3(
+                    stage_name="evaluate_missing_movie",
+                    raw_output=raw_text,
+                    validation_errors=val_errors,
+                    target_schema=target_schema,
+                    reference_context={
+                        "target_movie": movie_info,
+                        "candidate_releases": chunk,
+                    },
+                    item_title=chunk_label,
+                )
+                post_errors = validate_backfill_payload(res, chunk)
+                if post_errors:
+                    raise AIProviderError(
+                        f"Stage 3 AI Output Interpreter failed to repair movie match output: {'; '.join(post_errors)}"
+                    )
+            assert isinstance(res, dict)
+            match_res = BackfillPackMatchResult(
+                matched_guid=str(res["matched_guid"]) if res.get("matched_guid") else None,
+                confidence=float(res.get("confidence", 0.0)),
+                reasoning=str(res.get("reasoning", "")),
+                model_name=self.name,
+            )
+            if match_res.matched_guid:
+                if match_res.confidence >= 0.85:
+                    return match_res
+                if best_result is None or match_res.confidence > best_result.confidence:
+                    best_result = match_res
+            elif best_result is None:
+                best_result = match_res
+
+        return best_result or BackfillPackMatchResult(
+            matched_guid=None,
+            confidence=0.0,
+            reasoning="No suitable match found across candidate releases.",
+            model_name=self.name,
+        )

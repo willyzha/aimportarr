@@ -497,7 +497,7 @@ class MetricsTracker:
                     items = [it for it in items if it.get("status") in ("skipped", "failed", "dry_run")]
                 elif filter_status == "rejected":
                     items = [it for it in items if it.get("status") in ("rejected", "blocked")]
-                elif filter_status in ("season_backfill", "episode_retry"):
+                elif filter_status in ("season_backfill", "episode_retry", "missing_movie"):
                     items = [it for it in items if it.get("category") == filter_status]
                 else:
                     items = [it for it in items if it.get("status") == filter_status]

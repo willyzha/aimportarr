@@ -435,7 +435,7 @@ class DatabaseManager:
                     where_clauses.append("status IN ('skipped', 'failed', 'dry_run')")
                 elif filter_status == "rejected":
                     where_clauses.append("status IN ('rejected', 'blocked')")
-                elif filter_status in ("season_backfill", "episode_retry"):
+                elif filter_status in ("season_backfill", "episode_retry", "missing_movie"):
                     where_clauses.append("category = ?")
                     params.append(filter_status)
                 else:
