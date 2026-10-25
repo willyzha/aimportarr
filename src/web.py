@@ -299,6 +299,79 @@ DASHBOARD_HTML = """<!DOCTYPE html>
     .toast-warning { border-left-color: var(--warning); }
     .toast-danger { border-left-color: var(--danger); }
 
+    /* Bottom Floating Save Bar for Settings */
+    .settings-save-bar {
+      position: fixed;
+      bottom: 2rem;
+      left: 50%;
+      transform: translate(-50%, 150%);
+      opacity: 0;
+      pointer-events: none;
+      z-index: 1000;
+      background: rgba(21, 25, 33, 0.94);
+      backdrop-filter: blur(12px);
+      -webkit-backdrop-filter: blur(12px);
+      border: 1px solid var(--accent);
+      border-radius: 9999px;
+      padding: 0.65rem 1.35rem;
+      display: flex;
+      align-items: center;
+      gap: 1.5rem;
+      box-shadow: 0 12px 36px rgba(0, 0, 0, 0.65), 0 0 24px var(--accent-glow);
+      transition: transform 0.35s cubic-bezier(0.16, 1, 0.3, 1), opacity 0.25s ease;
+    }
+
+    .settings-save-bar.visible {
+      transform: translate(-50%, 0);
+      opacity: 1;
+      pointer-events: auto;
+    }
+
+    .settings-save-bar-info {
+      display: flex;
+      align-items: center;
+      gap: 0.65rem;
+      font-size: 0.85rem;
+      font-weight: 600;
+      color: var(--text-main);
+      white-space: nowrap;
+    }
+
+    .settings-save-bar-dot {
+      width: 9px;
+      height: 9px;
+      border-radius: 50%;
+      background: var(--warning);
+      box-shadow: 0 0 10px var(--warning);
+      display: inline-block;
+      animation: pulse-dot 2s infinite ease-in-out;
+    }
+
+    @keyframes pulse-dot {
+      0%, 100% { opacity: 1; transform: scale(1); }
+      50% { opacity: 0.4; transform: scale(0.85); }
+    }
+
+    .settings-save-bar-actions {
+      display: flex;
+      align-items: center;
+      gap: 0.6rem;
+    }
+
+    @media (max-width: 600px) {
+      .settings-save-bar {
+        bottom: 1rem;
+        width: calc(100% - 2rem);
+        border-radius: 12px;
+        justify-content: space-between;
+        gap: 0.75rem;
+        padding: 0.65rem 0.85rem;
+      }
+      .settings-save-bar-info span:not(.settings-save-bar-dot) {
+        font-size: 0.75rem;
+      }
+    }
+
     @keyframes toastIn {
       from { transform: translateY(12px); opacity: 0; }
       to { transform: translateY(0); opacity: 1; }
@@ -1963,6 +2036,18 @@ DASHBOARD_HTML = """<!DOCTYPE html>
     AImportarr <span class="version-tag" style="margin: 0 0.25rem;">v{{VERSION}}</span> &bull; AI-Powered *arr Queue Companion
   </footer>
 
+  <!-- Floating Save Bar (pops up from bottom when any settings are modified) -->
+  <div id="settings-save-bar" class="settings-save-bar">
+    <div class="settings-save-bar-info">
+      <span class="settings-save-bar-dot"></span>
+      <span>Unsaved configuration changes</span>
+    </div>
+    <div class="settings-save-bar-actions">
+      <button type="button" class="btn btn-secondary btn-sm" onclick="discardSettingsChanges()">Discard</button>
+      <button type="button" class="btn btn-primary btn-sm" onclick="saveConfigToApi()">💾 Save Changes</button>
+    </div>
+  </div>
+
   <script>
     let rawHistory = [];
     let rawTokens = [];
@@ -2011,11 +2096,14 @@ DASHBOARD_HTML = """<!DOCTYPE html>
       if (targetBtn) targetBtn.classList.add('active');
 
       if (tabName === 'settings') {
-        loadConfigFromApi();
+        if (!checkSettingsDirty()) {
+          loadConfigFromApi();
+        }
       }
       if (tabName === 'ollama') {
         loadOllamaModels(false);
       }
+      updateSettingsDirtyUI();
     }
 
     function goToHistoryPage(page) {
@@ -2799,6 +2887,117 @@ DASHBOARD_HTML = """<!DOCTYPE html>
       }
     }
 
+    let settingsBaselineSnapshot = null;
+
+    function collectSettingsPayload() {
+      const mappings = [];
+      document.querySelectorAll('.path-mapping-row').forEach(row => {
+        const f = row.querySelector('.pm-from')?.value.trim();
+        const t = row.querySelector('.pm-to')?.value.trim();
+        if (f && t) mappings.push({ from: f, to: t });
+      });
+
+      return {
+        general: {
+          dry_run: Boolean(document.getElementById('cfg-dry-run')?.checked),
+          reject_on_low_confidence: Boolean(document.getElementById('cfg-reject-low-conf')?.checked),
+          min_confidence: parseFloat(document.getElementById('cfg-min-confidence')?.value) || 0.85,
+          check_interval_seconds: parseInt(document.getElementById('cfg-check-interval')?.value, 10) || 30,
+          ai_cooldown_seconds: parseFloat(document.getElementById('cfg-ai-cooldown')?.value) ?? 4.0,
+          log_level: document.getElementById('cfg-log-level')?.value || 'INFO',
+          timezone: (document.getElementById('cfg-timezone')?.value || '').trim()
+        },
+        ai: {
+          provider: document.getElementById('cfg-ai-provider')?.value || 'gemini',
+          fallback_enabled: Boolean(document.getElementById('cfg-ai-fallback')?.checked),
+          gemini: {
+            api_key: (document.getElementById('cfg-gemini-key')?.value || '').trim(),
+            model: (document.getElementById('cfg-gemini-model')?.value || '').trim() || 'auto'
+          },
+          ollama: {
+            base_url: (document.getElementById('cfg-ollama-url')?.value || '').trim(),
+            model: (document.getElementById('cfg-ollama-model')?.value || '').trim()
+          }
+        },
+        sonarr: {
+          enabled: Boolean(document.getElementById('cfg-sonarr-enabled')?.checked),
+          url: (document.getElementById('cfg-sonarr-url')?.value || '').trim(),
+          api_key: (document.getElementById('cfg-sonarr-key')?.value || '').trim(),
+          season_pack_backfill: {
+            enabled: Boolean(document.getElementById('cfg-sonarr-backfill-enabled')?.checked),
+            cron: (document.getElementById('cfg-sonarr-backfill-cron')?.value || '').trim() || '0 2 * * *',
+            min_missing_days: parseInt(document.getElementById('cfg-sonarr-backfill-missing-days')?.value, 10) ?? 3,
+            max_seasons_per_run: parseInt(document.getElementById('cfg-sonarr-backfill-max-seasons')?.value, 10) || 3,
+            season_cooldown_days: parseInt(document.getElementById('cfg-sonarr-backfill-cooldown')?.value, 10) || 7
+          },
+          missing_episode_retry: {
+            enabled: Boolean(document.getElementById('cfg-sonarr-ep-retry-enabled')?.checked),
+            cron: (document.getElementById('cfg-sonarr-ep-retry-cron')?.value || '').trim() || '0 */6 * * *',
+            min_air_delay_hours: parseInt(document.getElementById('cfg-sonarr-ep-retry-delay')?.value, 10) ?? 6,
+            max_episodes_per_run: parseInt(document.getElementById('cfg-sonarr-ep-retry-max')?.value, 10) || 5,
+            episode_cooldown_hours: parseInt(document.getElementById('cfg-sonarr-ep-retry-cooldown')?.value, 10) || 24
+          }
+        },
+        radarr: {
+          enabled: Boolean(document.getElementById('cfg-radarr-enabled')?.checked),
+          url: (document.getElementById('cfg-radarr-url')?.value || '').trim(),
+          api_key: (document.getElementById('cfg-radarr-key')?.value || '').trim(),
+          missing_movie_search: {
+            enabled: Boolean(document.getElementById('cfg-radarr-movie-search-enabled')?.checked),
+            cron: (document.getElementById('cfg-radarr-movie-search-cron')?.value || '').trim() || '0 3 * * *',
+            min_release_delay_days: parseInt(document.getElementById('cfg-radarr-movie-search-delay')?.value, 10) ?? 1,
+            max_movies_per_run: parseInt(document.getElementById('cfg-radarr-movie-search-max')?.value, 10) || 5,
+            movie_cooldown_days: parseInt(document.getElementById('cfg-radarr-movie-search-cooldown')?.value, 10) || 7
+          }
+        },
+        extraction: {
+          enabled: Boolean(document.getElementById('cfg-extract-enabled')?.checked),
+          delete_after_import: Boolean(document.getElementById('cfg-extract-delete')?.checked),
+          staging_suffix: (document.getElementById('cfg-extract-suffix')?.value || '').trim() || '_extracted'
+        },
+        database: {
+          retention_days: parseInt(document.getElementById('cfg-db-retention')?.value, 10) || 30
+        },
+        path_mappings: mappings
+      };
+    }
+
+    function checkSettingsDirty() {
+      if (!settingsBaselineSnapshot) return false;
+      return JSON.stringify(collectSettingsPayload()) !== settingsBaselineSnapshot;
+    }
+
+    function updateSettingsDirtyUI() {
+      const isDirty = checkSettingsDirty();
+      const bar = document.getElementById('settings-save-bar');
+      const isSettingsActive = document.getElementById('tab-settings')?.style.display !== 'none';
+      if (bar) {
+        bar.classList.toggle('visible', isDirty && isSettingsActive);
+      }
+    }
+
+    async function discardSettingsChanges() {
+      await loadConfigFromApi();
+      showToast('Settings changes discarded', 'info');
+    }
+
+    function setupSettingsDirtyTracking() {
+      const pane = document.getElementById('tab-settings');
+      if (pane) {
+        pane.addEventListener('input', updateSettingsDirtyUI);
+        pane.addEventListener('change', updateSettingsDirtyUI);
+      }
+      if (!settingsBaselineSnapshot) {
+        settingsBaselineSnapshot = JSON.stringify(collectSettingsPayload());
+      }
+      window.addEventListener('beforeunload', (e) => {
+        if (checkSettingsDirty()) {
+          e.preventDefault();
+          e.returnValue = '';
+        }
+      });
+    }
+
     function addPathMappingRow(fromVal = '', toVal = '') {
       const container = document.getElementById('cfg-path-mappings-list');
       if (!container) return;
@@ -2809,9 +3008,10 @@ DASHBOARD_HTML = """<!DOCTYPE html>
         <input type="text" class="form-input pm-from" placeholder="/remote/downloads" value="${escapeHtml(fromVal)}" style="flex: 1;">
         <span style="color: var(--text-dim);">&rarr;</span>
         <input type="text" class="form-input pm-to" placeholder="/data/downloads" value="${escapeHtml(toVal)}" style="flex: 1;">
-        <button type="button" class="btn btn-sm" onclick="this.parentElement.remove()" title="Remove">✕</button>
+        <button type="button" class="btn btn-sm" onclick="this.parentElement.remove(); updateSettingsDirtyUI();" title="Remove">✕</button>
       `;
       container.appendChild(row);
+      updateSettingsDirtyUI();
     }
 
     async function loadConfigFromApi() {
@@ -2886,6 +3086,8 @@ DASHBOARD_HTML = """<!DOCTYPE html>
           pmContainer.innerHTML = '';
           (cfg.path_mappings || []).forEach(m => addPathMappingRow(m.from || '', m.to || ''));
         }
+        settingsBaselineSnapshot = JSON.stringify(collectSettingsPayload());
+        updateSettingsDirtyUI();
       } catch (e) {
         console.error('Failed to load config:', e);
         showToast('Failed to load configuration', 'danger');
@@ -2893,76 +3095,7 @@ DASHBOARD_HTML = """<!DOCTYPE html>
     }
 
     async function saveConfigToApi() {
-      const mappings = [];
-      document.querySelectorAll('.path-mapping-row').forEach(row => {
-        const f = row.querySelector('.pm-from')?.value.trim();
-        const t = row.querySelector('.pm-to')?.value.trim();
-        if (f && t) mappings.push({ from: f, to: t });
-      });
-
-      const payload = {
-        general: {
-          dry_run: document.getElementById('cfg-dry-run').checked,
-          reject_on_low_confidence: document.getElementById('cfg-reject-low-conf').checked,
-          min_confidence: parseFloat(document.getElementById('cfg-min-confidence').value) || 0.85,
-          check_interval_seconds: parseInt(document.getElementById('cfg-check-interval').value, 10) || 30,
-          ai_cooldown_seconds: parseFloat(document.getElementById('cfg-ai-cooldown').value) ?? 4.0,
-          log_level: document.getElementById('cfg-log-level').value || 'INFO',
-          timezone: (document.getElementById('cfg-timezone')?.value || '').trim()
-        },
-        ai: {
-          provider: document.getElementById('cfg-ai-provider').value,
-          fallback_enabled: document.getElementById('cfg-ai-fallback').checked,
-          gemini: {
-            api_key: document.getElementById('cfg-gemini-key').value.trim(),
-            model: document.getElementById('cfg-gemini-model').value.trim() || 'auto'
-          },
-          ollama: {
-            base_url: document.getElementById('cfg-ollama-url').value.trim(),
-            model: document.getElementById('cfg-ollama-model').value.trim()
-          }
-        },
-        sonarr: {
-          enabled: document.getElementById('cfg-sonarr-enabled').checked,
-          url: document.getElementById('cfg-sonarr-url').value.trim(),
-          api_key: document.getElementById('cfg-sonarr-key').value.trim(),
-          season_pack_backfill: {
-            enabled: document.getElementById('cfg-sonarr-backfill-enabled').checked,
-            cron: document.getElementById('cfg-sonarr-backfill-cron').value.trim() || '0 2 * * *',
-            min_missing_days: parseInt(document.getElementById('cfg-sonarr-backfill-missing-days').value, 10) ?? 3,
-            max_seasons_per_run: parseInt(document.getElementById('cfg-sonarr-backfill-max-seasons').value, 10) || 3,
-            season_cooldown_days: parseInt(document.getElementById('cfg-sonarr-backfill-cooldown').value, 10) || 7
-          },
-          missing_episode_retry: {
-            enabled: document.getElementById('cfg-sonarr-ep-retry-enabled').checked,
-            cron: document.getElementById('cfg-sonarr-ep-retry-cron').value.trim() || '0 */6 * * *',
-            min_air_delay_hours: parseInt(document.getElementById('cfg-sonarr-ep-retry-delay').value, 10) ?? 6,
-            max_episodes_per_run: parseInt(document.getElementById('cfg-sonarr-ep-retry-max').value, 10) || 5,
-            episode_cooldown_hours: parseInt(document.getElementById('cfg-sonarr-ep-retry-cooldown').value, 10) || 24
-          }
-        },
-        radarr: {
-          enabled: document.getElementById('cfg-radarr-enabled').checked,
-          url: document.getElementById('cfg-radarr-url').value.trim(),
-          api_key: document.getElementById('cfg-radarr-key').value.trim(),
-          missing_movie_search: {
-            enabled: document.getElementById('cfg-radarr-movie-search-enabled').checked,
-            cron: document.getElementById('cfg-radarr-movie-search-cron').value.trim() || '0 3 * * *',
-            min_release_delay_days: parseInt(document.getElementById('cfg-radarr-movie-search-delay').value, 10) ?? 1,
-            max_movies_per_run: parseInt(document.getElementById('cfg-radarr-movie-search-max').value, 10) || 5,
-            movie_cooldown_days: parseInt(document.getElementById('cfg-radarr-movie-search-cooldown').value, 10) || 7
-          }
-        },
-        extraction: {
-          enabled: document.getElementById('cfg-extract-enabled').checked,
-          delete_after_import: document.getElementById('cfg-extract-delete').checked,
-          staging_suffix: document.getElementById('cfg-extract-suffix').value.trim() || '_extracted'
-        },
-        database: {
-          retention_days: parseInt(document.getElementById('cfg-db-retention').value, 10) || 30
-        },
-        path_mappings: mappings
-      };
+      const payload = collectSettingsPayload();
 
       try {
         const res = await fetch('/api/config', {
@@ -2973,6 +3106,8 @@ DASHBOARD_HTML = """<!DOCTYPE html>
         const data = await res.json();
         if (res.ok && data.status === 'ok') {
           showToast('Configuration saved and hot-reloaded!', 'success');
+          settingsBaselineSnapshot = JSON.stringify(collectSettingsPayload());
+          updateSettingsDirtyUI();
         } else {
           showToast(data.message || 'Failed to save configuration', 'danger');
         }
@@ -3413,6 +3548,7 @@ DASHBOARD_HTML = """<!DOCTYPE html>
     loadConfigFromApi();
     loadOllamaModels(false);
     updateAutoRefresh();
+    setupSettingsDirtyTracking();
   </script>
 </body>
 </html>
