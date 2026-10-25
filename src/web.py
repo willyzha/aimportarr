@@ -829,6 +829,25 @@ DASHBOARD_HTML = """<!DOCTYPE html>
       color: var(--text-main);
     }
 
+    .pagination-btn {
+      width: 28px;
+      height: 28px;
+      padding: 0;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      border-radius: 6px;
+      line-height: 1;
+      flex-shrink: 0;
+    }
+
+    .pagination-btn svg {
+      width: 13px;
+      height: 13px;
+      display: block;
+      pointer-events: none;
+    }
+
     /* Badges */
     .badge {
       display: inline-flex;
@@ -1476,11 +1495,11 @@ DASHBOARD_HTML = """<!DOCTYPE html>
               <option value="100">100</option>
             </select>
           </label>
-          <button class="btn btn-sm btn-secondary" id="history-btn-first" onclick="goToHistoryPage(1)" title="First Page">⏮</button>
-          <button class="btn btn-sm btn-secondary" id="history-btn-prev" onclick="goToHistoryPage(historyCurrentPage - 1)" title="Previous Page">◀</button>
+          <button class="btn btn-sm btn-secondary pagination-btn" id="history-btn-first" onclick="goToHistoryPage(1)" title="First Page"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="11 19 4 12 11 5"></polyline><polyline points="19 19 12 12 19 5"></polyline></svg></button>
+          <button class="btn btn-sm btn-secondary pagination-btn" id="history-btn-prev" onclick="goToHistoryPage(historyCurrentPage - 1)" title="Previous Page"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="15 18 9 12 15 6"></polyline></svg></button>
           <span class="pagination-page-label">Page <span id="history-current-page">1</span> of <span id="history-total-pages">1</span></span>
-          <button class="btn btn-sm btn-secondary" id="history-btn-next" onclick="goToHistoryPage(historyCurrentPage + 1)" title="Next Page">▶</button>
-          <button class="btn btn-sm btn-secondary" id="history-btn-last" onclick="goToHistoryPage(historyTotalPages)" title="Last Page">⏭</button>
+          <button class="btn btn-sm btn-secondary pagination-btn" id="history-btn-next" onclick="goToHistoryPage(historyCurrentPage + 1)" title="Next Page"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="9 18 15 12 9 6"></polyline></svg></button>
+          <button class="btn btn-sm btn-secondary pagination-btn" id="history-btn-last" onclick="goToHistoryPage(historyTotalPages)" title="Last Page"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="5 5 12 12 5 19"></polyline><polyline points="13 5 20 12 13 19"></polyline></svg></button>
         </div>
       </div>
     </div>
@@ -1538,11 +1557,11 @@ DASHBOARD_HTML = """<!DOCTYPE html>
               <option value="100">100</option>
             </select>
           </label>
-          <button class="btn btn-sm btn-secondary" id="tokens-btn-first" onclick="goToTokensPage(1)" title="First Page">⏮</button>
-          <button class="btn btn-sm btn-secondary" id="tokens-btn-prev" onclick="goToTokensPage(tokensCurrentPage - 1)" title="Previous Page">◀</button>
+          <button class="btn btn-sm btn-secondary pagination-btn" id="tokens-btn-first" onclick="goToTokensPage(1)" title="First Page"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="11 19 4 12 11 5"></polyline><polyline points="19 19 12 12 19 5"></polyline></svg></button>
+          <button class="btn btn-sm btn-secondary pagination-btn" id="tokens-btn-prev" onclick="goToTokensPage(tokensCurrentPage - 1)" title="Previous Page"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="15 18 9 12 15 6"></polyline></svg></button>
           <span class="pagination-page-label">Page <span id="tokens-current-page">1</span> of <span id="tokens-total-pages">1</span></span>
-          <button class="btn btn-sm btn-secondary" id="tokens-btn-next" onclick="goToTokensPage(tokensCurrentPage + 1)" title="Next Page">▶</button>
-          <button class="btn btn-sm btn-secondary" id="tokens-btn-last" onclick="goToTokensPage(tokensTotalPages)" title="Last Page">⏭</button>
+          <button class="btn btn-sm btn-secondary pagination-btn" id="tokens-btn-next" onclick="goToTokensPage(tokensCurrentPage + 1)" title="Next Page"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="9 18 15 12 9 6"></polyline></svg></button>
+          <button class="btn btn-sm btn-secondary pagination-btn" id="tokens-btn-last" onclick="goToTokensPage(tokensTotalPages)" title="Last Page"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="5 5 12 12 5 19"></polyline><polyline points="13 5 20 12 13 19"></polyline></svg></button>
         </div>
       </div>
     </div>
