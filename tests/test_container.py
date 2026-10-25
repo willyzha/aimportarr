@@ -789,6 +789,12 @@ class ContainerSmokeTests(unittest.TestCase):
         self.assertIn("history-page-size", RENDERED_DASHBOARD_HTML)
         self.assertIn("tokens-page-size", RENDERED_DASHBOARD_HTML)
         self.assertIn("tokens-search", RENDERED_DASHBOARD_HTML)
+        self.assertIn("history-new-items-pill", RENDERED_DASHBOARD_HTML)
+        self.assertIn("tokens-new-items-pill", RENDERED_DASHBOARD_HTML)
+        self.assertIn("fetchStatsOnly", RENDERED_DASHBOARD_HTML)
+        self.assertIn("hasHistoryChanged", RENDERED_DASHBOARD_HTML)
+        self.assertIn("aimportarr_stats_interval", RENDERED_DASHBOARD_HTML)
+        self.assertIn("Stats update:", RENDERED_DASHBOARD_HTML)
 
 if __name__ == "__main__":
     unittest.main()

@@ -805,6 +805,33 @@ DASHBOARD_HTML = """<!DOCTYPE html>
       color: white;
     }
 
+    .new-items-pill {
+      display: inline-flex;
+      align-items: center;
+      gap: 0.45rem;
+      background: var(--accent);
+      color: #fff;
+      font-size: 0.78rem;
+      font-weight: 500;
+      padding: 0.35rem 0.85rem;
+      border-radius: 20px;
+      margin-bottom: 0.75rem;
+      cursor: pointer;
+      box-shadow: 0 4px 14px var(--accent-glow);
+      transition: all 0.2s ease;
+      animation: slideDownFade 0.25s ease-out;
+    }
+
+    .new-items-pill:hover {
+      transform: translateY(-1px);
+      box-shadow: 0 6px 18px rgba(99, 102, 241, 0.4);
+    }
+
+    @keyframes slideDownFade {
+      from { opacity: 0; transform: translateY(-6px); }
+      to { opacity: 1; transform: translateY(0); }
+    }
+
     /* Tables */
     .card-table-wrapper {
       background-color: var(--bg-card);
@@ -1581,11 +1608,11 @@ DASHBOARD_HTML = """<!DOCTYPE html>
       </div>
 
       <div style="display: flex; align-items: center; gap: 0.4rem;">
-        <label for="refresh-interval" class="header-refresh-label" style="font-size: 0.75rem; color: var(--text-muted);">Auto-refresh:</label>
-        <select id="refresh-interval" class="input-select" onchange="updateAutoRefresh()">
-          <option value="5000" selected>5s</option>
-          <option value="10000">10s</option>
+        <label for="refresh-interval" class="header-refresh-label" style="font-size: 0.75rem; color: var(--text-muted);">Stats update:</label>
+        <select id="refresh-interval" class="input-select" onchange="updateAutoRefresh()" title="Background polling frequency for metric counters (tables only reload on demand)">
+          <option value="15000" selected>15s</option>
           <option value="30000">30s</option>
+          <option value="60000">1m</option>
           <option value="0">Off</option>
         </select>
       </div>
@@ -1787,6 +1814,11 @@ DASHBOARD_HTML = """<!DOCTYPE html>
         </button>
       </div>
 
+      <!-- Floating New Items Indicator -->
+      <div id="history-new-items-pill" class="new-items-pill" style="display: none;" onclick="fetchHistoryData(true)" title="Click to load latest processed items">
+        <span>↑</span> <span id="history-new-items-text">New processed items available</span> &bull; <strong>Click to view</strong>
+      </div>
+
       <!-- Desktop Table View (>= 768px) -->
       <div class="card-table-wrapper history-table-wrapper">
         <table>
@@ -1854,6 +1886,11 @@ DASHBOARD_HTML = """<!DOCTYPE html>
             <input type="text" id="tokens-search" placeholder="Filter by operation, model, or release..." oninput="filterTokens()">
           </div>
         </div>
+      </div>
+
+      <!-- Floating New Items Indicator -->
+      <div id="tokens-new-items-pill" class="new-items-pill" style="display: none;" onclick="fetchTokensData(true)" title="Click to load latest AI calls">
+        <span>↑</span> <span id="tokens-new-items-text">New AI calls recorded</span> &bull; <strong>Click to view</strong>
       </div>
 
       <!-- Desktop Table View (>= 768px) -->
@@ -2428,12 +2465,41 @@ DASHBOARD_HTML = """<!DOCTYPE html>
     let tokensPageSize = 10;
     let tokensTotalPages = 1;
 
+    let lastKnownHistoryTotal = null;
+    let lastKnownTokensTotal = null;
+
     let currentFilter = 'all';
     let historySearchDebounce = null;
     let tokensSearchDebounce = null;
     let refreshTimer = null;
     let openReasoningId = null;
     let openTokenId = null;
+
+    function hasHistoryChanged(oldItems, newItems) {
+      if (!oldItems || !newItems) return true;
+      if (oldItems.length !== newItems.length) return true;
+      for (let i = 0; i < oldItems.length; i++) {
+        if (oldItems[i].id !== newItems[i].id ||
+            oldItems[i].status !== newItems[i].status ||
+            oldItems[i].retry_requested !== newItems[i].retry_requested) {
+          return true;
+        }
+      }
+      return false;
+    }
+
+    function hasTokensChanged(oldTokens, newTokens) {
+      if (!oldTokens || !newTokens) return true;
+      if (oldTokens.length !== newTokens.length) return true;
+      for (let i = 0; i < oldTokens.length; i++) {
+        if (oldTokens[i].id !== newTokens[i].id ||
+            oldTokens[i].success !== newTokens[i].success ||
+            oldTokens[i].duration_ms !== newTokens[i].duration_ms) {
+          return true;
+        }
+      }
+      return false;
+    }
 
     function formatNumber(num) {
       if (num === null || num === undefined) return '0';
@@ -2515,25 +2581,25 @@ DASHBOARD_HTML = """<!DOCTYPE html>
     function goToHistoryPage(page) {
       if (page < 1 || (historyTotalPages > 0 && page > historyTotalPages)) return;
       historyCurrentPage = page;
-      fetchHistoryData();
+      fetchHistoryData(true);
     }
 
     function changeHistoryPageSize(newSize) {
       historyPageSize = parseInt(newSize, 10) || 10;
       historyCurrentPage = 1;
-      fetchHistoryData();
+      fetchHistoryData(true);
     }
 
     function goToTokensPage(page) {
       if (page < 1 || (tokensTotalPages > 0 && page > tokensTotalPages)) return;
       tokensCurrentPage = page;
-      fetchTokensData();
+      fetchTokensData(true);
     }
 
     function changeTokensPageSize(newSize) {
       tokensPageSize = parseInt(newSize, 10) || 10;
       tokensCurrentPage = 1;
-      fetchTokensData();
+      fetchTokensData(true);
     }
 
     function setFilter(status) {
@@ -2542,14 +2608,14 @@ DASHBOARD_HTML = """<!DOCTYPE html>
       document.querySelectorAll('.filter-pill').forEach(el => {
         el.classList.toggle('active', el.dataset.filter === status);
       });
-      fetchHistoryData();
+      fetchHistoryData(true);
     }
 
     function filterHistory() {
       if (historySearchDebounce) clearTimeout(historySearchDebounce);
       historySearchDebounce = setTimeout(() => {
         historyCurrentPage = 1;
-        fetchHistoryData();
+        fetchHistoryData(true);
       }, 250);
     }
 
@@ -2557,7 +2623,7 @@ DASHBOARD_HTML = """<!DOCTYPE html>
       if (tokensSearchDebounce) clearTimeout(tokensSearchDebounce);
       tokensSearchDebounce = setTimeout(() => {
         tokensCurrentPage = 1;
-        fetchTokensData();
+        fetchTokensData(true);
       }, 250);
     }
 
@@ -2615,7 +2681,7 @@ DASHBOARD_HTML = """<!DOCTYPE html>
       if (btnLast) btnLast.disabled = tokensCurrentPage >= tokensTotalPages;
     }
 
-    async function fetchHistoryData() {
+    async function fetchHistoryData(forceRender = false) {
       try {
         const q = (document.getElementById('history-search')?.value || '').trim();
         const params = new URLSearchParams({
@@ -2629,27 +2695,40 @@ DASHBOARD_HTML = """<!DOCTYPE html>
         if (!res.ok) return;
         const data = await res.json();
 
+        let newItems = [];
         if (Array.isArray(data)) {
-          rawHistory = data;
+          newItems = data;
           historyTotal = data.length;
           historyTotalPages = Math.ceil(historyTotal / historyPageSize) || 1;
         } else {
-          rawHistory = data.items || [];
+          newItems = data.items || [];
           historyTotal = data.total || 0;
           historyCurrentPage = data.page || 1;
           historyPageSize = data.limit || historyPageSize;
           historyTotalPages = data.total_pages || 1;
         }
 
-        document.getElementById('badge-history-count').innerText = formatNumber(historyTotal);
+        const changed = hasHistoryChanged(rawHistory, newItems);
+        rawHistory = newItems;
+        lastKnownHistoryTotal = historyTotal;
+
+        const pill = document.getElementById('history-new-items-pill');
+        if (pill) pill.style.display = 'none';
+
+        const badgeCount = document.getElementById('badge-history-count');
+        if (badgeCount) badgeCount.innerText = formatNumber(historyTotal);
         updateHistoryPaginationUI();
-        renderHistoryTable(rawHistory);
+
+        const hasSelection = Boolean(window.getSelection && window.getSelection().toString().trim().length > 0);
+        if (forceRender || (changed && !hasSelection)) {
+          renderHistoryTable(rawHistory);
+        }
       } catch (err) {
         console.error('Failed to fetch history data:', err);
       }
     }
 
-    async function fetchTokensData() {
+    async function fetchTokensData(forceRender = false) {
       try {
         const q = (document.getElementById('tokens-search')?.value || '').trim();
         const params = new URLSearchParams({
@@ -2662,21 +2741,34 @@ DASHBOARD_HTML = """<!DOCTYPE html>
         if (!res.ok) return;
         const data = await res.json();
 
+        let newTokens = [];
         if (Array.isArray(data)) {
-          rawTokens = data;
+          newTokens = data;
           tokensTotal = data.length;
           tokensTotalPages = Math.ceil(tokensTotal / tokensPageSize) || 1;
         } else {
-          rawTokens = data.items || [];
+          newTokens = data.items || [];
           tokensTotal = data.total || 0;
           tokensCurrentPage = data.page || 1;
           tokensPageSize = data.limit || tokensPageSize;
           tokensTotalPages = data.total_pages || 1;
         }
 
-        document.getElementById('badge-token-count').innerText = formatNumber(tokensTotal);
+        const changed = hasTokensChanged(rawTokens, newTokens);
+        rawTokens = newTokens;
+        lastKnownTokensTotal = tokensTotal;
+
+        const pill = document.getElementById('tokens-new-items-pill');
+        if (pill) pill.style.display = 'none';
+
+        const badgeCount = document.getElementById('badge-token-count');
+        if (badgeCount) badgeCount.innerText = formatNumber(tokensTotal);
         updateTokensPaginationUI();
-        renderTokenTable(rawTokens);
+
+        const hasSelection = Boolean(window.getSelection && window.getSelection().toString().trim().length > 0);
+        if (forceRender || (changed && !hasSelection)) {
+          renderTokenTable(rawTokens);
+        }
       } catch (err) {
         console.error('Failed to fetch tokens data:', err);
       }
@@ -3311,6 +3403,72 @@ DASHBOARD_HTML = """<!DOCTYPE html>
       });
     }
 
+    function updateStatsUI(summary) {
+      if (!summary) return;
+      document.getElementById('stat-uptime').innerText = summary.uptime_formatted || '--';
+      document.getElementById('stat-scans').innerText = `Queue Scans: ${formatNumber(summary.total_scans)}`;
+      document.getElementById('stat-processed').innerText = formatNumber(summary.total_items_processed);
+      const qSize = summary.fifo_queue_size || 0;
+      document.getElementById('stat-processed-sub').innerText = qSize > 0
+        ? `⚡ FIFO Queue: ${qSize} active`
+        : 'Scanned items (FIFO idle)';
+      document.getElementById('stat-imported').innerText = formatNumber(summary.total_imported);
+      document.getElementById('stat-dry-run').innerText = `${formatNumber(summary.total_dry_run)} in Dry Run`;
+      const rejCount = summary.total_rejected || 0;
+      const disCount = summary.total_dismissed || 0;
+      document.getElementById('stat-blocked').innerText = formatNumber(rejCount + disCount);
+      document.getElementById('stat-blocked-sub').innerText = `${formatNumber(rejCount)} Rejected (Deleted) | ${formatNumber(disCount)} Dismissed (Kept in Client)`;
+      document.getElementById('stat-tokens').innerText = formatNumber(summary.total_tokens);
+      const pTok = formatNumber(summary.total_prompt_tokens || 0);
+      const thTok = formatNumber(summary.total_thinking_tokens || 0);
+      const outTok = formatNumber(summary.total_completion_tokens || 0);
+      document.getElementById('stat-token-sub').innerText = `Prompt: ${pTok} | Thinking: ${thTok} | Output: ${outTok}`;
+      renderAnalytics(summary);
+      renderTasks(summary.tasks);
+    }
+
+    async function fetchStatsOnly() {
+      try {
+        const res = await fetch('/api/metrics');
+        if (!res.ok) return;
+        const summary = await res.json();
+        updateStatsUI(summary);
+
+        // Check if new processed history items are available
+        if (lastKnownHistoryTotal !== null && summary.total_items_processed > lastKnownHistoryTotal) {
+          const diff = summary.total_items_processed - lastKnownHistoryTotal;
+          const pill = document.getElementById('history-new-items-pill');
+          const txt = document.getElementById('history-new-items-text');
+          if (pill && txt) {
+            txt.innerText = `${diff} new processed item${diff > 1 ? 's' : ''} available`;
+            pill.style.display = 'inline-flex';
+          }
+        } else if (lastKnownHistoryTotal !== null && summary.total_items_processed <= lastKnownHistoryTotal) {
+          const pill = document.getElementById('history-new-items-pill');
+          if (pill) pill.style.display = 'none';
+        }
+
+        // Check if new AI calls are recorded
+        if (lastKnownTokensTotal !== null && summary.total_ai_calls > lastKnownTokensTotal) {
+          const diff = summary.total_ai_calls - lastKnownTokensTotal;
+          const pill = document.getElementById('tokens-new-items-pill');
+          const txt = document.getElementById('tokens-new-items-text');
+          if (pill && txt) {
+            txt.innerText = `${diff} new AI call${diff > 1 ? 's' : ''} recorded`;
+            pill.style.display = 'inline-flex';
+          }
+        } else if (lastKnownTokensTotal !== null && summary.total_ai_calls <= lastKnownTokensTotal) {
+          const pill = document.getElementById('tokens-new-items-pill');
+          if (pill) pill.style.display = 'none';
+        }
+
+        document.getElementById('header-status').innerText = 'Online';
+      } catch (err) {
+        console.error('Failed to fetch stats:', err);
+        document.getElementById('header-status').innerText = 'Reconnecting...';
+      }
+    }
+
     async function fetchData(isManual = false) {
       const refreshIcon = document.getElementById('refresh-icon');
       if (isManual && refreshIcon) refreshIcon.classList.add('spin');
@@ -3318,32 +3476,13 @@ DASHBOARD_HTML = """<!DOCTYPE html>
       try {
         const [sumRes] = await Promise.all([
           fetch('/api/metrics'),
-          fetchHistoryData(),
-          fetchTokensData()
+          fetchHistoryData(true),
+          fetchTokensData(true)
         ]);
 
         if (sumRes.ok) {
           const summary = await sumRes.json();
-          document.getElementById('stat-uptime').innerText = summary.uptime_formatted || '--';
-          document.getElementById('stat-scans').innerText = `Queue Scans: ${formatNumber(summary.total_scans)}`;
-          document.getElementById('stat-processed').innerText = formatNumber(summary.total_items_processed);
-          const qSize = summary.fifo_queue_size || 0;
-          document.getElementById('stat-processed-sub').innerText = qSize > 0
-            ? `⚡ FIFO Queue: ${qSize} active`
-            : 'Scanned items (FIFO idle)';
-          document.getElementById('stat-imported').innerText = formatNumber(summary.total_imported);
-          document.getElementById('stat-dry-run').innerText = `${formatNumber(summary.total_dry_run)} in Dry Run`;
-          const rejCount = summary.total_rejected || 0;
-          const disCount = summary.total_dismissed || 0;
-          document.getElementById('stat-blocked').innerText = formatNumber(rejCount + disCount);
-          document.getElementById('stat-blocked-sub').innerText = `${formatNumber(rejCount)} Rejected (Deleted) | ${formatNumber(disCount)} Dismissed (Kept in Client)`;
-          document.getElementById('stat-tokens').innerText = formatNumber(summary.total_tokens);
-          const pTok = formatNumber(summary.total_prompt_tokens || 0);
-          const thTok = formatNumber(summary.total_thinking_tokens || 0);
-          const outTok = formatNumber(summary.total_completion_tokens || 0);
-          document.getElementById('stat-token-sub').innerText = `Prompt: ${pTok} | Thinking: ${thTok} | Output: ${outTok}`;
-          renderAnalytics(summary);
-          renderTasks(summary.tasks);
+          updateStatsUI(summary);
         }
 
         document.getElementById('header-status').innerText = 'Online';
@@ -3357,9 +3496,14 @@ DASHBOARD_HTML = """<!DOCTYPE html>
 
     function updateAutoRefresh() {
       if (refreshTimer) clearInterval(refreshTimer);
-      const val = parseInt(document.getElementById('refresh-interval').value, 10);
+      const sel = document.getElementById('refresh-interval');
+      if (!sel) return;
+      const val = parseInt(sel.value, 10);
+      try {
+        localStorage.setItem('aimportarr_stats_interval', String(val));
+      } catch (_) {}
       if (val > 0) {
-        refreshTimer = setInterval(() => fetchData(false), val);
+        refreshTimer = setInterval(() => fetchStatsOnly(), val);
       }
     }
 
@@ -3473,7 +3617,7 @@ DASHBOARD_HTML = """<!DOCTYPE html>
             it.retry_requested = 1;
             renderHistoryTable(rawHistory);
           }
-          setTimeout(() => fetchHistoryData(), 1200);
+          setTimeout(() => fetchHistoryData(true), 1200);
         } else {
           showToast(data.message || `Failed to retry item #${id}`, 'danger');
         }
@@ -4207,7 +4351,19 @@ DASHBOARD_HTML = """<!DOCTYPE html>
     }
 
     // Initialize
-    fetchData();
+    try {
+      const savedInterval = localStorage.getItem('aimportarr_stats_interval');
+      if (savedInterval !== null) {
+        const sel = document.getElementById('refresh-interval');
+        if (sel) {
+          const match = Array.from(sel.options).some(o => o.value === savedInterval);
+          if (match) {
+            sel.value = savedInterval;
+          }
+        }
+      }
+    } catch (_) {}
+    fetchData(true);
     loadConfigFromApi();
     loadOllamaModels(false);
     updateAutoRefresh();
