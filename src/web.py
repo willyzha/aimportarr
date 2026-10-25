@@ -2477,8 +2477,8 @@ DASHBOARD_HTML = """<!DOCTYPE html>
     let historySearchDebounce = null;
     let tokensSearchDebounce = null;
     let refreshTimer = null;
-    let openReasoningId = null;
-    let openTokenId = null;
+    const openReasoningIds = new Set();
+    const openTokenIds = new Set();
 
     function hasHistoryChanged(oldItems, newItems) {
       if (!oldItems || !newItems) return true;
@@ -2796,17 +2796,23 @@ DASHBOARD_HTML = """<!DOCTYPE html>
     }
 
     function toggleReasoning(rowId) {
-      if (openReasoningId === rowId) {
-        openReasoningId = null;
+      const id = Number(rowId);
+      const willOpen = !openReasoningIds.has(id);
+      if (willOpen) {
+        openReasoningIds.add(id);
       } else {
-        openReasoningId = rowId;
+        openReasoningIds.delete(id);
       }
-      document.querySelectorAll('.reasoning-row, .reasoning-card-panel').forEach(el => {
-        el.classList.toggle('open', el.id === `reasoning-${openReasoningId}` || el.id === `reasoning-card-${openReasoningId}`);
-      });
-      document.querySelectorAll('.reasoning-chevron').forEach(el => {
-        el.innerText = (el.id === `chevron-${openReasoningId}` || el.id === `chevron-card-${openReasoningId}`) ? '▴' : '▾';
-      });
+
+      const row = document.getElementById(`reasoning-${id}`);
+      const card = document.getElementById(`reasoning-card-${id}`);
+      const chevron = document.getElementById(`chevron-${id}`);
+      const cardChevron = document.getElementById(`chevron-card-${id}`);
+
+      if (row) row.classList.toggle('open', willOpen);
+      if (card) card.classList.toggle('open', willOpen);
+      if (chevron) chevron.innerText = willOpen ? '▴' : '▾';
+      if (cardChevron) cardChevron.innerText = willOpen ? '▴' : '▾';
     }
 
     function renderHistoryTable(items) {
@@ -2843,7 +2849,7 @@ DASHBOARD_HTML = """<!DOCTYPE html>
           const normStatus = normalizeStatus(item.status);
           const statusClass = `badge-${normStatus}`;
           const statusTooltip = getStatusTooltip(normStatus);
-          const isOpen = openReasoningId === item.id;
+          const isOpen = openReasoningIds.has(Number(item.id));
 
           // Only offer Retry for items that have NOT been imported, rejected (deleted), or dismissed from the queue
           let actionCell = '<span style="color: var(--text-dim); font-size: 0.75rem;">--</span>';
@@ -2872,7 +2878,7 @@ DASHBOARD_HTML = """<!DOCTYPE html>
               <td style="text-align: center;" onclick="event.stopPropagation()">${actionCell}</td>
               <td id="chevron-${item.id}" class="reasoning-chevron" style="color: var(--text-dim); font-size: 0.8rem;">${isOpen ? '▴' : '▾'}</td>
             </tr>
-            <tr id="reasoning-${item.id}" class="reasoning-row ${isOpen ? 'open' : ''}">
+            <tr id="reasoning-${item.id}" class="reasoning-row ${isOpen ? 'open' : ''}" onclick="event.stopPropagation()">
               <td colspan="8">
                 <div class="reasoning-box">
                   <div style="font-weight: 600; color: #a5b4fc; margin-bottom: 0.35rem;">
@@ -2900,7 +2906,7 @@ DASHBOARD_HTML = """<!DOCTYPE html>
           const normStatus = normalizeStatus(item.status);
           const statusClass = `badge-${normStatus}`;
           const statusTooltip = getStatusTooltip(normStatus);
-          const isOpen = openReasoningId === item.id;
+          const isOpen = openReasoningIds.has(Number(item.id));
 
           let actionBtn = '';
           if (['skipped', 'failed', 'dry_run'].includes(normStatus)) {
@@ -2952,7 +2958,7 @@ DASHBOARD_HTML = """<!DOCTYPE html>
                 <span id="chevron-card-${item.id}" class="reasoning-chevron" style="font-size: 0.85rem;">${isOpen ? '▴' : '▾'}</span>
               </div>
 
-              <div id="reasoning-card-${item.id}" class="reasoning-card-panel ${isOpen ? 'open' : ''}" style="margin-top: 0.2rem;">
+              <div id="reasoning-card-${item.id}" class="reasoning-card-panel ${isOpen ? 'open' : ''}" style="margin-top: 0.2rem;" onclick="event.stopPropagation()">
                 <div class="reasoning-box">
                   <div style="font-weight: 600; color: #a5b4fc; margin-bottom: 0.35rem;">
                     🤖 AI Reasoning &amp; Decision Details
@@ -2970,17 +2976,23 @@ DASHBOARD_HTML = """<!DOCTYPE html>
     }
 
     function toggleTokenDetails(rowId) {
-      if (openTokenId === rowId) {
-        openTokenId = null;
+      const id = Number(rowId);
+      const willOpen = !openTokenIds.has(id);
+      if (willOpen) {
+        openTokenIds.add(id);
       } else {
-        openTokenId = rowId;
+        openTokenIds.delete(id);
       }
-      document.querySelectorAll('.token-detail-row, .token-card-panel').forEach(el => {
-        el.classList.toggle('open', el.id === `token-detail-${openTokenId}` || el.id === `token-card-${openTokenId}`);
-      });
-      document.querySelectorAll('.token-chevron').forEach(el => {
-        el.innerText = (el.id === `token-chevron-${openTokenId}` || el.id === `token-chevron-card-${openTokenId}`) ? '▴' : '▾';
-      });
+
+      const row = document.getElementById(`token-detail-${id}`);
+      const card = document.getElementById(`token-card-${id}`);
+      const chevron = document.getElementById(`token-chevron-${id}`);
+      const cardChevron = document.getElementById(`token-chevron-card-${id}`);
+
+      if (row) row.classList.toggle('open', willOpen);
+      if (card) card.classList.toggle('open', willOpen);
+      if (chevron) chevron.innerText = willOpen ? '▴' : '▾';
+      if (cardChevron) cardChevron.innerText = willOpen ? '▴' : '▾';
     }
 
     function renderTokenTable(tokens) {
@@ -3019,7 +3031,7 @@ DASHBOARD_HTML = """<!DOCTYPE html>
           const thinkingHtml = (t.thinking_tokens && t.thinking_tokens > 0)
             ? `<span style="color: #a78bfa; font-feature-settings: 'tnum'; font-weight: 500;">${formatNumber(t.thinking_tokens)}</span>`
             : `<span style="color: var(--text-dim);">&mdash;</span>`;
-          const isOpen = openTokenId === t.id;
+          const isOpen = openTokenIds.has(Number(t.id));
           const inputText = t.prompt_text || 'No input message recorded for this entry.';
           const outputText = t.response_text || 'No output message recorded for this entry.';
 
@@ -3049,7 +3061,7 @@ DASHBOARD_HTML = """<!DOCTYPE html>
               <td style="text-align: center;">${statusBadge}</td>
               <td id="token-chevron-${t.id}" class="token-chevron" style="color: var(--text-dim); font-size: 0.8rem;">${isOpen ? '▴' : '▾'}</td>
             </tr>
-            <tr id="token-detail-${t.id}" class="token-detail-row ${isOpen ? 'open' : ''}">
+            <tr id="token-detail-${t.id}" class="token-detail-row ${isOpen ? 'open' : ''}" onclick="event.stopPropagation()">
               <td colspan="10">
                 <div class="reasoning-box">
                   <div style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 0.35rem; flex-wrap: wrap; gap: 0.4rem;">
@@ -3098,7 +3110,7 @@ DASHBOARD_HTML = """<!DOCTYPE html>
           const thinkingHtml = (t.thinking_tokens && t.thinking_tokens > 0)
             ? `<span style="color: #a78bfa; font-feature-settings: 'tnum'; font-weight: 500;">${formatNumber(t.thinking_tokens)}</span>`
             : `<span style="color: var(--text-dim);">&mdash;</span>`;
-          const isOpen = openTokenId === t.id;
+          const isOpen = openTokenIds.has(Number(t.id));
           const inputText = t.prompt_text || 'No input message recorded for this entry.';
           const outputText = t.response_text || 'No output message recorded for this entry.';
 
@@ -3146,7 +3158,7 @@ DASHBOARD_HTML = """<!DOCTYPE html>
                 <span id="token-chevron-card-${t.id}" class="token-chevron" style="font-size: 0.85rem;">${isOpen ? '▴' : '▾'}</span>
               </div>
 
-              <div id="token-card-${t.id}" class="token-card-panel ${isOpen ? 'open' : ''}" style="margin-top: 0.2rem;">
+              <div id="token-card-${t.id}" class="token-card-panel ${isOpen ? 'open' : ''}" style="margin-top: 0.2rem;" onclick="event.stopPropagation()">
                 <div class="reasoning-box">
                   <div style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 0.35rem; flex-wrap: wrap; gap: 0.4rem;">
                     <div style="font-weight: 600; color: #a5b4fc;">

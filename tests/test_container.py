@@ -796,5 +796,10 @@ class ContainerSmokeTests(unittest.TestCase):
         self.assertIn("aimportarr_stats_interval", RENDERED_DASHBOARD_HTML)
         self.assertIn("Stats update:", RENDERED_DASHBOARD_HTML)
 
+        self.assertIn("openReasoningIds", RENDERED_DASHBOARD_HTML)
+        self.assertIn("toggleReasoning", RENDERED_DASHBOARD_HTML)
+        self.assertIn("openTokenIds", RENDERED_DASHBOARD_HTML)
+        self.assertIn("toggleTokenDetails", RENDERED_DASHBOARD_HTML)
+
 if __name__ == "__main__":
     unittest.main()
