@@ -1479,8 +1479,9 @@ DASHBOARD_HTML = """<!DOCTYPE html>
 
             <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 0.65rem;">
               <div class="form-group" style="margin-bottom: 0.5rem;">
-                <label class="form-label" for="cfg-sonarr-backfill-interval">Search Interval (hours)</label>
-                <input type="number" min="1" id="cfg-sonarr-backfill-interval" class="form-input" value="12">
+                <label class="form-label" for="cfg-sonarr-backfill-cron">Cron Schedule</label>
+                <input type="text" id="cfg-sonarr-backfill-cron" class="form-input" value="0 2 * * *" placeholder="0 2 * * *">
+                <div class="form-hint" style="font-size:0.75rem;">Standard 5-part cron (e.g. 0 2 * * * = daily at 2 AM)</div>
               </div>
               <div class="form-group" style="margin-bottom: 0.5rem;">
                 <label class="form-label" for="cfg-sonarr-backfill-missing-days">Post-Finale Grace (days)</label>
@@ -1515,8 +1516,9 @@ DASHBOARD_HTML = """<!DOCTYPE html>
 
             <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 0.65rem;">
               <div class="form-group" style="margin-bottom: 0.5rem;">
-                <label class="form-label" for="cfg-sonarr-ep-retry-interval">Retry Interval (hours)</label>
-                <input type="number" min="1" id="cfg-sonarr-ep-retry-interval" class="form-input" value="6">
+                <label class="form-label" for="cfg-sonarr-ep-retry-cron">Cron Schedule</label>
+                <input type="text" id="cfg-sonarr-ep-retry-cron" class="form-input" value="0 */6 * * *" placeholder="0 */6 * * *">
+                <div class="form-hint" style="font-size:0.75rem;">Standard 5-part cron (e.g. 0 */6 * * * = every 6 hours)</div>
               </div>
               <div class="form-group" style="margin-bottom: 0.5rem;">
                 <label class="form-label" for="cfg-sonarr-ep-retry-delay">Min Post-Air Delay (hours)</label>
@@ -2319,14 +2321,14 @@ DASHBOARD_HTML = """<!DOCTYPE html>
         document.getElementById('cfg-sonarr-key').value = s.api_key || '';
         const spb = s.season_pack_backfill || {};
         document.getElementById('cfg-sonarr-backfill-enabled').checked = Boolean(spb.enabled);
-        document.getElementById('cfg-sonarr-backfill-interval').value = spb.interval_hours ?? 12;
+        document.getElementById('cfg-sonarr-backfill-cron').value = spb.cron || '0 2 * * *';
         document.getElementById('cfg-sonarr-backfill-missing-days').value = spb.min_missing_days ?? 3;
         document.getElementById('cfg-sonarr-backfill-max-seasons').value = spb.max_seasons_per_run ?? 3;
         document.getElementById('cfg-sonarr-backfill-cooldown').value = spb.season_cooldown_days ?? 7;
 
         const mer = s.missing_episode_retry || {};
         document.getElementById('cfg-sonarr-ep-retry-enabled').checked = Boolean(mer.enabled);
-        document.getElementById('cfg-sonarr-ep-retry-interval').value = mer.interval_hours ?? 6;
+        document.getElementById('cfg-sonarr-ep-retry-cron').value = mer.cron || '0 */6 * * *';
         document.getElementById('cfg-sonarr-ep-retry-delay').value = mer.min_air_delay_hours ?? 6;
         document.getElementById('cfg-sonarr-ep-retry-max').value = mer.max_episodes_per_run ?? 5;
         document.getElementById('cfg-sonarr-ep-retry-cooldown').value = mer.episode_cooldown_hours ?? 24;
@@ -2386,14 +2388,14 @@ DASHBOARD_HTML = """<!DOCTYPE html>
           api_key: document.getElementById('cfg-sonarr-key').value.trim(),
           season_pack_backfill: {
             enabled: document.getElementById('cfg-sonarr-backfill-enabled').checked,
-            interval_hours: parseInt(document.getElementById('cfg-sonarr-backfill-interval').value, 10) || 12,
+            cron: document.getElementById('cfg-sonarr-backfill-cron').value.trim() || '0 2 * * *',
             min_missing_days: parseInt(document.getElementById('cfg-sonarr-backfill-missing-days').value, 10) ?? 3,
             max_seasons_per_run: parseInt(document.getElementById('cfg-sonarr-backfill-max-seasons').value, 10) || 3,
             season_cooldown_days: parseInt(document.getElementById('cfg-sonarr-backfill-cooldown').value, 10) || 7
           },
           missing_episode_retry: {
             enabled: document.getElementById('cfg-sonarr-ep-retry-enabled').checked,
-            interval_hours: parseInt(document.getElementById('cfg-sonarr-ep-retry-interval').value, 10) || 6,
+            cron: document.getElementById('cfg-sonarr-ep-retry-cron').value.trim() || '0 */6 * * *',
             min_air_delay_hours: parseInt(document.getElementById('cfg-sonarr-ep-retry-delay').value, 10) ?? 6,
             max_episodes_per_run: parseInt(document.getElementById('cfg-sonarr-ep-retry-max').value, 10) || 5,
             episode_cooldown_hours: parseInt(document.getElementById('cfg-sonarr-ep-retry-cooldown').value, 10) || 24

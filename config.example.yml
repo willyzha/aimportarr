@@ -55,7 +55,7 @@ sonarr:
   # when Sonarr rejects the pack solely because other episodes on disk have higher quality.
   season_pack_backfill:
     enabled: false
-    interval_hours: 12
+    cron: "0 2 * * *"  # Standard 5-part cron (e.g. "0 2 * * *" for daily at 2:00 AM)
     min_missing_days: 3
     max_seasons_per_run: 3
     season_cooldown_days: 7
@@ -63,7 +63,7 @@ sonarr:
   # (with Tier 1 deterministic grab and Tier 2 AI fallback for 'Unknown Series' episode releases).
   missing_episode_retry:
     enabled: false
-    interval_hours: 6
+    cron: "0 */6 * * *"  # Standard 5-part cron (e.g. "0 */6 * * *" for every 6 hours)
     min_air_delay_hours: 6
     max_episodes_per_run: 5
     episode_cooldown_hours: 24

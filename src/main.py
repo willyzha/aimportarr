@@ -8,6 +8,7 @@ import time
 from typing import Any, Dict, Optional, Set, Tuple
 import httpx
 from .config import load_config, AppConfig
+from .cron import get_next_cron_run
 from .ai import get_ai_provider
 from .sonarr import SonarrClient
 from .radarr import RadarrClient
@@ -211,10 +212,13 @@ async def backfill_worker_loop(
     """
     Background worker for Sonarr Season Pack Backfill and Ongoing Season Missing Episode Retry:
     - Runs on-demand when `backfill_event` or `episode_retry_event` is set.
-    - Runs automatically on each feature's configured `interval_hours` schedule when enabled.
+    - Runs automatically on each feature's configured `cron` schedule when enabled.
+    - Does NOT trigger on container startup; calculates next scheduled run time and waits.
     """
-    last_backfill_run = 0.0
-    last_episode_retry_run = 0.0
+    next_bf_run: Optional[datetime] = None
+    next_mer_run: Optional[datetime] = None
+    last_bf_cron: Optional[str] = None
+    last_mer_cron: Optional[str] = None
 
     while running:
         try:
@@ -223,82 +227,124 @@ async def backfill_worker_loop(
             manual_ep_retry = episode_retry_event.is_set()
             episode_retry_event.clear()
 
-            now_mono = time.monotonic()
+            now_utc = datetime.now(timezone.utc)
             curr_sonarr: Optional[SonarrClient] = state.get("sonarr_client")
             curr_ai = state.get("ai_provider")
 
             # 1. Completed Seasons: Season Pack Backfill
             bf_cfg = config.sonarr.season_pack_backfill
-            bf_interval_sec = max(1, int(bf_cfg.interval_hours)) * 3600
             bf_enabled = config.sonarr.enabled and bf_cfg.enabled
             if not bf_enabled:
                 metrics.update_task_status("season_pack_backfill", state="disabled")
-            elif last_backfill_run == 0.0 and metrics.tasks_status.get("season_pack_backfill", {}).get("state") != "running":
-                metrics.update_task_status("season_pack_backfill", state="idle", next_run=datetime.now(timezone.utc).isoformat())
+                next_bf_run = None
+            else:
+                if bf_cfg.cron != last_bf_cron:
+                    last_bf_cron = bf_cfg.cron
+                    next_bf_run = None
 
-            bf_due = (
-                bf_enabled
-                and (last_backfill_run == 0.0 or (now_mono - last_backfill_run) >= bf_interval_sec)
-            )
+                if next_bf_run is None:
+                    try:
+                        next_bf_run = get_next_cron_run(bf_cfg.cron, now_utc)
+                        metrics.update_task_status(
+                            "season_pack_backfill",
+                            state="idle",
+                            next_run=next_bf_run.isoformat(),
+                        )
+                    except Exception as e:
+                        logger.error(f"Invalid cron expression for season_pack_backfill '{bf_cfg.cron}': {e}")
+                        metrics.update_task_status(
+                            "season_pack_backfill",
+                            state="idle",
+                            progress=f"Invalid cron: {bf_cfg.cron}",
+                        )
+
+            bf_due = bf_enabled and next_bf_run is not None and now_utc >= next_bf_run
+
             if (manual_backfill or bf_due) and curr_sonarr and running and bf_enabled:
-                last_backfill_run = time.monotonic()
                 t0 = time.monotonic()
                 metrics.update_task_status(
                     "season_pack_backfill",
                     state="running",
-                    last_run=datetime.now(timezone.utc).isoformat(),
+                    last_run=now_utc.isoformat(),
                 )
                 try:
                     grabbed = await curr_sonarr.run_season_pack_backfill(ai_provider=curr_ai)
                     dur = time.monotonic() - t0
-                    next_iso = (datetime.now(timezone.utc) + timedelta(seconds=bf_interval_sec)).isoformat()
+                    next_bf_run = get_next_cron_run(bf_cfg.cron, datetime.now(timezone.utc))
                     metrics.update_task_status(
                         "season_pack_backfill",
                         state="idle",
                         duration_sec=dur,
                         items_grabbed=grabbed,
-                        next_run=next_iso,
+                        next_run=next_bf_run.isoformat(),
                     )
                 except Exception as e:
                     logger.error(f"Error during Sonarr Season Pack Backfill: {e}")
-                    metrics.update_task_status("season_pack_backfill", state="idle", progress=f"Error: {e}")
+                    next_bf_run = get_next_cron_run(bf_cfg.cron, datetime.now(timezone.utc))
+                    metrics.update_task_status(
+                        "season_pack_backfill",
+                        state="idle",
+                        progress=f"Error: {e}",
+                        next_run=next_bf_run.isoformat(),
+                    )
 
             # 2. Ongoing Seasons: Missing Episode Retry
             mer_cfg = config.sonarr.missing_episode_retry
-            mer_interval_sec = max(1, int(mer_cfg.interval_hours)) * 3600
-            now_mono = time.monotonic()
             mer_enabled = config.sonarr.enabled and mer_cfg.enabled
+            now_utc = datetime.now(timezone.utc)
             if not mer_enabled:
                 metrics.update_task_status("missing_episode_retry", state="disabled")
-            elif last_episode_retry_run == 0.0 and metrics.tasks_status.get("missing_episode_retry", {}).get("state") != "running":
-                metrics.update_task_status("missing_episode_retry", state="idle", next_run=datetime.now(timezone.utc).isoformat())
+                next_mer_run = None
+            else:
+                if mer_cfg.cron != last_mer_cron:
+                    last_mer_cron = mer_cfg.cron
+                    next_mer_run = None
 
-            mer_due = (
-                mer_enabled
-                and (last_episode_retry_run == 0.0 or (now_mono - last_episode_retry_run) >= mer_interval_sec)
-            )
+                if next_mer_run is None:
+                    try:
+                        next_mer_run = get_next_cron_run(mer_cfg.cron, now_utc)
+                        metrics.update_task_status(
+                            "missing_episode_retry",
+                            state="idle",
+                            next_run=next_mer_run.isoformat(),
+                        )
+                    except Exception as e:
+                        logger.error(f"Invalid cron expression for missing_episode_retry '{mer_cfg.cron}': {e}")
+                        metrics.update_task_status(
+                            "missing_episode_retry",
+                            state="idle",
+                            progress=f"Invalid cron: {mer_cfg.cron}",
+                        )
+
+            mer_due = mer_enabled and next_mer_run is not None and now_utc >= next_mer_run
+
             if (manual_ep_retry or mer_due) and curr_sonarr and running and mer_enabled:
-                last_episode_retry_run = time.monotonic()
                 t0 = time.monotonic()
                 metrics.update_task_status(
                     "missing_episode_retry",
                     state="running",
-                    last_run=datetime.now(timezone.utc).isoformat(),
+                    last_run=now_utc.isoformat(),
                 )
                 try:
                     grabbed = await curr_sonarr.run_missing_episode_retry(ai_provider=curr_ai)
                     dur = time.monotonic() - t0
-                    next_iso = (datetime.now(timezone.utc) + timedelta(seconds=mer_interval_sec)).isoformat()
+                    next_mer_run = get_next_cron_run(mer_cfg.cron, datetime.now(timezone.utc))
                     metrics.update_task_status(
                         "missing_episode_retry",
                         state="idle",
                         duration_sec=dur,
                         items_grabbed=grabbed,
-                        next_run=next_iso,
+                        next_run=next_mer_run.isoformat(),
                     )
                 except Exception as e:
                     logger.error(f"Error during Sonarr Missing Episode Retry: {e}")
-                    metrics.update_task_status("missing_episode_retry", state="idle", progress=f"Error: {e}")
+                    next_mer_run = get_next_cron_run(mer_cfg.cron, datetime.now(timezone.utc))
+                    metrics.update_task_status(
+                        "missing_episode_retry",
+                        state="idle",
+                        progress=f"Error: {e}",
+                        next_run=next_mer_run.isoformat(),
+                    )
 
             for _ in range(5):
                 if not running or backfill_event.is_set() or episode_retry_event.is_set():

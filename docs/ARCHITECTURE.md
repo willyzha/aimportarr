@@ -182,12 +182,12 @@ All settings can be configured in `/config/config.yml` (see [`config.example.yml
 | `ai.ollama.model` | `OLLAMA_MODEL` | `qwen2.5:1.5b` | Ollama model tag. |
 | `sonarr.enabled` / `url` / `api_key` | `SONARR_ENABLED`, `SONARR_URL`, `SONARR_API_KEY` | — | Sonarr connection settings. |
 | `sonarr.season_pack_backfill.enabled` | `SONARR_BACKFILL_ENABLED` | `false` | Opt-in: search and force-grab Season Packs for completed seasons with missing episodes when Sonarr rejects the pack solely because other episodes on disk have higher quality. |
-| `sonarr.season_pack_backfill.interval_hours` | `SONARR_BACKFILL_INTERVAL_HOURS` | `12` | Background check interval in hours for Season Pack Backfill. |
+| `sonarr.season_pack_backfill.cron` | `SONARR_BACKFILL_CRON` | `0 2 * * *` | Cron schedule for Season Pack Backfill (e.g. daily at 2:00 AM; does not trigger on container startup). |
 | `sonarr.season_pack_backfill.min_missing_days` | `SONARR_BACKFILL_MIN_MISSING_DAYS` | `3` | Post-finale grace period in days after the season's last episode airs before backfilling with a season pack. |
 | `sonarr.season_pack_backfill.max_seasons_per_run` | `SONARR_BACKFILL_MAX_SEASONS_PER_RUN` | `3` | Maximum seasons queried via interactive search per backfill run. |
 | `sonarr.season_pack_backfill.season_cooldown_days` | `SONARR_BACKFILL_COOLDOWN_DAYS` | `7` | Per-season cooldown in days before re-searching the same season (resettable via UI Retry). |
 | `sonarr.missing_episode_retry.enabled` | `SONARR_EPISODE_RETRY_ENABLED` | `false` | Opt-in: periodically retry individual missing aired episodes for ongoing/incomplete seasons using bulk season search and single bulk AI evaluation. |
-| `sonarr.missing_episode_retry.interval_hours` | `SONARR_EPISODE_RETRY_INTERVAL_HOURS` | `6` | Background check interval in hours for ongoing missing episode retries. |
+| `sonarr.missing_episode_retry.cron` | `SONARR_EPISODE_RETRY_CRON` | `0 */6 * * *` | Cron schedule for ongoing missing episode retries (e.g. every 6 hours; does not trigger on container startup). |
 | `sonarr.missing_episode_retry.min_air_delay_hours` | `SONARR_EPISODE_RETRY_MIN_AIR_DELAY_HOURS` | `6` | Minimum delay in hours after an episode's broadcast air time before attempting interactive search. |
 | `sonarr.missing_episode_retry.max_episodes_per_run` | `SONARR_EPISODE_RETRY_MAX_EPISODES_PER_RUN` | `5` | Maximum number of episodes queried via targeted fallback search per run. |
 | `sonarr.missing_episode_retry.episode_cooldown_hours` | `SONARR_EPISODE_RETRY_COOLDOWN_HOURS` | `24` | Cooldown in hours before re-attempting search for an unfulfilled episode release. |

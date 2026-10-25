@@ -4,6 +4,8 @@ from pathlib import Path
 from typing import Optional, Literal, List, Dict, Any
 from pydantic import BaseModel, Field
 
+from .cron import interval_hours_to_cron, normalize_cron_expr
+
 class GeneralConfig(BaseModel):
     dry_run: bool = False
     check_interval_seconds: int = 30
@@ -28,18 +30,34 @@ class AIConfig(BaseModel):
 
 class SeasonPackBackfillConfig(BaseModel):
     enabled: bool = False
-    interval_hours: int = 12
+    cron: str = "0 2 * * *"
+    interval_hours: Optional[int] = None
     min_missing_days: int = 3
     max_seasons_per_run: int = 3
     season_cooldown_days: int = 7
 
+    def __init__(self, **kwargs):
+        if "cron" not in kwargs and "interval_hours" in kwargs and kwargs["interval_hours"] is not None:
+            kwargs["cron"] = interval_hours_to_cron(kwargs["interval_hours"])
+        elif "cron" in kwargs and kwargs["cron"]:
+            kwargs["cron"] = normalize_cron_expr(str(kwargs["cron"]), fallback="0 2 * * *")
+        super().__init__(**kwargs)
+
 
 class MissingEpisodeRetryConfig(BaseModel):
     enabled: bool = False
-    interval_hours: int = 6
+    cron: str = "0 */6 * * *"
+    interval_hours: Optional[int] = None
     min_air_delay_hours: int = 6
     max_episodes_per_run: int = 5
     episode_cooldown_hours: int = 24
+
+    def __init__(self, **kwargs):
+        if "cron" not in kwargs and "interval_hours" in kwargs and kwargs["interval_hours"] is not None:
+            kwargs["cron"] = interval_hours_to_cron(kwargs["interval_hours"])
+        elif "cron" in kwargs and kwargs["cron"]:
+            kwargs["cron"] = normalize_cron_expr(str(kwargs["cron"]), fallback="0 */6 * * *")
+        super().__init__(**kwargs)
 
 
 class SonarrConfig(BaseModel):
@@ -180,14 +198,14 @@ def config_to_dict(config: AppConfig) -> Dict[str, Any]:
             "api_key": str(config.sonarr.api_key),
             "season_pack_backfill": {
                 "enabled": bool(config.sonarr.season_pack_backfill.enabled),
-                "interval_hours": int(config.sonarr.season_pack_backfill.interval_hours),
+                "cron": str(config.sonarr.season_pack_backfill.cron),
                 "min_missing_days": int(config.sonarr.season_pack_backfill.min_missing_days),
                 "max_seasons_per_run": int(config.sonarr.season_pack_backfill.max_seasons_per_run),
                 "season_cooldown_days": int(config.sonarr.season_pack_backfill.season_cooldown_days),
             },
             "missing_episode_retry": {
                 "enabled": bool(config.sonarr.missing_episode_retry.enabled),
-                "interval_hours": int(config.sonarr.missing_episode_retry.interval_hours),
+                "cron": str(config.sonarr.missing_episode_retry.cron),
                 "min_air_delay_hours": int(config.sonarr.missing_episode_retry.min_air_delay_hours),
                 "max_episodes_per_run": int(config.sonarr.missing_episode_retry.max_episodes_per_run),
                 "episode_cooldown_hours": int(config.sonarr.missing_episode_retry.episode_cooldown_hours),
@@ -268,8 +286,10 @@ def update_config_from_dict(config: AppConfig, data: Dict[str, Any]) -> AppConfi
             spb = s["season_pack_backfill"]
             if "enabled" in spb and spb["enabled"] is not None:
                 config.sonarr.season_pack_backfill.enabled = bool(spb["enabled"])
-            if "interval_hours" in spb and spb["interval_hours"] is not None:
-                config.sonarr.season_pack_backfill.interval_hours = max(1, int(spb["interval_hours"]))
+            if "cron" in spb and spb["cron"] is not None and str(spb["cron"]).strip():
+                config.sonarr.season_pack_backfill.cron = normalize_cron_expr(str(spb["cron"]), fallback="0 2 * * *")
+            elif "interval_hours" in spb and spb["interval_hours"] is not None:
+                config.sonarr.season_pack_backfill.cron = interval_hours_to_cron(int(spb["interval_hours"]))
             if "min_missing_days" in spb and spb["min_missing_days"] is not None:
                 config.sonarr.season_pack_backfill.min_missing_days = max(0, int(spb["min_missing_days"]))
             if "max_seasons_per_run" in spb and spb["max_seasons_per_run"] is not None:
@@ -280,8 +300,10 @@ def update_config_from_dict(config: AppConfig, data: Dict[str, Any]) -> AppConfi
             mer = s["missing_episode_retry"]
             if "enabled" in mer and mer["enabled"] is not None:
                 config.sonarr.missing_episode_retry.enabled = bool(mer["enabled"])
-            if "interval_hours" in mer and mer["interval_hours"] is not None:
-                config.sonarr.missing_episode_retry.interval_hours = max(1, int(mer["interval_hours"]))
+            if "cron" in mer and mer["cron"] is not None and str(mer["cron"]).strip():
+                config.sonarr.missing_episode_retry.cron = normalize_cron_expr(str(mer["cron"]), fallback="0 */6 * * *")
+            elif "interval_hours" in mer and mer["interval_hours"] is not None:
+                config.sonarr.missing_episode_retry.cron = interval_hours_to_cron(int(mer["interval_hours"]))
             if "min_air_delay_hours" in mer and mer["min_air_delay_hours"] is not None:
                 config.sonarr.missing_episode_retry.min_air_delay_hours = max(0, int(mer["min_air_delay_hours"]))
             if "max_episodes_per_run" in mer and mer["max_episodes_per_run"] is not None:
@@ -410,9 +432,11 @@ def load_config(config_path: Optional[str] = None) -> AppConfig:
         config.sonarr.api_key = env_sonarr_key
     if env_bf_enabled := os.getenv("SONARR_BACKFILL_ENABLED"):
         config.sonarr.season_pack_backfill.enabled = env_bf_enabled.lower() in ("true", "1", "yes")
-    if env_bf_interval := os.getenv("SONARR_BACKFILL_INTERVAL_HOURS"):
+    if env_bf_cron := os.getenv("SONARR_BACKFILL_CRON"):
+        config.sonarr.season_pack_backfill.cron = normalize_cron_expr(env_bf_cron, fallback="0 2 * * *")
+    elif env_bf_interval := os.getenv("SONARR_BACKFILL_INTERVAL_HOURS"):
         try:
-            config.sonarr.season_pack_backfill.interval_hours = max(1, int(env_bf_interval))
+            config.sonarr.season_pack_backfill.cron = interval_hours_to_cron(int(env_bf_interval))
         except ValueError:
             pass
     if env_bf_missing_days := os.getenv("SONARR_BACKFILL_MIN_MISSING_DAYS"):
@@ -432,9 +456,11 @@ def load_config(config_path: Optional[str] = None) -> AppConfig:
             pass
     if env_mer_enabled := os.getenv("SONARR_EPISODE_RETRY_ENABLED"):
         config.sonarr.missing_episode_retry.enabled = env_mer_enabled.lower() in ("true", "1", "yes")
-    if env_mer_interval := os.getenv("SONARR_EPISODE_RETRY_INTERVAL_HOURS"):
+    if env_mer_cron := os.getenv("SONARR_EPISODE_RETRY_CRON"):
+        config.sonarr.missing_episode_retry.cron = normalize_cron_expr(env_mer_cron, fallback="0 */6 * * *")
+    elif env_mer_interval := os.getenv("SONARR_EPISODE_RETRY_INTERVAL_HOURS"):
         try:
-            config.sonarr.missing_episode_retry.interval_hours = max(1, int(env_mer_interval))
+            config.sonarr.missing_episode_retry.cron = interval_hours_to_cron(int(env_mer_interval))
         except ValueError:
             pass
     if env_mer_delay := os.getenv("SONARR_EPISODE_RETRY_MIN_AIR_DELAY_HOURS"):
