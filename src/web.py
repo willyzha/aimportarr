@@ -1755,10 +1755,10 @@ DASHBOARD_HTML = """<!DOCTYPE html>
           Model Analytics
         </button>
         <button class="tab-btn" onclick="switchTab('ollama')">
-          🦙 Ollama Models
+          Ollama Models
         </button>
         <button class="tab-btn" onclick="switchTab('settings')">
-          ⚙️ Settings
+          Settings
         </button>
       </div>
     </div>
