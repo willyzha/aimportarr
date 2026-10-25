@@ -809,6 +809,45 @@ DASHBOARD_HTML = """<!DOCTYPE html>
       -webkit-overflow-scrolling: touch;
     }
 
+    .history-table-wrapper,
+    .token-table-wrapper {
+      display: block;
+    }
+
+    .history-mobile-cards,
+    .token-mobile-cards {
+      display: none;
+    }
+
+    .history-mobile-card,
+    .token-mobile-card {
+      background: var(--bg-card);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 0.85rem;
+      display: flex;
+      flex-direction: column;
+      gap: 0.5rem;
+      transition: background 0.15s ease, border-color 0.15s ease;
+    }
+
+    .history-mobile-card:hover,
+    .token-mobile-card:hover {
+      border-color: #3b4556;
+      background: var(--bg-card-hover);
+    }
+
+    .reasoning-card-panel,
+    .token-card-panel {
+      display: none;
+    }
+
+    .reasoning-card-panel.open,
+    .token-card-panel.open {
+      display: block;
+      animation: fadeIn 0.15s ease;
+    }
+
     .card-table-wrapper::-webkit-scrollbar {
       height: 6px;
     }
@@ -1323,6 +1362,32 @@ DASHBOARD_HTML = """<!DOCTYPE html>
       .search-box {
         max-width: 100%;
       }
+      .history-table-wrapper,
+      .token-table-wrapper {
+        display: none !important;
+      }
+      .history-mobile-cards,
+      .token-mobile-cards {
+        display: flex !important;
+        flex-direction: column;
+        gap: 0.65rem;
+      }
+      .filter-pills {
+        overflow-x: auto;
+        white-space: nowrap;
+        -webkit-overflow-scrolling: touch;
+        scrollbar-width: none;
+        padding-bottom: 0.25rem;
+        max-width: 100%;
+        flex-wrap: nowrap;
+      }
+      .filter-pills::-webkit-scrollbar {
+        display: none;
+      }
+      .filter-pill {
+        flex-shrink: 0;
+        white-space: nowrap;
+      }
       .ollama-models-desktop {
         display: none !important;
       }
@@ -1467,6 +1532,20 @@ DASHBOARD_HTML = """<!DOCTYPE html>
       }
       .ollama-unconfigured-grid {
         grid-template-columns: 1fr !important;
+      }
+      .table-pagination {
+        flex-direction: column;
+        align-items: center;
+        justify-content: center;
+        gap: 0.6rem;
+        text-align: center;
+      }
+      .pagination-controls {
+        justify-content: center;
+      }
+      #btn-retry-all {
+        width: 100%;
+        justify-content: center;
       }
     }
   </style>
@@ -1703,7 +1782,8 @@ DASHBOARD_HTML = """<!DOCTYPE html>
         </button>
       </div>
 
-      <div class="card-table-wrapper">
+      <!-- Desktop Table View (>= 768px) -->
+      <div class="card-table-wrapper history-table-wrapper">
         <table>
           <thead>
             <tr>
@@ -1728,17 +1808,25 @@ DASHBOARD_HTML = """<!DOCTYPE html>
         </table>
       </div>
 
+      <!-- Mobile Cards View (< 768px) -->
+      <div id="history-cards-container" class="history-mobile-cards">
+        <div class="empty-state">
+          <div class="empty-icon">⏳</div>
+          <div>Waiting for data...</div>
+        </div>
+      </div>
+
       <!-- Pagination Toolbar for Processed History -->
       <div class="table-pagination">
         <div class="pagination-info">
-          Showing <span id="history-page-start">1</span>–<span id="history-page-end">25</span> of <span id="history-total-items">0</span> items
+          Showing <span id="history-page-start">1</span>–<span id="history-page-end">10</span> of <span id="history-total-items">0</span> items
         </div>
         <div class="pagination-controls">
           <label style="font-size: 0.75rem; color: var(--text-dim); display: flex; align-items: center; gap: 0.35rem;">
             Per page:
             <select id="history-page-size" class="pagination-select" onchange="changeHistoryPageSize(this.value)">
-              <option value="10">10</option>
-              <option value="25" selected>25</option>
+              <option value="10" selected>10</option>
+              <option value="25">25</option>
               <option value="50">50</option>
               <option value="100">100</option>
             </select>
@@ -1763,7 +1851,8 @@ DASHBOARD_HTML = """<!DOCTYPE html>
         </div>
       </div>
 
-      <div class="card-table-wrapper">
+      <!-- Desktop Table View (>= 768px) -->
+      <div class="card-table-wrapper token-table-wrapper">
         <table>
           <thead>
             <tr>
@@ -1790,17 +1879,25 @@ DASHBOARD_HTML = """<!DOCTYPE html>
         </table>
       </div>
 
+      <!-- Mobile Cards View (< 768px) -->
+      <div id="token-cards-container" class="token-mobile-cards">
+        <div class="empty-state">
+          <div class="empty-icon">✨</div>
+          <div>No AI calls recorded yet.</div>
+        </div>
+      </div>
+
       <!-- Pagination Toolbar for Token Usage History -->
       <div class="table-pagination">
         <div class="pagination-info">
-          Showing <span id="tokens-page-start">1</span>–<span id="tokens-page-end">25</span> of <span id="tokens-total-items">0</span> transactions
+          Showing <span id="tokens-page-start">1</span>–<span id="tokens-page-end">10</span> of <span id="tokens-total-items">0</span> transactions
         </div>
         <div class="pagination-controls">
           <label style="font-size: 0.75rem; color: var(--text-dim); display: flex; align-items: center; gap: 0.35rem;">
             Per page:
             <select id="tokens-page-size" class="pagination-select" onchange="changeTokensPageSize(this.value)">
-              <option value="10">10</option>
-              <option value="25" selected>25</option>
+              <option value="10" selected>10</option>
+              <option value="25">25</option>
               <option value="50">50</option>
               <option value="100">100</option>
             </select>
@@ -2315,12 +2412,12 @@ DASHBOARD_HTML = """<!DOCTYPE html>
     let rawTokens = [];
     let historyTotal = 0;
     let historyCurrentPage = 1;
-    let historyPageSize = 25;
+    let historyPageSize = 10;
     let historyTotalPages = 1;
 
     let tokensTotal = 0;
     let tokensCurrentPage = 1;
-    let tokensPageSize = 25;
+    let tokensPageSize = 10;
     let tokensTotalPages = 1;
 
     let currentFilter = 'all';
@@ -2380,7 +2477,7 @@ DASHBOARD_HTML = """<!DOCTYPE html>
     }
 
     function changeHistoryPageSize(newSize) {
-      historyPageSize = parseInt(newSize, 10) || 25;
+      historyPageSize = parseInt(newSize, 10) || 10;
       historyCurrentPage = 1;
       fetchHistoryData();
     }
@@ -2392,7 +2489,7 @@ DASHBOARD_HTML = """<!DOCTYPE html>
     }
 
     function changeTokensPageSize(newSize) {
-      tokensPageSize = parseInt(newSize, 10) || 25;
+      tokensPageSize = parseInt(newSize, 10) || 10;
       tokensCurrentPage = 1;
       fetchTokensData();
     }
@@ -2565,81 +2662,169 @@ DASHBOARD_HTML = """<!DOCTYPE html>
       } else {
         openReasoningId = rowId;
       }
-      document.querySelectorAll('.reasoning-row').forEach(el => {
-        el.classList.toggle('open', el.id === `reasoning-${openReasoningId}`);
+      document.querySelectorAll('.reasoning-row, .reasoning-card-panel').forEach(el => {
+        el.classList.toggle('open', el.id === `reasoning-${openReasoningId}` || el.id === `reasoning-card-${openReasoningId}`);
       });
       document.querySelectorAll('.reasoning-chevron').forEach(el => {
-        el.innerText = el.id === `chevron-${openReasoningId}` ? '▴' : '▾';
+        el.innerText = (el.id === `chevron-${openReasoningId}` || el.id === `chevron-card-${openReasoningId}`) ? '▴' : '▾';
       });
     }
 
     function renderHistoryTable(items) {
       const tbody = document.getElementById('history-table-body');
+      const cardsContainer = document.getElementById('history-cards-container');
       if (!items || items.length === 0) {
-        tbody.innerHTML = `
-          <tr>
-            <td colspan="8" class="empty-state">
+        if (tbody) {
+          tbody.innerHTML = `
+            <tr>
+              <td colspan="8" class="empty-state">
+                <div class="empty-icon">📭</div>
+                <div>No processed items found.</div>
+              </td>
+            </tr>`;
+        }
+        if (cardsContainer) {
+          cardsContainer.innerHTML = `
+            <div class="empty-state">
               <div class="empty-icon">📭</div>
               <div>No processed items found.</div>
-            </td>
-          </tr>`;
+            </div>`;
+        }
         return;
       }
 
-      tbody.innerHTML = items.map(item => {
-        const confText = item.confidence !== null ? `${Math.round(item.confidence * 100)}%` : '--';
-        let modelText = item.model || 'Direct / Rule';
-        if (modelText.includes(' with Fallback to ')) {
-          modelText = modelText.split(' with Fallback to ')[0];
-        }
-        const appClass = (item.app || '').toLowerCase() === 'sonarr' ? 'badge-sonarr' : 'badge-radarr';
-        const normStatus = normalizeStatus(item.status);
-        const statusClass = `badge-${normStatus}`;
-        const statusTooltip = getStatusTooltip(normStatus);
-        const isOpen = openReasoningId === item.id;
-
-        // Only offer Retry for items that have NOT been imported, rejected (deleted), or dismissed from the queue
-        let actionCell = '<span style="color: var(--text-dim); font-size: 0.75rem;">--</span>';
-        if (['skipped', 'failed', 'dry_run'].includes(normStatus)) {
-          if (item.retry_requested) {
-            actionCell = '<span class="badge" style="background: rgba(245, 158, 11, 0.15); color: #f59e0b; border: 1px solid rgba(245, 158, 11, 0.3); font-size: 0.65rem;">Pending Retry</span>';
-          } else {
-            actionCell = `<button class="btn btn-sm btn-retry" onclick="event.stopPropagation(); retryItem(${item.id})" title="Allow this release to be re-evaluated on next scan">🔄 Retry</button>`;
+      if (tbody) {
+        tbody.innerHTML = items.map(item => {
+          const confText = item.confidence !== null ? `${Math.round(item.confidence * 100)}%` : '--';
+          let modelText = item.model || 'Direct / Rule';
+          if (modelText.includes(' with Fallback to ')) {
+            modelText = modelText.split(' with Fallback to ')[0];
           }
-        }
+          const appClass = (item.app || '').toLowerCase() === 'sonarr' ? 'badge-sonarr' : 'badge-radarr';
+          const normStatus = normalizeStatus(item.status);
+          const statusClass = `badge-${normStatus}`;
+          const statusTooltip = getStatusTooltip(normStatus);
+          const isOpen = openReasoningId === item.id;
 
-        return `
-          <tr class="clickable-row" onclick="toggleReasoning(${item.id})">
-            <td>${formatTime(item.timestamp)}</td>
-            <td><span class="badge ${appClass}">${item.app || 'App'}</span></td>
-            <td class="title-cell">
-              <div class="title-main">${escapeHtml(item.title)}</div>
-              ${item.details ? `<div class="title-sub">${escapeHtml(item.details)}</div>` : ''}
-            </td>
-            <td><span class="badge badge-category">${item.category}</span></td>
-            <td><span class="badge ${statusClass}" title="${escapeHtml(statusTooltip)}">${normStatus}</span></td>
-            <td>
-              <div style="font-weight: 600;">${confText}</div>
-              <div style="font-size: 0.7rem; color: var(--text-dim);">${escapeHtml(modelText)}</div>
-            </td>
-            <td style="text-align: center;" onclick="event.stopPropagation()">${actionCell}</td>
-            <td id="chevron-${item.id}" class="reasoning-chevron" style="color: var(--text-dim); font-size: 0.8rem;">${isOpen ? '▴' : '▾'}</td>
-          </tr>
-          <tr id="reasoning-${item.id}" class="reasoning-row ${isOpen ? 'open' : ''}">
-            <td colspan="8">
-              <div class="reasoning-box">
-                <div style="font-weight: 600; color: #a5b4fc; margin-bottom: 0.35rem;">
-                  🤖 AI Reasoning & Decision Details
+          // Only offer Retry for items that have NOT been imported, rejected (deleted), or dismissed from the queue
+          let actionCell = '<span style="color: var(--text-dim); font-size: 0.75rem;">--</span>';
+          if (['skipped', 'failed', 'dry_run'].includes(normStatus)) {
+            if (item.retry_requested) {
+              actionCell = '<span class="badge" style="background: rgba(245, 158, 11, 0.15); color: #f59e0b; border: 1px solid rgba(245, 158, 11, 0.3); font-size: 0.65rem;">Pending Retry</span>';
+            } else {
+              actionCell = `<button class="btn btn-sm btn-retry" onclick="event.stopPropagation(); retryItem(${item.id})" title="Allow this release to be re-evaluated on next scan">🔄 Retry</button>`;
+            }
+          }
+
+          return `
+            <tr class="clickable-row" onclick="toggleReasoning(${item.id})">
+              <td>${formatTime(item.timestamp)}</td>
+              <td><span class="badge ${appClass}">${item.app || 'App'}</span></td>
+              <td class="title-cell">
+                <div class="title-main">${escapeHtml(item.title)}</div>
+                ${item.details ? `<div class="title-sub">${escapeHtml(item.details)}</div>` : ''}
+              </td>
+              <td><span class="badge badge-category">${item.category}</span></td>
+              <td><span class="badge ${statusClass}" title="${escapeHtml(statusTooltip)}">${normStatus}</span></td>
+              <td>
+                <div style="font-weight: 600;">${confText}</div>
+                <div style="font-size: 0.7rem; color: var(--text-dim);">${escapeHtml(modelText)}</div>
+              </td>
+              <td style="text-align: center;" onclick="event.stopPropagation()">${actionCell}</td>
+              <td id="chevron-${item.id}" class="reasoning-chevron" style="color: var(--text-dim); font-size: 0.8rem;">${isOpen ? '▴' : '▾'}</td>
+            </tr>
+            <tr id="reasoning-${item.id}" class="reasoning-row ${isOpen ? 'open' : ''}">
+              <td colspan="8">
+                <div class="reasoning-box">
+                  <div style="font-weight: 600; color: #a5b4fc; margin-bottom: 0.35rem;">
+                    🤖 AI Reasoning & Decision Details
+                  </div>
+                  <div>${escapeHtml(item.reasoning || item.details || 'No reasoning details recorded.')}</div>
+                  <div style="font-size: 0.7rem; color: var(--text-dim); margin-top: 0.35rem;">
+                    ID: #${item.id} &bull; Timestamp: ${item.timestamp} &bull; Model: ${escapeHtml(modelText)} &bull; Confidence: ${confText}
+                  </div>
                 </div>
-                <div>${escapeHtml(item.reasoning || item.details || 'No reasoning details recorded.')}</div>
-                <div style="font-size: 0.7rem; color: var(--text-dim); margin-top: 0.35rem;">
-                  ID: #${item.id} &bull; Timestamp: ${item.timestamp} &bull; Model: ${escapeHtml(modelText)} &bull; Confidence: ${confText}
+              </td>
+            </tr>
+          `;
+        }).join('');
+      }
+
+      if (cardsContainer) {
+        cardsContainer.innerHTML = items.map(item => {
+          const confText = item.confidence !== null ? `${Math.round(item.confidence * 100)}%` : '--';
+          let modelText = item.model || 'Direct / Rule';
+          if (modelText.includes(' with Fallback to ')) {
+            modelText = modelText.split(' with Fallback to ')[0];
+          }
+          const appClass = (item.app || '').toLowerCase() === 'sonarr' ? 'badge-sonarr' : 'badge-radarr';
+          const normStatus = normalizeStatus(item.status);
+          const statusClass = `badge-${normStatus}`;
+          const statusTooltip = getStatusTooltip(normStatus);
+          const isOpen = openReasoningId === item.id;
+
+          let actionBtn = '';
+          if (['skipped', 'failed', 'dry_run'].includes(normStatus)) {
+            if (item.retry_requested) {
+              actionBtn = '<span class="badge" style="background: rgba(245, 158, 11, 0.15); color: #f59e0b; border: 1px solid rgba(245, 158, 11, 0.3); font-size: 0.72rem; padding: 0.25rem 0.55rem; width: 100%; justify-content: center;">Pending Retry</span>';
+            } else {
+              actionBtn = `<button class="btn btn-sm btn-retry" style="width: 100%; justify-content: center;" onclick="event.stopPropagation(); retryItem(${item.id})" title="Allow this release to be re-evaluated on next scan">🔄 Retry on Next Scan</button>`;
+            }
+          }
+
+          return `
+            <div class="history-mobile-card clickable-row" onclick="toggleReasoning(${item.id})">
+              <div style="display: flex; justify-content: space-between; align-items: flex-start; gap: 0.5rem;">
+                <div style="display: flex; align-items: center; gap: 0.4rem; flex-wrap: wrap;">
+                  <span class="badge ${appClass}">${item.app || 'App'}</span>
+                  <span class="badge ${statusClass}" title="${escapeHtml(statusTooltip)}">${normStatus}</span>
+                </div>
+                <div style="font-size: 0.72rem; color: var(--text-dim); flex-shrink: 0;">${formatTime(item.timestamp)}</div>
+              </div>
+
+              <div style="margin: 0.15rem 0;">
+                <div style="font-weight: 600; font-size: 0.88rem; color: var(--text-main); word-break: break-all; line-height: 1.35;">${escapeHtml(item.title)}</div>
+                ${item.details ? `<div style="font-size: 0.74rem; color: var(--text-dim); margin-top: 0.15rem; word-break: break-all;">${escapeHtml(item.details)}</div>` : ''}
+              </div>
+
+              <div style="display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 0.4rem; background: rgba(0, 0, 0, 0.2); padding: 0.45rem 0.65rem; border-radius: 6px; font-size: 0.74rem;">
+                <div style="display: flex; align-items: center; gap: 0.35rem;">
+                  <span style="color: var(--text-dim);">Category:</span>
+                  <span class="badge badge-category" style="font-size: 0.68rem; padding: 0.1rem 0.35rem;">${item.category}</span>
+                </div>
+                <div style="display: flex; align-items: center; gap: 0.35rem;">
+                  <span style="color: var(--text-dim);">AI:</span>
+                  <span style="font-weight: 600; color: var(--text-main);">${confText}</span>
+                  <span style="color: var(--text-muted); font-size: 0.7rem;">(${escapeHtml(modelText)})</span>
                 </div>
               </div>
-            </td>
-          </tr>
-        `;
-      }).join('');
+
+              ${actionBtn ? `
+                <div style="margin-top: 0.1rem;" onclick="event.stopPropagation()">
+                  ${actionBtn}
+                </div>
+              ` : ''}
+
+              <div style="display: flex; justify-content: space-between; align-items: center; font-size: 0.72rem; color: var(--accent); padding-top: 0.3rem; border-top: 1px solid var(--border-subtle);">
+                <span>AI Reasoning &amp; Details</span>
+                <span id="chevron-card-${item.id}" class="reasoning-chevron" style="font-size: 0.85rem;">${isOpen ? '▴' : '▾'}</span>
+              </div>
+
+              <div id="reasoning-card-${item.id}" class="reasoning-card-panel ${isOpen ? 'open' : ''}" style="margin-top: 0.2rem;">
+                <div class="reasoning-box">
+                  <div style="font-weight: 600; color: #a5b4fc; margin-bottom: 0.35rem;">
+                    🤖 AI Reasoning &amp; Decision Details
+                  </div>
+                  <div style="line-height: 1.45; word-break: break-word;">${escapeHtml(item.reasoning || item.details || 'No reasoning details recorded.')}</div>
+                  <div style="font-size: 0.7rem; color: var(--text-dim); margin-top: 0.45rem;">
+                    ID: #${item.id} &bull; Timestamp: ${item.timestamp} &bull; Model: ${escapeHtml(modelText)} &bull; Confidence: ${confText}
+                  </div>
+                </div>
+              </div>
+            </div>
+          `;
+        }).join('');
+      }
     }
 
     function toggleTokenDetails(rowId) {
@@ -2648,103 +2833,208 @@ DASHBOARD_HTML = """<!DOCTYPE html>
       } else {
         openTokenId = rowId;
       }
-      document.querySelectorAll('.token-detail-row').forEach(el => {
-        el.classList.toggle('open', el.id === `token-detail-${openTokenId}`);
+      document.querySelectorAll('.token-detail-row, .token-card-panel').forEach(el => {
+        el.classList.toggle('open', el.id === `token-detail-${openTokenId}` || el.id === `token-card-${openTokenId}`);
       });
       document.querySelectorAll('.token-chevron').forEach(el => {
-        el.innerText = el.id === `token-chevron-${openTokenId}` ? '▴' : '▾';
+        el.innerText = (el.id === `token-chevron-${openTokenId}` || el.id === `token-chevron-card-${openTokenId}`) ? '▴' : '▾';
       });
     }
 
     function renderTokenTable(tokens) {
       const tbody = document.getElementById('token-table-body');
+      const cardsContainer = document.getElementById('token-cards-container');
       if (!tokens || tokens.length === 0) {
-        tbody.innerHTML = `
-          <tr>
-            <td colspan="10" class="empty-state">
+        if (tbody) {
+          tbody.innerHTML = `
+            <tr>
+              <td colspan="10" class="empty-state">
+                <div class="empty-icon">✨</div>
+                <div>No AI token calls recorded yet.</div>
+              </td>
+            </tr>`;
+        }
+        if (cardsContainer) {
+          cardsContainer.innerHTML = `
+            <div class="empty-state">
               <div class="empty-icon">✨</div>
               <div>No AI token calls recorded yet.</div>
-            </td>
-          </tr>`;
+            </div>`;
+        }
         return;
       }
 
-      tbody.innerHTML = tokens.map(t => {
-        let statusBadge;
-        if (t.success) {
-          statusBadge = '<span class="badge badge-imported">Success</span>';
-        } else {
-          const codeLabel = t.error_code ? escapeHtml(t.error_code) : 'Failed';
-          statusBadge = `<span class="badge badge-blocked" title="${escapeHtml(t.response_text || 'AI Call Failed')}">✖ ${codeLabel}</span>`;
-        }
-        const latency = t.duration_ms ? `${t.duration_ms}ms` : '--';
-        const thinkingHtml = (t.thinking_tokens && t.thinking_tokens > 0)
-          ? `<span style="color: #a78bfa; font-feature-settings: 'tnum'; font-weight: 500;">${formatNumber(t.thinking_tokens)}</span>`
-          : `<span style="color: var(--text-dim);">&mdash;</span>`;
-        const isOpen = openTokenId === t.id;
-        const inputText = t.prompt_text || 'No input message recorded for this entry.';
-        const outputText = t.response_text || 'No output message recorded for this entry.';
+      if (tbody) {
+        tbody.innerHTML = tokens.map(t => {
+          let statusBadge;
+          if (t.success) {
+            statusBadge = '<span class="badge badge-imported">Success</span>';
+          } else {
+            const codeLabel = t.error_code ? escapeHtml(t.error_code) : 'Failed';
+            statusBadge = `<span class="badge badge-blocked" title="${escapeHtml(t.response_text || 'AI Call Failed')}">✖ ${codeLabel}</span>`;
+          }
+          const latency = t.duration_ms ? `${t.duration_ms}ms` : '--';
+          const thinkingHtml = (t.thinking_tokens && t.thinking_tokens > 0)
+            ? `<span style="color: #a78bfa; font-feature-settings: 'tnum'; font-weight: 500;">${formatNumber(t.thinking_tokens)}</span>`
+            : `<span style="color: var(--text-dim);">&mdash;</span>`;
+          const isOpen = openTokenId === t.id;
+          const inputText = t.prompt_text || 'No input message recorded for this entry.';
+          const outputText = t.response_text || 'No output message recorded for this entry.';
 
-        const errorBannerHtml = !t.success ? `
-          <div class="debug-error-banner">
-            <div class="debug-error-title">
-              <span>🚨</span>
-              <span>AI Call Failed ${t.error_code ? `&bull; Error Code: <code class="debug-error-code">${escapeHtml(t.error_code)}</code>` : ''}</span>
+          const errorBannerHtml = !t.success ? `
+            <div class="debug-error-banner">
+              <div class="debug-error-title">
+                <span>🚨</span>
+                <span>AI Call Failed ${t.error_code ? `&bull; Error Code: <code class="debug-error-code">${escapeHtml(t.error_code)}</code>` : ''}</span>
+              </div>
+              <div class="debug-error-reason">${escapeHtml(t.response_text || 'No error details recorded.')}</div>
             </div>
-            <div class="debug-error-reason">${escapeHtml(t.response_text || 'No error details recorded.')}</div>
-          </div>
-        ` : '';
+          ` : '';
 
-        return `
-          <tr class="clickable-row" onclick="toggleTokenDetails(${t.id})">
-            <td>${formatTime(t.timestamp)}</td>
-            <td>
-              <div style="font-weight: 600; font-family: monospace; font-size: 0.8rem;">${escapeHtml(t.operation)}</div>
-              ${t.item_title ? `<div class="title-sub">${escapeHtml(t.item_title)}</div>` : ''}
-            </td>
-            <td><span style="color: #c084fc; font-weight: 500;">${escapeHtml(t.model)}</span></td>
-            <td style="color: #60a5fa; font-feature-settings: 'tnum'; text-align: right;">${formatNumber(t.prompt_tokens)}</td>
-            <td style="text-align: right;">${thinkingHtml}</td>
-            <td style="color: #34d399; font-feature-settings: 'tnum'; text-align: right;">${formatNumber(t.completion_tokens)}</td>
-            <td style="font-weight: 700; color: var(--text-main); font-feature-settings: 'tnum'; text-align: right;">${formatNumber(t.total_tokens)}</td>
-            <td style="color: var(--text-dim); text-align: right;">${latency}</td>
-            <td style="text-align: center;">${statusBadge}</td>
-            <td id="token-chevron-${t.id}" class="token-chevron" style="color: var(--text-dim); font-size: 0.8rem;">${isOpen ? '▴' : '▾'}</td>
-          </tr>
-          <tr id="token-detail-${t.id}" class="token-detail-row ${isOpen ? 'open' : ''}">
-            <td colspan="10">
-              <div class="reasoning-box">
-                <div style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 0.35rem; flex-wrap: wrap; gap: 0.4rem;">
-                  <div style="font-weight: 600; color: #a5b4fc;">
-                    🔍 AI Debug Trace &bull; <span style="font-family: monospace; font-size: 0.78rem; color: #c084fc;">${escapeHtml(t.operation)}</span>
-                  </div>
-                  ${!t.success && t.error_code ? `<span class="debug-error-code">${escapeHtml(t.error_code)}</span>` : ''}
-                </div>
-                ${errorBannerHtml}
-                <div class="debug-msg-grid">
-                  <div class="debug-msg-panel">
-                    <div class="debug-msg-header" style="color: #60a5fa;">
-                      <span>📥 Input Message (Prompt)</span>
-                      <span>${formatNumber(t.prompt_tokens)} tok</span>
+          return `
+            <tr class="clickable-row" onclick="toggleTokenDetails(${t.id})">
+              <td>${formatTime(t.timestamp)}</td>
+              <td>
+                <div style="font-weight: 600; font-family: monospace; font-size: 0.8rem;">${escapeHtml(t.operation)}</div>
+                ${t.item_title ? `<div class="title-sub">${escapeHtml(t.item_title)}</div>` : ''}
+              </td>
+              <td><span style="color: #c084fc; font-weight: 500;">${escapeHtml(t.model)}</span></td>
+              <td style="color: #60a5fa; font-feature-settings: 'tnum'; text-align: right;">${formatNumber(t.prompt_tokens)}</td>
+              <td style="text-align: right;">${thinkingHtml}</td>
+              <td style="color: #34d399; font-feature-settings: 'tnum'; text-align: right;">${formatNumber(t.completion_tokens)}</td>
+              <td style="font-weight: 700; color: var(--text-main); font-feature-settings: 'tnum'; text-align: right;">${formatNumber(t.total_tokens)}</td>
+              <td style="color: var(--text-dim); text-align: right;">${latency}</td>
+              <td style="text-align: center;">${statusBadge}</td>
+              <td id="token-chevron-${t.id}" class="token-chevron" style="color: var(--text-dim); font-size: 0.8rem;">${isOpen ? '▴' : '▾'}</td>
+            </tr>
+            <tr id="token-detail-${t.id}" class="token-detail-row ${isOpen ? 'open' : ''}">
+              <td colspan="10">
+                <div class="reasoning-box">
+                  <div style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 0.35rem; flex-wrap: wrap; gap: 0.4rem;">
+                    <div style="font-weight: 600; color: #a5b4fc;">
+                      🔍 AI Debug Trace &bull; <span style="font-family: monospace; font-size: 0.78rem; color: #c084fc;">${escapeHtml(t.operation)}</span>
                     </div>
-                    <pre class="debug-msg-pre">${escapeHtml(inputText)}</pre>
+                    ${!t.success && t.error_code ? `<span class="debug-error-code">${escapeHtml(t.error_code)}</span>` : ''}
                   </div>
-                  <div class="debug-msg-panel">
-                    <div class="debug-msg-header" style="color: ${t.success ? '#34d399' : '#f87171'};">
-                      <span>${t.success ? '📤 Output Message (Response)' : '⚠️ Error Details & Server Response'}</span>
-                      <span>${t.success ? `${formatNumber(t.completion_tokens)} tok` : (t.error_code ? escapeHtml(t.error_code) : 'Failed')}</span>
+                  ${errorBannerHtml}
+                  <div class="debug-msg-grid">
+                    <div class="debug-msg-panel">
+                      <div class="debug-msg-header" style="color: #60a5fa;">
+                        <span>📥 Input Message (Prompt)</span>
+                        <span>${formatNumber(t.prompt_tokens)} tok</span>
+                      </div>
+                      <pre class="debug-msg-pre">${escapeHtml(inputText)}</pre>
                     </div>
-                    <pre class="debug-msg-pre" style="${t.success ? '' : 'color: #fca5a5; background: rgba(239, 68, 68, 0.05);'}">${escapeHtml(outputText)}</pre>
+                    <div class="debug-msg-panel">
+                      <div class="debug-msg-header" style="color: ${t.success ? '#34d399' : '#f87171'};">
+                        <span>${t.success ? '📤 Output Message (Response)' : '⚠️ Error Details & Server Response'}</span>
+                        <span>${t.success ? `${formatNumber(t.completion_tokens)} tok` : (t.error_code ? escapeHtml(t.error_code) : 'Failed')}</span>
+                      </div>
+                      <pre class="debug-msg-pre" style="${t.success ? '' : 'color: #fca5a5; background: rgba(239, 68, 68, 0.05);'}">${escapeHtml(outputText)}</pre>
+                    </div>
+                  </div>
+                  <div style="font-size: 0.7rem; color: var(--text-dim); margin-top: 0.45rem;">
+                    ID: #${t.id} &bull; Timestamp: ${t.timestamp} &bull; Model: ${escapeHtml(t.model)} &bull; Latency: ${latency} ${t.error_code ? `&bull; Error: ${escapeHtml(t.error_code)}` : ''}
                   </div>
                 </div>
-                <div style="font-size: 0.7rem; color: var(--text-dim); margin-top: 0.45rem;">
-                  ID: #${t.id} &bull; Timestamp: ${t.timestamp} &bull; Model: ${escapeHtml(t.model)} &bull; Latency: ${latency} ${t.error_code ? `&bull; Error: ${escapeHtml(t.error_code)}` : ''}
+              </td>
+            </tr>
+          `;
+        }).join('');
+      }
+
+      if (cardsContainer) {
+        cardsContainer.innerHTML = tokens.map(t => {
+          let statusBadge;
+          if (t.success) {
+            statusBadge = '<span class="badge badge-imported" style="font-size: 0.7rem; padding: 0.15rem 0.45rem;">✔ Success</span>';
+          } else {
+            const codeLabel = t.error_code ? escapeHtml(t.error_code) : 'Failed';
+            statusBadge = `<span class="badge badge-blocked" style="font-size: 0.7rem; padding: 0.15rem 0.45rem;" title="${escapeHtml(t.response_text || 'AI Call Failed')}">✖ ${codeLabel}</span>`;
+          }
+          const latency = t.duration_ms ? `${t.duration_ms}ms` : '--';
+          const thinkingHtml = (t.thinking_tokens && t.thinking_tokens > 0)
+            ? `<span style="color: #a78bfa; font-feature-settings: 'tnum'; font-weight: 500;">${formatNumber(t.thinking_tokens)}</span>`
+            : `<span style="color: var(--text-dim);">&mdash;</span>`;
+          const isOpen = openTokenId === t.id;
+          const inputText = t.prompt_text || 'No input message recorded for this entry.';
+          const outputText = t.response_text || 'No output message recorded for this entry.';
+
+          const errorBannerHtml = !t.success ? `
+            <div class="debug-error-banner">
+              <div class="debug-error-title">
+                <span>🚨</span>
+                <span>AI Call Failed ${t.error_code ? `&bull; Error Code: <code class="debug-error-code">${escapeHtml(t.error_code)}</code>` : ''}</span>
+              </div>
+              <div class="debug-error-reason">${escapeHtml(t.response_text || 'No error details recorded.')}</div>
+            </div>
+          ` : '';
+
+          return `
+            <div class="token-mobile-card clickable-row" onclick="toggleTokenDetails(${t.id})">
+              <div style="display: flex; justify-content: space-between; align-items: flex-start; gap: 0.5rem;">
+                <div style="min-width: 0; flex: 1;">
+                  <div style="font-weight: 700; font-family: monospace; font-size: 0.82rem; color: var(--text-main); word-break: break-all;">${escapeHtml(t.operation)}</div>
+                  ${t.item_title ? `<div style="font-size: 0.74rem; color: var(--text-dim); margin-top: 0.15rem; word-break: break-all;">${escapeHtml(t.item_title)}</div>` : ''}
+                </div>
+                <div style="text-align: right; flex-shrink: 0;">
+                  <div>${statusBadge}</div>
+                  <div style="font-size: 0.7rem; color: var(--text-dim); margin-top: 0.2rem;">${formatTime(t.timestamp)} &bull; ${latency}</div>
                 </div>
               </div>
-            </td>
-          </tr>
-        `;
-      }).join('');
+
+              <div style="display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 0.4rem; font-size: 0.75rem; background: rgba(0, 0, 0, 0.2); padding: 0.45rem 0.65rem; border-radius: 6px;">
+                <div><span style="color: var(--text-dim);">Model:</span> <span style="color: #c084fc; font-weight: 500;">${escapeHtml(t.model)}</span></div>
+                <div style="display: flex; gap: 0.4rem; align-items: center; font-feature-settings: 'tnum'; font-size: 0.72rem;">
+                  <span style="color: #60a5fa;" title="Prompt tokens">${formatNumber(t.prompt_tokens)}</span>
+                  <span style="color: var(--text-dim);">+</span>
+                  <span style="color: #a78bfa;" title="Thinking tokens">${thinkingHtml}</span>
+                  <span style="color: var(--text-dim);">+</span>
+                  <span style="color: #34d399;" title="Output tokens">${formatNumber(t.completion_tokens)}</span>
+                  <span style="color: var(--text-dim);">=</span>
+                  <strong style="color: var(--text-main);">${formatNumber(t.total_tokens)} tok</strong>
+                </div>
+              </div>
+
+              <div style="display: flex; justify-content: space-between; align-items: center; font-size: 0.72rem; color: var(--accent); padding-top: 0.3rem; border-top: 1px solid var(--border-subtle);">
+                <span>Debug Trace (Prompt &amp; Output)</span>
+                <span id="token-chevron-card-${t.id}" class="token-chevron" style="font-size: 0.85rem;">${isOpen ? '▴' : '▾'}</span>
+              </div>
+
+              <div id="token-card-${t.id}" class="token-card-panel ${isOpen ? 'open' : ''}" style="margin-top: 0.2rem;">
+                <div class="reasoning-box">
+                  <div style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 0.35rem; flex-wrap: wrap; gap: 0.4rem;">
+                    <div style="font-weight: 600; color: #a5b4fc;">
+                      🔍 AI Debug Trace &bull; <span style="font-family: monospace; font-size: 0.78rem; color: #c084fc;">${escapeHtml(t.operation)}</span>
+                    </div>
+                    ${!t.success && t.error_code ? `<span class="debug-error-code">${escapeHtml(t.error_code)}</span>` : ''}
+                  </div>
+                  ${errorBannerHtml}
+                  <div class="debug-msg-grid">
+                    <div class="debug-msg-panel">
+                      <div class="debug-msg-header" style="color: #60a5fa;">
+                        <span>📥 Input Message (Prompt)</span>
+                        <span>${formatNumber(t.prompt_tokens)} tok</span>
+                      </div>
+                      <pre class="debug-msg-pre">${escapeHtml(inputText)}</pre>
+                    </div>
+                    <div class="debug-msg-panel">
+                      <div class="debug-msg-header" style="color: ${t.success ? '#34d399' : '#f87171'};">
+                        <span>${t.success ? '📤 Output Message (Response)' : '⚠️ Error Details & Server Response'}</span>
+                        <span>${t.success ? `${formatNumber(t.completion_tokens)} tok` : (t.error_code ? escapeHtml(t.error_code) : 'Failed')}</span>
+                      </div>
+                      <pre class="debug-msg-pre" style="${t.success ? '' : 'color: #fca5a5; background: rgba(239, 68, 68, 0.05);'}">${escapeHtml(outputText)}</pre>
+                    </div>
+                  </div>
+                  <div style="font-size: 0.7rem; color: var(--text-dim); margin-top: 0.45rem;">
+                    ID: #${t.id} &bull; Timestamp: ${t.timestamp} &bull; Model: ${escapeHtml(t.model)} &bull; Latency: ${latency} ${t.error_code ? `&bull; Error: ${escapeHtml(t.error_code)}` : ''}
+                  </div>
+                </div>
+              </div>
+            </div>
+          `;
+        }).join('');
+      }
     }
 
     function renderAnalytics(summary) {
