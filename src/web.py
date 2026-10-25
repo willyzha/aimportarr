@@ -473,7 +473,7 @@ DASHBOARD_HTML = """<!DOCTYPE html>
     main {
       flex: 1;
       padding: 1.5rem;
-      max-width: 1400px;
+      max-width: 1600px;
       margin: 0 auto;
       width: 100%;
     }
@@ -1039,8 +1039,9 @@ DASHBOARD_HTML = """<!DOCTYPE html>
     }
 
     .title-cell {
-      max-width: 380px;
-      word-break: break-all;
+      min-width: 320px;
+      word-break: break-word;
+      overflow-wrap: anywhere;
     }
 
     .title-main {
@@ -1049,12 +1050,16 @@ DASHBOARD_HTML = """<!DOCTYPE html>
       display: flex;
       align-items: center;
       gap: 0.4rem;
+      word-break: break-word;
+      overflow-wrap: anywhere;
     }
 
     .title-sub {
       font-size: 0.725rem;
       color: var(--text-dim);
       margin-top: 0.15rem;
+      word-break: break-word;
+      overflow-wrap: anywhere;
     }
 
     .reasoning-row,
@@ -1377,7 +1382,7 @@ DASHBOARD_HTML = """<!DOCTYPE html>
         font-size: 0.8rem;
       }
       .title-cell {
-        max-width: 250px;
+        min-width: 250px;
       }
     }
 
@@ -1824,14 +1829,14 @@ DASHBOARD_HTML = """<!DOCTYPE html>
         <table>
           <thead>
             <tr>
-              <th style="width: 140px;">Date &amp; Time</th>
-              <th style="width: 80px;">App</th>
-              <th>Release / Item Title</th>
-              <th style="width: 140px;">Category</th>
-              <th style="width: 100px;">Status</th>
-              <th style="width: 170px;">AI Model & Conf.</th>
-              <th style="width: 100px; text-align: center;">Action</th>
-              <th style="width: 35px;"></th>
+              <th style="width: 115px;">Date &amp; Time</th>
+              <th style="width: 70px;">App</th>
+              <th style="min-width: 320px;">Release / Item Title</th>
+              <th style="width: 120px;">Category</th>
+              <th style="width: 90px;">Status</th>
+              <th style="width: 140px;">AI Model & Conf.</th>
+              <th style="width: 90px; text-align: center;">Action</th>
+              <th style="width: 30px;"></th>
             </tr>
           </thead>
           <tbody id="history-table-body">
@@ -1898,16 +1903,16 @@ DASHBOARD_HTML = """<!DOCTYPE html>
         <table>
           <thead>
             <tr>
-              <th style="width: 125px;">Date &amp; Time</th>
-              <th style="min-width: 130px;">Operation</th>
-              <th style="width: 125px;">Model</th>
-              <th style="width: 70px; text-align: right;">Prompt</th>
-              <th style="width: 70px; text-align: right;">Thinking</th>
-              <th style="width: 70px; text-align: right;">Output</th>
-              <th style="width: 75px; text-align: right;">Total</th>
-              <th style="width: 70px; text-align: right;">Latency</th>
+              <th style="width: 115px;">Date &amp; Time</th>
+              <th style="min-width: 260px;">Operation / Release Title</th>
+              <th style="width: 120px;">Model</th>
+              <th style="width: 65px; text-align: right;">Prompt</th>
+              <th style="width: 65px; text-align: right;">Thinking</th>
+              <th style="width: 65px; text-align: right;">Output</th>
+              <th style="width: 70px; text-align: right;">Total</th>
+              <th style="width: 65px; text-align: right;">Latency</th>
               <th style="width: 75px; text-align: center;">Status</th>
-              <th style="width: 35px;"></th>
+              <th style="width: 30px;"></th>
             </tr>
           </thead>
           <tbody id="token-table-body">
@@ -3031,7 +3036,7 @@ DASHBOARD_HTML = """<!DOCTYPE html>
           return `
             <tr class="clickable-row" onclick="toggleTokenDetails(${t.id})">
               <td>${formatDateTimeCell(t.timestamp)}</td>
-              <td>
+              <td class="title-cell">
                 <div style="font-weight: 600; font-family: monospace; font-size: 0.8rem;">${escapeHtml(t.operation)}</div>
                 ${t.item_title ? `<div class="title-sub">${escapeHtml(t.item_title)}</div>` : ''}
               </td>
