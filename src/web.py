@@ -2851,9 +2851,9 @@ DASHBOARD_HTML = """<!DOCTYPE html>
           const statusTooltip = getStatusTooltip(normStatus);
           const isOpen = openReasoningIds.has(Number(item.id));
 
-          // Only offer Retry for items that have NOT been imported, rejected (deleted), or dismissed from the queue
+          // Offer Retry for items that have not been permanently deleted from client (malware/rejected)
           let actionCell = '<span style="color: var(--text-dim); font-size: 0.75rem;">--</span>';
-          if (['skipped', 'failed', 'dry_run'].includes(normStatus)) {
+          if (['skipped', 'failed', 'dry_run', 'imported', 'dismissed'].includes(normStatus)) {
             if (item.retry_requested) {
               actionCell = '<span class="badge" style="background: rgba(245, 158, 11, 0.15); color: #f59e0b; border: 1px solid rgba(245, 158, 11, 0.3); font-size: 0.65rem;">Pending Retry</span>';
             } else {
@@ -2909,7 +2909,7 @@ DASHBOARD_HTML = """<!DOCTYPE html>
           const isOpen = openReasoningIds.has(Number(item.id));
 
           let actionBtn = '';
-          if (['skipped', 'failed', 'dry_run'].includes(normStatus)) {
+          if (['skipped', 'failed', 'dry_run', 'imported', 'dismissed'].includes(normStatus)) {
             if (item.retry_requested) {
               actionBtn = '<span class="badge" style="background: rgba(245, 158, 11, 0.15); color: #f59e0b; border: 1px solid rgba(245, 158, 11, 0.3); font-size: 0.72rem; padding: 0.25rem 0.55rem; width: 100%; justify-content: center;">Pending Retry</span>';
             } else {
@@ -4832,7 +4832,7 @@ class MetricsHTTPHandler(BaseHTTPRequestHandler):
                 except ValueError:
                     self.send_error(HTTPStatus.BAD_REQUEST, "Invalid item ID")
                     return
-                success = self.metrics.mark_item_for_retry(item_id)
+                success = self.metrics.mark_item_for_retry(item_id, allow_all=True)
                 if success:
                     if self.on_trigger_scan:
                         self.on_trigger_scan(f"retry:{item_id}")
@@ -4845,7 +4845,7 @@ class MetricsHTTPHandler(BaseHTTPRequestHandler):
                 else:
                     self._send_json({
                         "status": "error",
-                        "message": f"Item #{item_id} cannot be retried (already imported, rejected, or dismissed).",
+                        "message": f"Item #{item_id} cannot be retried (not found or already deleted from client).",
                     }, status=400)
                 return
 

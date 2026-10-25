@@ -16,6 +16,7 @@ from .classifier import (
     ErrorCategory,
     QUALITY_REJECTION_KEYWORDS,
     ALREADY_IMPORTED_KEYWORDS,
+    resolve_import_quality,
 )
 from .config import ExtractionConfig, MissingMovieSearchConfig
 from .extractor import (
@@ -198,6 +199,37 @@ class RadarrClient:
                         cmd_status = await self._get(f"command/{cmd_id}")
                         state = cmd_status.get("status") or cmd_status.get("state")
                         if state == "completed":
+                            # Post-import verification: Radarr's command runner reports 'completed'
+                            # even if the background import threw an unhandled DB exception (e.g. SQLite NOT NULL).
+                            target_movie_ids = {f.get("movieId") for f in files_to_import if f.get("movieId")}
+                            target_dl_ids = {f.get("downloadId") for f in files_to_import if f.get("downloadId")}
+                            if target_dl_ids and target_movie_ids:
+                                try:
+                                    current_queue = await self.get_queue()
+                                    stuck_items = [
+                                        q for q in current_queue
+                                        if q.get("downloadId") in target_dl_ids
+                                        and (
+                                            q.get("trackedDownloadStatus") in ("warning", "error")
+                                            or (q.get("trackedDownloadState") or "").lower() in ("importblocked", "importpending")
+                                            and q.get("statusMessages")
+                                        )
+                                    ]
+                                    if stuck_items:
+                                        movies_without_file = []
+                                        for mid in target_movie_ids:
+                                            m_check = await self.get_movie(mid)
+                                            if not m_check.get("hasFile"):
+                                                movies_without_file.append(mid)
+                                        if movies_without_file:
+                                            logger.warning(
+                                                f"Radarr ManualImport command {cmd_id} finished, but movie(s) {movies_without_file} "
+                                                f"still have no file on disk and download remains stuck in queue. Marking import as failed."
+                                            )
+                                            return False
+                                except Exception as ve:
+                                    logger.debug(f"Failed to verify Radarr import status: {ve}")
+
                             logger.info(
                                 f"Radarr successfully imported {len(files_to_import)} movie file(s) (Command ID: {cmd_id})"
                             )
@@ -355,8 +387,17 @@ class RadarrClient:
             return False, dedup_key
 
         item_keys = self._get_item_keys(item)
-        if metrics.is_item_attempted(item_keys):
-            return False, dedup_key
+        latest_rec = metrics.get_latest_item_record(item_keys)
+        if latest_rec:
+            if bool(latest_rec.get("retry_requested")):
+                pass
+            elif latest_rec.get("status") == "imported" and (status in ("warning", "error") or tracked_state == "importblocked"):
+                logger.info(
+                    f"Queue item '{title}' was previously marked 'imported' (ID #{latest_rec.get('id')}), "
+                    f"but is still stuck in Radarr queue with status='{status}', state='{tracked_state}'. Re-evaluating."
+                )
+            else:
+                return False, dedup_key
 
         all_messages: List[str] = []
         for sm in status_messages:
@@ -729,7 +770,7 @@ class RadarrClient:
                     payload_item = {
                         "path": f_path,
                         "movieId": target_movie_id,
-                        "quality": m_file.get("quality"),
+                        "quality": resolve_import_quality(m_file.get("quality"), item.get("quality")),
                         "languages": m_file.get("languages", []),
                         "releaseGroup": m_file.get("releaseGroup"),
                     }
@@ -971,7 +1012,7 @@ class RadarrClient:
                     payload_item = {
                         "path": m_file.get("path"),
                         "movieId": movie_id,
-                        "quality": m_file.get("quality"),
+                        "quality": resolve_import_quality(m_file.get("quality"), item.get("quality")),
                         "languages": m_file.get("languages", []),
                         "releaseGroup": m_file.get("releaseGroup"),
                     }

@@ -16,6 +16,7 @@ from .classifier import (
     ErrorCategory,
     QUALITY_REJECTION_KEYWORDS,
     ALREADY_IMPORTED_KEYWORDS,
+    resolve_import_quality,
 )
 from .config import ExtractionConfig, SeasonPackBackfillConfig, MissingEpisodeRetryConfig
 from .extractor import (
@@ -255,6 +256,43 @@ class SonarrClient:
                         cmd_status = await self._get(f"command/{cmd_id}")
                         state = cmd_status.get("status") or cmd_status.get("state")
                         if state == "completed":
+                            # Post-import verification: Sonarr's command runner reports 'completed'
+                            # even if the background import threw an unhandled DB exception (e.g. SQLite NOT NULL).
+                            target_series_ids = {f.get("seriesId") for f in files_to_import if f.get("seriesId")}
+                            target_dl_ids = {f.get("downloadId") for f in files_to_import if f.get("downloadId")}
+                            target_ep_ids = [
+                                ep_id
+                                for f in files_to_import
+                                for ep_id in f.get("episodeIds", [])
+                                if ep_id
+                            ]
+                            if target_dl_ids and target_ep_ids and target_series_ids:
+                                try:
+                                    current_queue = await self.get_queue()
+                                    stuck_items = [
+                                        q for q in current_queue
+                                        if q.get("downloadId") in target_dl_ids
+                                        and (
+                                            q.get("trackedDownloadStatus") in ("warning", "error")
+                                            or (q.get("trackedDownloadState") or "").lower() in ("importblocked", "importpending")
+                                            and q.get("statusMessages")
+                                        )
+                                    ]
+                                    if stuck_items:
+                                        episodes_monitored = await self.get_episodes(list(target_series_ids)[0]) if len(target_series_ids) == 1 else []
+                                        imported_eps = [
+                                            e for e in episodes_monitored
+                                            if e.get("id") in target_ep_ids and e.get("hasFile")
+                                        ]
+                                        if not imported_eps:
+                                            logger.warning(
+                                                f"Sonarr ManualImport command {cmd_id} finished, but target episodes "
+                                                f"still have no file on disk and download remains stuck in queue. Marking import as failed."
+                                            )
+                                            return False
+                                except Exception as ve:
+                                    logger.debug(f"Failed to verify Sonarr import status: {ve}")
+
                             logger.info(
                                 f"Sonarr successfully imported {len(files_to_import)} file(s) (Command ID: {cmd_id})"
                             )
@@ -431,8 +469,17 @@ class SonarrClient:
             return False, dedup_key
 
         item_keys = self._get_item_keys(item)
-        if metrics.is_item_attempted(item_keys):
-            return False, dedup_key
+        latest_rec = metrics.get_latest_item_record(item_keys)
+        if latest_rec:
+            if bool(latest_rec.get("retry_requested")):
+                pass
+            elif latest_rec.get("status") == "imported" and (status in ("warning", "error") or tracked_state == "importblocked"):
+                logger.info(
+                    f"Queue item '{title}' was previously marked 'imported' (ID #{latest_rec.get('id')}), "
+                    f"but is still stuck in Sonarr queue with status='{status}', state='{tracked_state}'. Re-evaluating."
+                )
+            else:
+                return False, dedup_key
 
         all_messages: List[str] = []
         for sm in status_messages:
@@ -858,7 +905,7 @@ class SonarrClient:
                         "path": f_path,
                         "seriesId": target_series_id,
                         "episodeIds": ep_ids,
-                        "quality": m_file.get("quality"),
+                        "quality": resolve_import_quality(m_file.get("quality"), item.get("quality")),
                         "languages": m_file.get("languages", []),
                         "releaseGroup": m_file.get("releaseGroup"),
                     }
@@ -1177,7 +1224,7 @@ class SonarrClient:
                         "path": m_file.get("path"),
                         "seriesId": series_id,
                         "episodeIds": ep_ids,
-                        "quality": m_file.get("quality"),
+                        "quality": resolve_import_quality(m_file.get("quality"), item.get("quality")),
                         "languages": m_file.get("languages", []),
                         "releaseGroup": m_file.get("releaseGroup"),
                     }

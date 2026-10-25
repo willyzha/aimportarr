@@ -185,6 +185,32 @@ class DatabaseManager:
                 )
             return total_purged
 
+    def get_latest_item_record(self, item_keys: List[str]) -> Optional[Dict[str, Any]]:
+        """
+        Fetch the most recent processed_items record for the given item keys.
+        Returns a dict of record columns or None if never recorded.
+        """
+        if not item_keys:
+            return None
+
+        with self._lock:
+            conn = self._get_connection()
+            placeholders = ",".join("?" for _ in item_keys)
+            query = f"""
+            SELECT p.id, p.app, p.title, p.category, p.status, p.confidence, p.model,
+                   p.reasoning, p.details, p.retry_requested, p.timestamp
+            FROM processed_items p
+            JOIN processed_item_keys k ON p.id = k.processed_id
+            WHERE k.item_key IN ({placeholders})
+            ORDER BY p.id DESC
+            LIMIT 1;
+            """
+            cursor = conn.execute(query, item_keys)
+            row = cursor.fetchone()
+            if not row:
+                return None
+            return dict(row)
+
     def is_item_attempted(self, item_keys: List[str]) -> bool:
         """
         Check if any of the given item keys have been processed and NOT marked for retry.
@@ -341,17 +367,20 @@ class DatabaseManager:
 
             return item_id
 
-    def mark_item_for_retry(self, item_id: int) -> bool:
+    def mark_item_for_retry(self, item_id: int, allow_all: bool = False) -> bool:
         """
-        Flag a retryable processed item (skipped, failed, or dry_run) for retry.
-        Items already imported, rejected (deleted), or dismissed from the queue cannot be retried.
+        Flag a retryable processed item for retry.
+        By default, only 'skipped', 'failed', and 'dry_run' can be retried.
+        If allow_all=True (e.g. from UI retry action), allows retrying 'imported' or 'dismissed' items.
         """
         with self._lock:
             conn = self._get_connection()
+            allowed = ("skipped", "failed", "dry_run", "imported", "dismissed") if allow_all else ("skipped", "failed", "dry_run")
+            placeholders = ",".join("?" for _ in allowed)
             with conn:
                 cursor = conn.execute(
-                    "UPDATE processed_items SET retry_requested = 1 WHERE id = ? AND status IN ('skipped', 'failed', 'dry_run')",
-                    (item_id,),
+                    f"UPDATE processed_items SET retry_requested = 1 WHERE id = ? AND status IN ({placeholders})",
+                    (item_id, *allowed),
                 )
                 success = cursor.rowcount > 0
                 if success:

@@ -1,5 +1,5 @@
 from enum import Enum
-from typing import List, Optional
+from typing import List, Optional, Dict, Any
 
 class ErrorCategory(str, Enum):
     FAKE_OR_MALWARE = "fake_or_malware"
@@ -119,3 +119,55 @@ def classify_issue(
 
     # 7. Fallback / Catch-all for any other error or warning status
     return ErrorCategory.OTHER
+
+
+DEFAULT_FALLBACK_QUALITY: Dict[str, Any] = {
+    "quality": {
+        "id": 5,
+        "name": "WEBDL-720p",
+        "source": "webdl",
+        "resolution": 720,
+        "modifier": "none",
+    },
+    "revision": {
+        "version": 1,
+        "real": 0,
+        "isRepack": False,
+    },
+}
+
+
+def resolve_import_quality(
+    file_quality: Optional[Dict[str, Any]],
+    queue_quality: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
+    """
+    Ensure the quality payload sent to Radarr/Sonarr ManualImport is never null, empty, or zero.
+    Radarr and Sonarr SQLite databases enforce NOT NULL constraints on MovieFiles.Quality
+    and EpisodeFiles.Quality. Passing null causes an unhandled SQLite constraint exception.
+    """
+    if isinstance(file_quality, dict) and isinstance(file_quality.get("quality"), dict):
+        q_id = file_quality["quality"].get("id", 0)
+        if q_id and q_id > 0:
+            return file_quality
+
+    if isinstance(queue_quality, dict) and isinstance(queue_quality.get("quality"), dict):
+        q_id = queue_quality["quality"].get("id", 0)
+        if q_id and q_id > 0:
+            return queue_quality
+
+    return {
+        "quality": {
+            "id": 5,
+            "name": "WEBDL-720p",
+            "source": "webdl",
+            "resolution": 720,
+            "modifier": "none",
+        },
+        "revision": {
+            "version": 1,
+            "real": 0,
+            "isRepack": False,
+        },
+    }
+

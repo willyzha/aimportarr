@@ -1475,6 +1475,128 @@ class QualityEnforcementTests(unittest.IsolatedAsyncioTestCase):
             # Leftover warning for Episode 1 is dismissed cleanly
             mock_dismiss.assert_called_once()
 
+    def test_resolve_import_quality(self):
+        """Verify resolve_import_quality never returns null or invalid quality dict."""
+        from src.classifier import resolve_import_quality, DEFAULT_FALLBACK_QUALITY
+
+        # Case 1: Valid file quality is preserved
+        file_q = {
+            "quality": {"id": 10, "name": "Bluray-1080p", "source": "bluray", "resolution": 1080},
+            "revision": {"version": 1, "real": 0, "isRepack": False},
+        }
+        res1 = resolve_import_quality(file_q, None)
+        self.assertEqual(res1["quality"]["id"], 10)
+        self.assertEqual(res1["quality"]["name"], "Bluray-1080p")
+
+        # Case 2: File quality is null/None, queue quality is used
+        queue_q = {
+            "quality": {"id": 3, "name": "WEBDL-1080p", "source": "webdl", "resolution": 1080},
+            "revision": {"version": 1, "real": 0, "isRepack": False},
+        }
+        res2 = resolve_import_quality(None, queue_q)
+        self.assertEqual(res2["quality"]["id"], 3)
+        self.assertEqual(res2["quality"]["name"], "WEBDL-1080p")
+
+        # Case 3: Both file quality and queue quality are null or id=0 (unparseable release)
+        res3 = resolve_import_quality(None, None)
+        self.assertEqual(res3["quality"]["id"], DEFAULT_FALLBACK_QUALITY["quality"]["id"])
+        self.assertEqual(res3["quality"]["name"], DEFAULT_FALLBACK_QUALITY["quality"]["name"])
+
+        res4 = resolve_import_quality({"quality": {"id": 0, "name": "Unknown"}}, None)
+        self.assertEqual(res4["quality"]["id"], DEFAULT_FALLBACK_QUALITY["quality"]["id"])
+
+    async def test_radarr_trigger_manual_import_post_verification_fails_if_movie_has_no_file(self):
+        """Radarr command may report 'completed' even if SQLite fails NOT NULL constraint. Verification must catch this."""
+        cmd_id = 9999
+        files_to_import = [{
+            "path": "/data/downloads/Test.Movie.mkv",
+            "movieId": 125,
+            "downloadId": "dl-stuck-1",
+            "quality": {"quality": {"id": 5, "name": "WEBDL-720p"}},
+        }]
+
+        stuck_queue = [{
+            "downloadId": "dl-stuck-1",
+            "trackedDownloadStatus": "warning",
+            "trackedDownloadState": "importBlocked",
+            "statusMessages": [{"messages": ["Unable to parse download"]}],
+        }]
+
+        with patch.object(self.radarr, "_post", new_callable=AsyncMock, return_value={"id": cmd_id}), \
+             patch.object(self.radarr, "_get", new_callable=AsyncMock) as mock_get, \
+             patch.object(self.radarr, "get_queue", new_callable=AsyncMock, return_value=stuck_queue), \
+             patch.object(self.radarr, "get_movie", new_callable=AsyncMock, return_value={"id": 125, "hasFile": False}):
+
+            # First _get is command/cmd_id
+            mock_get.return_value = {"status": "completed", "message": "Manually imported 1 files"}
+            ok = await self.radarr.trigger_manual_import(files_to_import)
+            self.assertFalse(ok)
+
+    async def test_radarr_trigger_manual_import_post_verification_succeeds_if_movie_has_file(self):
+        """When movie hasFile == True or queue item cleared, verification succeeds."""
+        cmd_id = 9999
+        files_to_import = [{
+            "path": "/data/downloads/Test.Movie.mkv",
+            "movieId": 125,
+            "downloadId": "dl-stuck-1",
+            "quality": {"quality": {"id": 5, "name": "WEBDL-720p"}},
+        }]
+
+        with patch.object(self.radarr, "_post", new_callable=AsyncMock, return_value={"id": cmd_id}), \
+             patch.object(self.radarr, "_get", new_callable=AsyncMock, return_value={"status": "completed"}), \
+             patch.object(self.radarr, "get_queue", new_callable=AsyncMock, return_value=[]), \
+             patch.object(self.radarr, "get_movie", new_callable=AsyncMock, return_value={"id": 125, "hasFile": True}):
+
+            ok = await self.radarr.trigger_manual_import(files_to_import)
+            self.assertTrue(ok)
+
+    def test_stuck_queue_item_previously_marked_imported_is_eligible_for_reevaluation(self):
+        """When history says 'imported' but the item is still sitting in queue with warning/importblocked, re-evaluate!"""
+        from src.metrics import metrics
+
+        item = {
+            "id": 1234,
+            "title": "Stuck.Release.1080p",
+            "status": "warning",
+            "trackedDownloadStatus": "warning",
+            "trackedDownloadState": "importBlocked",
+            "statusMessages": [{"messages": ["Unable to parse download"]}],
+            "outputPath": "/downloads/Stuck.Release",
+            "downloadId": "dl-stuck-999",
+            "movie": {"id": 10},
+        }
+
+        # Mock latest record as 'imported'
+        with patch.object(metrics, "get_latest_item_record", return_value={"id": 128, "status": "imported", "retry_requested": 0}):
+            is_eligible, dedup_key = self.radarr.is_item_eligible(item)
+            self.assertTrue(is_eligible)
+
+        # If it was marked 'skipped' or 'failed' and no retry requested, it should NOT be eligible
+        with patch.object(metrics, "get_latest_item_record", return_value={"id": 128, "status": "skipped", "retry_requested": 0}):
+            is_eligible, dedup_key = self.radarr.is_item_eligible(item)
+            self.assertFalse(is_eligible)
+
+    def test_mark_item_for_retry_allow_all_flag(self):
+        """allow_all=False preserves default retryable behavior (skipped/failed/dry_run). allow_all=True allows imported/dismissed."""
+        from src.metrics import metrics
+
+        # Record an imported item in metrics
+        metrics.record_processed_item(
+            app="Radarr",
+            title="Imported.Movie.1",
+            category="id_match",
+            status="imported",
+            item_keys=["dl:imp1"]
+        )
+        rec = metrics.get_processed_history(limit=1)[0]
+        imp_id = rec["id"]
+
+        # Default (allow_all=False) returns False for imported items
+        self.assertFalse(metrics.mark_item_for_retry(imp_id, allow_all=False))
+
+        # Explicit allow_all=True returns True
+        self.assertTrue(metrics.mark_item_for_retry(imp_id, allow_all=True))
+
 
 if __name__ == "__main__":
     unittest.main()

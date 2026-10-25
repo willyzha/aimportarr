@@ -136,6 +136,16 @@ class MetricsTracker:
             return purged
         return 0
 
+    def get_latest_item_record(self, item_keys: List[str]) -> Optional[Dict[str, Any]]:
+        """Fetch the most recent processed item record for the given item keys."""
+        with self._lock:
+            if self.db:
+                return self.db.get_latest_item_record(item_keys)
+            for item in self.processed_history:
+                if any(k in str(item.get("id")) or k in item.get("title", "") for k in item_keys):
+                    return item
+            return None
+
     def is_item_attempted(self, item_keys: List[str]) -> bool:
         """
         Check if any key in item_keys was previously attempted and NOT marked for retry.
@@ -161,10 +171,10 @@ class MetricsTracker:
             return self.db.is_item_attempted_within_hours(item_keys, hours=hours)
         return False
 
-    def mark_item_for_retry(self, item_id: int) -> bool:
-        """Flag a specific retryable item (skipped, failed, or dry_run) for retry on the next queue scan cycle."""
+    def mark_item_for_retry(self, item_id: int, allow_all: bool = False) -> bool:
+        """Flag a specific retryable item (skipped, failed, or dry_run; plus imported/dismissed if allow_all) for retry."""
         with self._lock:
-            retryable = ("skipped", "failed", "dry_run")
+            retryable = ("skipped", "failed", "dry_run", "imported", "dismissed") if allow_all else ("skipped", "failed", "dry_run")
             matched_in_mem = False
             for item in self.processed_history:
                 if item.get("id") == item_id:
@@ -175,7 +185,7 @@ class MetricsTracker:
                     break
 
             if self.db:
-                return self.db.mark_item_for_retry(item_id)
+                return self.db.mark_item_for_retry(item_id, allow_all=allow_all)
             return matched_in_mem
 
     def mark_all_rejected_for_retry(self) -> int:
