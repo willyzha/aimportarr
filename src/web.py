@@ -186,6 +186,13 @@ DASHBOARD_HTML = """<!DOCTYPE html>
       border-color: #3b4556;
     }
 
+    .btn:disabled,
+    .btn[disabled] {
+      opacity: 0.35;
+      cursor: not-allowed;
+      pointer-events: none;
+    }
+
     .btn-primary {
       background-color: var(--accent);
       border-color: var(--accent);
@@ -692,6 +699,61 @@ DASHBOARD_HTML = """<!DOCTYPE html>
 
     tbody tr:hover {
       background-color: var(--bg-card-hover);
+    }
+
+    /* Table Pagination */
+    .table-pagination {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 1rem;
+      margin-top: 0.85rem;
+      padding: 0.4rem 0.25rem;
+      flex-wrap: wrap;
+    }
+
+    .pagination-info {
+      font-size: 0.78rem;
+      color: var(--text-muted);
+    }
+
+    .pagination-info span {
+      font-weight: 600;
+      color: var(--text-main);
+    }
+
+    .pagination-controls {
+      display: flex;
+      align-items: center;
+      gap: 0.5rem;
+      flex-wrap: wrap;
+    }
+
+    .pagination-select {
+      background-color: var(--bg-card);
+      border: 1px solid var(--border);
+      color: var(--text-main);
+      padding: 0.28rem 0.55rem;
+      border-radius: 6px;
+      font-size: 0.75rem;
+      outline: none;
+      cursor: pointer;
+    }
+
+    .pagination-select:focus {
+      border-color: var(--accent);
+    }
+
+    .pagination-page-label {
+      font-size: 0.78rem;
+      color: var(--text-muted);
+      padding: 0 0.35rem;
+      user-select: none;
+    }
+
+    .pagination-page-label span {
+      font-weight: 600;
+      color: var(--text-main);
     }
 
     /* Badges */
@@ -1303,10 +1365,42 @@ DASHBOARD_HTML = """<!DOCTYPE html>
           </tbody>
         </table>
       </div>
+
+      <!-- Pagination Toolbar for Processed History -->
+      <div class="table-pagination">
+        <div class="pagination-info">
+          Showing <span id="history-page-start">1</span>–<span id="history-page-end">25</span> of <span id="history-total-items">0</span> items
+        </div>
+        <div class="pagination-controls">
+          <label style="font-size: 0.75rem; color: var(--text-dim); display: flex; align-items: center; gap: 0.35rem;">
+            Per page:
+            <select id="history-page-size" class="pagination-select" onchange="changeHistoryPageSize(this.value)">
+              <option value="10">10</option>
+              <option value="25" selected>25</option>
+              <option value="50">50</option>
+              <option value="100">100</option>
+            </select>
+          </label>
+          <button class="btn btn-sm btn-secondary" id="history-btn-first" onclick="goToHistoryPage(1)" title="First Page">⏮</button>
+          <button class="btn btn-sm btn-secondary" id="history-btn-prev" onclick="goToHistoryPage(historyCurrentPage - 1)" title="Previous Page">◀</button>
+          <span class="pagination-page-label">Page <span id="history-current-page">1</span> of <span id="history-total-pages">1</span></span>
+          <button class="btn btn-sm btn-secondary" id="history-btn-next" onclick="goToHistoryPage(historyCurrentPage + 1)" title="Next Page">▶</button>
+          <button class="btn btn-sm btn-secondary" id="history-btn-last" onclick="goToHistoryPage(historyTotalPages)" title="Last Page">⏭</button>
+        </div>
+      </div>
     </div>
 
     <!-- TAB 2: Token Usage History -->
     <div id="tab-tokens" class="tab-pane" style="display: none;">
+      <div class="table-toolbar">
+        <div style="display: flex; gap: 0.75rem; align-items: center; flex: 1; flex-wrap: wrap;">
+          <div class="search-box">
+            <span class="search-icon">🔍</span>
+            <input type="text" id="tokens-search" placeholder="Filter by operation, model, or release..." oninput="filterTokens()">
+          </div>
+        </div>
+      </div>
+
       <div class="card-table-wrapper">
         <table>
           <thead>
@@ -1332,6 +1426,29 @@ DASHBOARD_HTML = """<!DOCTYPE html>
             </tr>
           </tbody>
         </table>
+      </div>
+
+      <!-- Pagination Toolbar for Token Usage History -->
+      <div class="table-pagination">
+        <div class="pagination-info">
+          Showing <span id="tokens-page-start">1</span>–<span id="tokens-page-end">25</span> of <span id="tokens-total-items">0</span> transactions
+        </div>
+        <div class="pagination-controls">
+          <label style="font-size: 0.75rem; color: var(--text-dim); display: flex; align-items: center; gap: 0.35rem;">
+            Per page:
+            <select id="tokens-page-size" class="pagination-select" onchange="changeTokensPageSize(this.value)">
+              <option value="10">10</option>
+              <option value="25" selected>25</option>
+              <option value="50">50</option>
+              <option value="100">100</option>
+            </select>
+          </label>
+          <button class="btn btn-sm btn-secondary" id="tokens-btn-first" onclick="goToTokensPage(1)" title="First Page">⏮</button>
+          <button class="btn btn-sm btn-secondary" id="tokens-btn-prev" onclick="goToTokensPage(tokensCurrentPage - 1)" title="Previous Page">◀</button>
+          <span class="pagination-page-label">Page <span id="tokens-current-page">1</span> of <span id="tokens-total-pages">1</span></span>
+          <button class="btn btn-sm btn-secondary" id="tokens-btn-next" onclick="goToTokensPage(tokensCurrentPage + 1)" title="Next Page">▶</button>
+          <button class="btn btn-sm btn-secondary" id="tokens-btn-last" onclick="goToTokensPage(tokensTotalPages)" title="Last Page">⏭</button>
+        </div>
       </div>
     </div>
 
@@ -1774,7 +1891,19 @@ DASHBOARD_HTML = """<!DOCTYPE html>
   <script>
     let rawHistory = [];
     let rawTokens = [];
+    let historyTotal = 0;
+    let historyCurrentPage = 1;
+    let historyPageSize = 25;
+    let historyTotalPages = 1;
+
+    let tokensTotal = 0;
+    let tokensCurrentPage = 1;
+    let tokensPageSize = 25;
+    let tokensTotalPages = 1;
+
     let currentFilter = 'all';
+    let historySearchDebounce = null;
+    let tokensSearchDebounce = null;
     let refreshTimer = null;
     let openReasoningId = null;
     let openTokenId = null;
@@ -1814,12 +1943,174 @@ DASHBOARD_HTML = """<!DOCTYPE html>
       }
     }
 
+    function goToHistoryPage(page) {
+      if (page < 1 || (historyTotalPages > 0 && page > historyTotalPages)) return;
+      historyCurrentPage = page;
+      fetchHistoryData();
+    }
+
+    function changeHistoryPageSize(newSize) {
+      historyPageSize = parseInt(newSize, 10) || 25;
+      historyCurrentPage = 1;
+      fetchHistoryData();
+    }
+
+    function goToTokensPage(page) {
+      if (page < 1 || (tokensTotalPages > 0 && page > tokensTotalPages)) return;
+      tokensCurrentPage = page;
+      fetchTokensData();
+    }
+
+    function changeTokensPageSize(newSize) {
+      tokensPageSize = parseInt(newSize, 10) || 25;
+      tokensCurrentPage = 1;
+      fetchTokensData();
+    }
+
     function setFilter(status) {
       currentFilter = status;
+      historyCurrentPage = 1;
       document.querySelectorAll('.filter-pill').forEach(el => {
         el.classList.toggle('active', el.dataset.filter === status);
       });
-      filterHistory();
+      fetchHistoryData();
+    }
+
+    function filterHistory() {
+      if (historySearchDebounce) clearTimeout(historySearchDebounce);
+      historySearchDebounce = setTimeout(() => {
+        historyCurrentPage = 1;
+        fetchHistoryData();
+      }, 250);
+    }
+
+    function filterTokens() {
+      if (tokensSearchDebounce) clearTimeout(tokensSearchDebounce);
+      tokensSearchDebounce = setTimeout(() => {
+        tokensCurrentPage = 1;
+        fetchTokensData();
+      }, 250);
+    }
+
+    function updateHistoryPaginationUI() {
+      const start = historyTotal === 0 ? 0 : (historyCurrentPage - 1) * historyPageSize + 1;
+      const end = Math.min(historyCurrentPage * historyPageSize, historyTotal);
+
+      const startEl = document.getElementById('history-page-start');
+      const endEl = document.getElementById('history-page-end');
+      const totEl = document.getElementById('history-total-items');
+      const curEl = document.getElementById('history-current-page');
+      const totpEl = document.getElementById('history-total-pages');
+
+      if (startEl) startEl.innerText = formatNumber(start);
+      if (endEl) endEl.innerText = formatNumber(end);
+      if (totEl) totEl.innerText = formatNumber(historyTotal);
+      if (curEl) curEl.innerText = formatNumber(historyCurrentPage);
+      if (totpEl) totpEl.innerText = formatNumber(historyTotalPages);
+
+      const btnFirst = document.getElementById('history-btn-first');
+      const btnPrev = document.getElementById('history-btn-prev');
+      const btnNext = document.getElementById('history-btn-next');
+      const btnLast = document.getElementById('history-btn-last');
+
+      if (btnFirst) btnFirst.disabled = historyCurrentPage <= 1;
+      if (btnPrev) btnPrev.disabled = historyCurrentPage <= 1;
+      if (btnNext) btnNext.disabled = historyCurrentPage >= historyTotalPages;
+      if (btnLast) btnLast.disabled = historyCurrentPage >= historyTotalPages;
+    }
+
+    function updateTokensPaginationUI() {
+      const start = tokensTotal === 0 ? 0 : (tokensCurrentPage - 1) * tokensPageSize + 1;
+      const end = Math.min(tokensCurrentPage * tokensPageSize, tokensTotal);
+
+      const startEl = document.getElementById('tokens-page-start');
+      const endEl = document.getElementById('tokens-page-end');
+      const totEl = document.getElementById('tokens-total-items');
+      const curEl = document.getElementById('tokens-current-page');
+      const totpEl = document.getElementById('tokens-total-pages');
+
+      if (startEl) startEl.innerText = formatNumber(start);
+      if (endEl) endEl.innerText = formatNumber(end);
+      if (totEl) totEl.innerText = formatNumber(tokensTotal);
+      if (curEl) curEl.innerText = formatNumber(tokensCurrentPage);
+      if (totpEl) totpEl.innerText = formatNumber(tokensTotalPages);
+
+      const btnFirst = document.getElementById('tokens-btn-first');
+      const btnPrev = document.getElementById('tokens-btn-prev');
+      const btnNext = document.getElementById('tokens-btn-next');
+      const btnLast = document.getElementById('tokens-btn-last');
+
+      if (btnFirst) btnFirst.disabled = tokensCurrentPage <= 1;
+      if (btnPrev) btnPrev.disabled = tokensCurrentPage <= 1;
+      if (btnNext) btnNext.disabled = tokensCurrentPage >= tokensTotalPages;
+      if (btnLast) btnLast.disabled = tokensCurrentPage >= tokensTotalPages;
+    }
+
+    async function fetchHistoryData() {
+      try {
+        const q = (document.getElementById('history-search')?.value || '').trim();
+        const params = new URLSearchParams({
+          page: historyCurrentPage,
+          limit: historyPageSize,
+          filter: currentFilter,
+        });
+        if (q) params.set('search', q);
+
+        const res = await fetch(`/api/history?${params.toString()}`);
+        if (!res.ok) return;
+        const data = await res.json();
+
+        if (Array.isArray(data)) {
+          rawHistory = data;
+          historyTotal = data.length;
+          historyTotalPages = Math.ceil(historyTotal / historyPageSize) || 1;
+        } else {
+          rawHistory = data.items || [];
+          historyTotal = data.total || 0;
+          historyCurrentPage = data.page || 1;
+          historyPageSize = data.limit || historyPageSize;
+          historyTotalPages = data.total_pages || 1;
+        }
+
+        document.getElementById('badge-history-count').innerText = formatNumber(historyTotal);
+        updateHistoryPaginationUI();
+        renderHistoryTable(rawHistory);
+      } catch (err) {
+        console.error('Failed to fetch history data:', err);
+      }
+    }
+
+    async function fetchTokensData() {
+      try {
+        const q = (document.getElementById('tokens-search')?.value || '').trim();
+        const params = new URLSearchParams({
+          page: tokensCurrentPage,
+          limit: tokensPageSize,
+        });
+        if (q) params.set('search', q);
+
+        const res = await fetch(`/api/tokens?${params.toString()}`);
+        if (!res.ok) return;
+        const data = await res.json();
+
+        if (Array.isArray(data)) {
+          rawTokens = data;
+          tokensTotal = data.length;
+          tokensTotalPages = Math.ceil(tokensTotal / tokensPageSize) || 1;
+        } else {
+          rawTokens = data.items || [];
+          tokensTotal = data.total || 0;
+          tokensCurrentPage = data.page || 1;
+          tokensPageSize = data.limit || tokensPageSize;
+          tokensTotalPages = data.total_pages || 1;
+        }
+
+        document.getElementById('badge-token-count').innerText = formatNumber(tokensTotal);
+        updateTokensPaginationUI();
+        renderTokenTable(rawTokens);
+      } catch (err) {
+        console.error('Failed to fetch tokens data:', err);
+      }
     }
 
     function normalizeStatus(status) {
@@ -1836,24 +2127,6 @@ DASHBOARD_HTML = """<!DOCTYPE html>
       if (s === 'failed') return 'Manual import failed, still in queue (eligible for retry)';
       if (s === 'dry_run') return 'Simulated in Dry Run mode, still in queue (eligible for retry)';
       return s;
-    }
-
-    function filterHistory() {
-      const q = (document.getElementById('history-search').value || '').toLowerCase();
-      const filtered = rawHistory.filter(item => {
-        const normStatus = normalizeStatus(item.status);
-        const matchesFilter = (currentFilter === 'all') ||
-          (currentFilter === 'in_queue' ? ['skipped', 'failed', 'dry_run'].includes(normStatus) :
-           (currentFilter === 'season_backfill' || currentFilter === 'episode_retry') ? (item.category === currentFilter) :
-           normStatus === currentFilter);
-        const matchesSearch = !q ||
-          (item.title || '').toLowerCase().includes(q) ||
-          (item.category || '').toLowerCase().includes(q) ||
-          (item.reasoning || '').toLowerCase().includes(q) ||
-          (item.model || '').toLowerCase().includes(q);
-        return matchesFilter && matchesSearch;
-      });
-      renderHistoryTable(filtered);
     }
 
     function toggleReasoning(rowId) {
@@ -2248,10 +2521,10 @@ DASHBOARD_HTML = """<!DOCTYPE html>
       if (isManual && refreshIcon) refreshIcon.classList.add('spin');
 
       try {
-        const [sumRes, histRes, tokRes] = await Promise.all([
+        const [sumRes] = await Promise.all([
           fetch('/api/metrics'),
-          fetch('/api/history?limit=100'),
-          fetch('/api/tokens?limit=100')
+          fetchHistoryData(),
+          fetchTokensData()
         ]);
 
         if (sumRes.ok) {
@@ -2276,18 +2549,6 @@ DASHBOARD_HTML = """<!DOCTYPE html>
           document.getElementById('stat-token-sub').innerText = `Prompt: ${pTok} | Thinking: ${thTok} | Output: ${outTok}`;
           renderAnalytics(summary);
           renderTasks(summary.tasks);
-        }
-
-        if (histRes.ok) {
-          rawHistory = await histRes.json();
-          document.getElementById('badge-history-count').innerText = rawHistory.length;
-          filterHistory();
-        }
-
-        if (tokRes.ok) {
-          rawTokens = await tokRes.json();
-          document.getElementById('badge-token-count').innerText = rawTokens.length;
-          renderTokenTable(rawTokens);
         }
 
         document.getElementById('header-status').innerText = 'Online';
@@ -2393,9 +2654,11 @@ DASHBOARD_HTML = """<!DOCTYPE html>
         if (res.ok && data.status === 'ok') {
           showToast(`Release #${id} queued for immediate retry!`, 'success');
           const it = rawHistory.find(x => x.id === id);
-          if (it) it.retry_requested = 1;
-          filterHistory();
-          setTimeout(() => fetchData(false), 1200);
+          if (it) {
+            it.retry_requested = 1;
+            renderHistoryTable(rawHistory);
+          }
+          setTimeout(() => fetchHistoryData(), 1200);
         } else {
           showToast(data.message || `Failed to retry item #${id}`, 'danger');
         }
@@ -3403,23 +3666,55 @@ class MetricsHTTPHandler(BaseHTTPRequestHandler):
         # REST API: Processed History
         if path == "/api/history":
             limit = 100
+            page = None
+            search = None
+            filter_val = None
             if "limit" in params:
                 try:
-                    limit = int(params["limit"][0])
+                    limit = max(1, min(1000, int(params["limit"][0])))
                 except (ValueError, IndexError):
                     pass
-            self._send_json(self.metrics.get_processed_history(limit))
+            if "page" in params:
+                try:
+                    page = max(1, int(params["page"][0]))
+                except (ValueError, IndexError):
+                    page = 1
+            if "search" in params:
+                search = params["search"][0].strip() or None
+            if "filter" in params:
+                filter_val = params["filter"][0].strip() or None
+
+            self._send_json(self.metrics.get_processed_history(
+                limit=limit,
+                page=page,
+                search=search,
+                filter_status=filter_val,
+            ))
             return
 
         # REST API: Token Usage History
         if path == "/api/tokens":
             limit = 100
+            page = None
+            search = None
             if "limit" in params:
                 try:
-                    limit = int(params["limit"][0])
+                    limit = max(1, min(1000, int(params["limit"][0])))
                 except (ValueError, IndexError):
                     pass
-            self._send_json(self.metrics.get_token_history(limit))
+            if "page" in params:
+                try:
+                    page = max(1, int(params["page"][0]))
+                except (ValueError, IndexError):
+                    page = 1
+            if "search" in params:
+                search = params["search"][0].strip() or None
+
+            self._send_json(self.metrics.get_token_history(
+                limit=limit,
+                page=page,
+                search=search,
+            ))
             return
 
         # REST API: Configuration

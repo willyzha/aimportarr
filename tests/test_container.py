@@ -689,5 +689,106 @@ class ContainerSmokeTests(unittest.TestCase):
         self.assertIn("debug-error-code", RENDERED_DASHBOARD_HTML)
         self.assertIn("debug-error-reason", RENDERED_DASHBOARD_HTML)
 
+    def test_history_and_token_pagination(self):
+        """Test database and REST API pagination, filtering, and search for processed and token history."""
+        from src.database import DatabaseManager
+        from src.metrics import MetricsTracker
+        from src.web import RENDERED_DASHBOARD_HTML
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db_path = f"{tmpdir}/test_pagination.db"
+            db = DatabaseManager(db_path=db_path, retention_days=7)
+            metrics_tracker = MetricsTracker(db_manager=db)
+
+            # Insert 12 processed items
+            for i in range(1, 13):
+                status = "imported" if i % 2 == 0 else "rejected"
+                category = "season_backfill" if i == 12 else "test_cat"
+                db.record_processed_item(
+                    app="Sonarr",
+                    title=f"Show.Title.S01E{i:02d}",
+                    category=category,
+                    status=status,
+                    confidence=0.95,
+                    model="test-model",
+                    reasoning=f"Reasoning for episode {i}",
+                    details="",
+                    item_keys=[f"key_{i}"],
+                )
+
+            # Insert 7 token items
+            for i in range(1, 8):
+                db.record_token_usage(
+                    operation="evaluate_media",
+                    model="qwen2.5:7b",
+                    prompt_tokens=100 * i,
+                    completion_tokens=20 * i,
+                    total_tokens=120 * i,
+                    duration_ms=50 * i,
+                    item_title=f"Show.Title.S01E{i:02d}",
+                    success=True,
+                    prompt_text=f"Prompt {i}",
+                    response_text=f"Response {i}",
+                )
+
+            # 1. Test database pagination for processed items
+            page1 = db.get_processed_history(limit=5, page=1)
+            self.assertEqual(len(page1["items"]), 5)
+            self.assertEqual(page1["total"], 12)
+            self.assertEqual(page1["page"], 1)
+            self.assertEqual(page1["limit"], 5)
+            self.assertEqual(page1["total_pages"], 3)
+
+            page2 = db.get_processed_history(limit=5, page=2)
+            self.assertEqual(len(page2["items"]), 5)
+            self.assertEqual(page2["page"], 2)
+
+            page3 = db.get_processed_history(limit=5, page=3)
+            self.assertEqual(len(page3["items"]), 2)
+
+            # Search and filter
+            search_res = db.get_processed_history(limit=5, page=1, search="E03")
+            self.assertEqual(search_res["total"], 1)
+            self.assertEqual(search_res["items"][0]["title"], "Show.Title.S01E03")
+
+            filter_res = db.get_processed_history(limit=10, page=1, filter_status="rejected")
+            self.assertEqual(filter_res["total"], 6)
+
+            cat_res = db.get_processed_history(limit=10, page=1, filter_status="season_backfill")
+            self.assertEqual(cat_res["total"], 1)
+
+            # 2. Test database pagination for token items
+            tok_page1 = db.get_token_history(limit=3, page=1)
+            self.assertEqual(len(tok_page1["items"]), 3)
+            self.assertEqual(tok_page1["total"], 7)
+            self.assertEqual(tok_page1["total_pages"], 3)
+
+            tok_search = db.get_token_history(limit=5, page=1, search="S01E02")
+            self.assertEqual(tok_search["total"], 1)
+
+            # 3. Test in-memory fallback pagination in MetricsTracker
+            mem_tracker = MetricsTracker(db_manager=None)
+            for i in range(1, 8):
+                mem_tracker.record_token_usage(
+                    operation="test_op",
+                    model="model-x",
+                    prompt_tokens=10,
+                    completion_tokens=5,
+                    total_tokens=15,
+                    duration_ms=10,
+                    item_title=f"Mem Item {i}",
+                )
+            mem_tok_page = mem_tracker.get_token_history(limit=3, page=1)
+            self.assertEqual(len(mem_tok_page["items"]), 3)
+            self.assertEqual(mem_tok_page["total"], 7)
+            self.assertEqual(mem_tok_page["total_pages"], 3)
+
+            db.close()
+
+        # 4. Web UI markup verification
+        self.assertIn("table-pagination", RENDERED_DASHBOARD_HTML)
+        self.assertIn("history-page-size", RENDERED_DASHBOARD_HTML)
+        self.assertIn("tokens-page-size", RENDERED_DASHBOARD_HTML)
+        self.assertIn("tokens-search", RENDERED_DASHBOARD_HTML)
+
 if __name__ == "__main__":
     unittest.main()

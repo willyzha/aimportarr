@@ -1,10 +1,11 @@
 import json
 import logging
+import math
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 import sqlite3
 import threading
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple, Union
 
 logger = logging.getLogger("aimportarr.database")
 
@@ -415,31 +416,133 @@ class DatabaseManager:
                 ))
                 return cursor.lastrowid
 
-    def get_processed_history(self, limit: int = 100) -> List[Dict[str, Any]]:
-        """Return the most recent processed items."""
+    def get_processed_history(
+        self,
+        limit: int = 100,
+        page: Optional[int] = None,
+        search: Optional[str] = None,
+        filter_status: Optional[str] = None,
+    ) -> Union[List[Dict[str, Any]], Dict[str, Any]]:
+        """Return processed items with optional pagination, filter, and search."""
         with self._lock:
             conn = self._get_connection()
-            cursor = conn.execute("""
+            where_clauses = []
+            params = []
+
+            # Filter clause
+            if filter_status and filter_status != "all":
+                if filter_status == "in_queue":
+                    where_clauses.append("status IN ('skipped', 'failed', 'dry_run')")
+                elif filter_status == "rejected":
+                    where_clauses.append("status IN ('rejected', 'blocked')")
+                elif filter_status in ("season_backfill", "episode_retry"):
+                    where_clauses.append("category = ?")
+                    params.append(filter_status)
+                else:
+                    where_clauses.append("status = ?")
+                    params.append(filter_status)
+
+            # Search clause
+            if search:
+                pattern = f"%{search.strip().lower()}%"
+                where_clauses.append("(LOWER(title) LIKE ? OR LOWER(category) LIKE ? OR LOWER(reasoning) LIKE ? OR LOWER(model) LIKE ? OR LOWER(details) LIKE ?)")
+                params.extend([pattern, pattern, pattern, pattern, pattern])
+
+            where_sql = (" WHERE " + " AND ".join(where_clauses)) if where_clauses else ""
+
+            if page is None:
+                query = f"""
+                    SELECT id, app, title, category, status, confidence, model, reasoning, details, retry_requested, timestamp
+                    FROM processed_items
+                    {where_sql}
+                    ORDER BY id DESC
+                    LIMIT ?
+                """
+                cursor = conn.execute(query, params + [limit])
+                rows = cursor.fetchall()
+                return [dict(r) for r in rows]
+
+            # Paginated query
+            count_cursor = conn.execute(f"SELECT COUNT(*) FROM processed_items {where_sql}", params)
+            total = count_cursor.fetchone()[0]
+
+            page = max(1, page)
+            limit = max(1, limit)
+            offset = (page - 1) * limit
+            total_pages = math.ceil(total / limit) if total > 0 else 1
+
+            query = f"""
                 SELECT id, app, title, category, status, confidence, model, reasoning, details, retry_requested, timestamp
                 FROM processed_items
+                {where_sql}
                 ORDER BY id DESC
-                LIMIT ?
-            """, (limit,))
+                LIMIT ? OFFSET ?
+            """
+            cursor = conn.execute(query, params + [limit, offset])
             rows = cursor.fetchall()
-            return [dict(r) for r in rows]
+            return {
+                "items": [dict(r) for r in rows],
+                "total": total,
+                "page": page,
+                "limit": limit,
+                "total_pages": total_pages,
+            }
 
-    def get_token_history(self, limit: int = 100) -> List[Dict[str, Any]]:
-        """Return the most recent token transactions."""
+    def get_token_history(
+        self,
+        limit: int = 100,
+        page: Optional[int] = None,
+        search: Optional[str] = None,
+    ) -> Union[List[Dict[str, Any]], Dict[str, Any]]:
+        """Return token transactions with optional pagination and search."""
         with self._lock:
             conn = self._get_connection()
-            cursor = conn.execute("""
+            where_clauses = []
+            params = []
+
+            if search:
+                pattern = f"%{search.strip().lower()}%"
+                where_clauses.append("(LOWER(operation) LIKE ? OR LOWER(model) LIKE ? OR LOWER(item_title) LIKE ? OR LOWER(error_code) LIKE ?)")
+                params.extend([pattern, pattern, pattern, pattern])
+
+            where_sql = (" WHERE " + " AND ".join(where_clauses)) if where_clauses else ""
+
+            if page is None:
+                query = f"""
+                    SELECT id, timestamp, operation, model, prompt_tokens, thinking_tokens, completion_tokens, total_tokens, duration_ms, item_title, success, error_code, prompt_text, response_text
+                    FROM token_usage
+                    {where_sql}
+                    ORDER BY id DESC
+                    LIMIT ?
+                """
+                cursor = conn.execute(query, params + [limit])
+                rows = cursor.fetchall()
+                return [dict(r) for r in rows]
+
+            count_cursor = conn.execute(f"SELECT COUNT(*) FROM token_usage {where_sql}", params)
+            total = count_cursor.fetchone()[0]
+
+            page = max(1, page)
+            limit = max(1, limit)
+            offset = (page - 1) * limit
+            total_pages = math.ceil(total / limit) if total > 0 else 1
+
+            query = f"""
                 SELECT id, timestamp, operation, model, prompt_tokens, thinking_tokens, completion_tokens, total_tokens, duration_ms, item_title, success, error_code, prompt_text, response_text
                 FROM token_usage
+                {where_sql}
                 ORDER BY id DESC
-                LIMIT ?
-            """, (limit,))
+                LIMIT ? OFFSET ?
+            """
+            cursor = conn.execute(query, params + [limit, offset])
             rows = cursor.fetchall()
-            return [dict(r) for r in rows]
+            return {
+                "items": [dict(r) for r in rows],
+                "total": total,
+                "page": page,
+                "limit": limit,
+                "total_pages": total_pages,
+            }
 
     def get_summary_stats(self) -> Dict[str, Any]:
         """Compute aggregated statistics from SQLite across retained records."""

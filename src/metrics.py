@@ -4,7 +4,7 @@ import logging
 import math
 import re
 import threading
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Union
 
 from .database import DatabaseManager
 from . import __version__
@@ -473,19 +473,103 @@ class MetricsTracker:
                 "retention_days": self.db.retention_days if self.db else 0,
             }
 
-    def get_processed_history(self, limit: int = 100) -> List[Dict[str, Any]]:
-        """Return the most recent processed items."""
+    def get_processed_history(
+        self,
+        limit: int = 100,
+        page: Optional[int] = None,
+        search: Optional[str] = None,
+        filter_status: Optional[str] = None,
+    ) -> Union[List[Dict[str, Any]], Dict[str, Any]]:
+        """Return the most recent processed items with optional pagination, filter, and search."""
         with self._lock:
             if self.db:
-                return self.db.get_processed_history(limit=limit)
-            return list(self.processed_history)[:limit]
+                return self.db.get_processed_history(
+                    limit=limit,
+                    page=page,
+                    search=search,
+                    filter_status=filter_status,
+                )
 
-    def get_token_history(self, limit: int = 100) -> List[Dict[str, Any]]:
-        """Return the most recent token transactions."""
+            # In-memory fallback
+            items = list(self.processed_history)
+            if filter_status and filter_status != "all":
+                if filter_status == "in_queue":
+                    items = [it for it in items if it.get("status") in ("skipped", "failed", "dry_run")]
+                elif filter_status == "rejected":
+                    items = [it for it in items if it.get("status") in ("rejected", "blocked")]
+                elif filter_status in ("season_backfill", "episode_retry"):
+                    items = [it for it in items if it.get("category") == filter_status]
+                else:
+                    items = [it for it in items if it.get("status") == filter_status]
+
+            if search:
+                q = search.lower()
+                items = [
+                    it for it in items
+                    if q in (it.get("title") or "").lower()
+                    or q in (it.get("category") or "").lower()
+                    or q in (it.get("reasoning") or "").lower()
+                    or q in (it.get("model") or "").lower()
+                    or q in (it.get("details") or "").lower()
+                ]
+
+            if page is None:
+                return items[:limit]
+
+            total = len(items)
+            page = max(1, page)
+            limit = max(1, limit)
+            offset = (page - 1) * limit
+            total_pages = math.ceil(total / limit) if total > 0 else 1
+            return {
+                "items": items[offset : offset + limit],
+                "total": total,
+                "page": page,
+                "limit": limit,
+                "total_pages": total_pages,
+            }
+
+    def get_token_history(
+        self,
+        limit: int = 100,
+        page: Optional[int] = None,
+        search: Optional[str] = None,
+    ) -> Union[List[Dict[str, Any]], Dict[str, Any]]:
+        """Return the most recent token transactions with optional pagination and search."""
         with self._lock:
             if self.db:
-                return self.db.get_token_history(limit=limit)
-            return list(self.token_history)[:limit]
+                return self.db.get_token_history(
+                    limit=limit,
+                    page=page,
+                    search=search,
+                )
+
+            items = list(self.token_history)
+            if search:
+                q = search.lower()
+                items = [
+                    it for it in items
+                    if q in (it.get("operation") or "").lower()
+                    or q in (it.get("model") or "").lower()
+                    or q in (it.get("item_title") or "").lower()
+                    or q in (it.get("error_code") or "").lower()
+                ]
+
+            if page is None:
+                return items[:limit]
+
+            total = len(items)
+            page = max(1, page)
+            limit = max(1, limit)
+            offset = (page - 1) * limit
+            total_pages = math.ceil(total / limit) if total > 0 else 1
+            return {
+                "items": items[offset : offset + limit],
+                "total": total,
+                "page": page,
+                "limit": limit,
+                "total_pages": total_pages,
+            }
 
     def reset_all(self) -> None:
         """Clear all metrics and history (e.g. for testing)."""
