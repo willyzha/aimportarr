@@ -209,3 +209,74 @@ class OllamaChunkingAndReasoningTests(unittest.IsolatedAsyncioTestCase):
             self.assertNotEqual(reasoning_idx, -1)
             self.assertNotEqual(matched_idx, -1)
             self.assertLess(reasoning_idx, matched_idx, "reasoning must appear before matched_guid in prompt schema")
+
+    def test_format_bytes(self):
+        """Verify human readable byte formatting."""
+        from src.web import format_bytes
+        self.assertEqual(format_bytes(0), "0 B")
+        self.assertEqual(format_bytes(1024), "1.0 KB")
+        self.assertEqual(format_bytes(1048576), "1.0 MB")
+        self.assertEqual(format_bytes(4682456488), "4.36 GB")
+
+    def test_get_ollama_models(self):
+        """Verify get_ollama_models parses and formats Ollama tags."""
+        from src.web import get_ollama_models
+        import urllib.request
+        from io import BytesIO
+
+        mock_payload = json.dumps({
+            "models": [
+                {
+                    "name": "qwen2.5:7b",
+                    "model": "qwen2.5:7b",
+                    "size": 4682456488,
+                    "details": {
+                        "family": "qwen2",
+                        "parameter_size": "7B",
+                        "quantization_level": "Q4_K_M"
+                    }
+                }
+            ]
+        }).encode("utf-8")
+
+        mock_resp = MagicMock()
+        mock_resp.read.return_value = mock_payload
+        mock_resp.__enter__.return_value = mock_resp
+
+        with patch("urllib.request.urlopen", return_value=mock_resp):
+            res = get_ollama_models("http://localhost:11434")
+            self.assertEqual(res["status"], "ok")
+            self.assertEqual(len(res["models"]), 1)
+            self.assertEqual(res["models"][0]["name"], "qwen2.5:7b")
+            self.assertEqual(res["models"][0]["size_human"], "4.36 GB")
+            self.assertEqual(res["models"][0]["parameter_size"], "7B")
+
+    def test_delete_ollama_model(self):
+        """Verify delete_ollama_model executes DELETE request."""
+        from src.web import delete_ollama_model
+
+        mock_resp = MagicMock()
+        mock_resp.__enter__.return_value = mock_resp
+
+        with patch("urllib.request.urlopen", return_value=mock_resp):
+            ok, msg = delete_ollama_model("http://localhost:11434", "qwen2.5:7b")
+            self.assertTrue(ok)
+            self.assertIn("Successfully deleted", msg)
+
+    def test_ollama_pull_manager(self):
+        """Verify OllamaPullManager tracks status and rejects simultaneous pulls."""
+        from src.web import OllamaPullManager
+
+        mgr = OllamaPullManager()
+        self.assertEqual(mgr.get_status()["status"], "idle")
+
+        with patch.object(mgr, "_run_pull"):
+            ok, msg = mgr.start_pull("http://localhost:11434", "qwen2.5:7b")
+            self.assertTrue(ok)
+            self.assertEqual(mgr.get_status()["status"], "pulling")
+            self.assertEqual(mgr.get_status()["model"], "qwen2.5:7b")
+
+            # Simultaneous pull rejected
+            ok2, msg2 = mgr.start_pull("http://localhost:11434", "llama3:latest")
+            self.assertFalse(ok2)
+            self.assertIn("already in progress", msg2)

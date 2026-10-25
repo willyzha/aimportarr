@@ -1,11 +1,15 @@
 import json
 import logging
+import math
+import time
+import urllib.request
+import urllib.error
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 import threading
 from urllib.parse import parse_qs, urlparse
-from typing import Optional, Any, Callable
+from typing import Optional, Any, Callable, Dict, Tuple, List
 
 from .config import AppConfig, load_config, save_config, config_to_dict, update_config_from_dict
 from .metrics import MetricsTracker, metrics as default_metrics
@@ -221,6 +225,42 @@ DASHBOARD_HTML = """<!DOCTYPE html>
     .btn-warning:hover {
       background-color: rgba(245, 158, 11, 0.3);
       color: #fff;
+    }
+
+    .btn-secondary {
+      background-color: rgba(148, 163, 184, 0.12);
+      border: 1px solid rgba(148, 163, 184, 0.3);
+      color: var(--text-main);
+    }
+
+    .btn-secondary:hover {
+      background-color: rgba(148, 163, 184, 0.22);
+      border-color: rgba(148, 163, 184, 0.5);
+    }
+
+    .btn-danger {
+      background-color: rgba(239, 68, 68, 0.12);
+      border: 1px solid rgba(239, 68, 68, 0.35);
+      color: #f87171;
+    }
+
+    .btn-danger:hover {
+      background-color: rgba(239, 68, 68, 0.25);
+      border-color: #ef4444;
+      color: #fff;
+    }
+
+    .ollama-grid {
+      display: grid;
+      grid-template-columns: 1fr 380px;
+      gap: 1rem;
+      align-items: start;
+    }
+
+    @media (max-width: 900px) {
+      .ollama-grid {
+        grid-template-columns: 1fr;
+      }
     }
 
     .toast-container {
@@ -1204,6 +1244,10 @@ DASHBOARD_HTML = """<!DOCTYPE html>
         <button class="tab-btn" onclick="switchTab('analytics')">
           Model Analytics
         </button>
+        <button class="tab-btn" onclick="switchTab('ollama')">
+          🦙 Ollama Models
+          <span class="tab-badge" id="badge-ollama-models" style="display: none;">0</span>
+        </button>
         <button class="tab-btn" onclick="switchTab('settings')">
           ⚙️ Settings
         </button>
@@ -1316,7 +1360,82 @@ DASHBOARD_HTML = """<!DOCTYPE html>
       </div>
     </div>
 
-    <!-- TAB 4: Settings / Configuration -->
+    <!-- TAB: Ollama Model Manager -->
+    <div id="tab-ollama" class="tab-pane" style="display: none;">
+      <!-- Connection & Status Bar -->
+      <div class="analytics-card" style="margin-bottom: 1rem;">
+        <div style="display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 0.75rem;">
+          <div style="display: flex; align-items: center; gap: 0.75rem;">
+            <span style="font-size: 1.6rem;">🦙</span>
+            <div>
+              <div style="font-weight: 600; font-size: 1.05rem;">Ollama Model Manager</div>
+              <div class="form-hint" id="ollama-status-url">Host: http://localhost:11434</div>
+            </div>
+          </div>
+          <div style="display: flex; align-items: center; gap: 0.6rem;">
+            <span id="ollama-conn-status" class="status-badge" style="background: rgba(148, 163, 184, 0.12); color: var(--text-muted); font-size: 0.8rem; padding: 0.35rem 0.75rem;">● Checking...</span>
+            <button class="btn btn-secondary btn-sm" onclick="loadOllamaModels(true)">🔄 Refresh Models</button>
+          </div>
+        </div>
+      </div>
+
+      <div class="ollama-grid">
+        <!-- Left: Installed Models List -->
+        <div class="analytics-card">
+          <div class="analytics-card-title">
+            <span>📦</span> Installed Models on Ollama
+            <span class="tab-badge" id="ollama-installed-count">0</span>
+          </div>
+          <div id="ollama-models-container">
+            <div style="text-align: center; padding: 2rem; color: var(--text-dim);">Loading models from Ollama...</div>
+          </div>
+        </div>
+
+        <!-- Right: Pull New Model -->
+        <div class="analytics-card">
+          <div class="analytics-card-title">
+            <span>⬇️</span> Pull &amp; Install Model
+          </div>
+          <p class="form-hint" style="margin-bottom: 0.75rem;">
+            Download models directly onto your Ollama server from the official Ollama library.
+          </p>
+
+          <div class="form-group">
+            <label class="form-label" for="ollama-pull-tag">Model Tag</label>
+            <input type="text" id="ollama-pull-tag" class="form-input" placeholder="e.g. qwen2.5:7b">
+          </div>
+
+          <div style="margin-bottom: 1rem;">
+            <div class="form-hint" style="margin-bottom: 0.4rem;">Quick Select:</div>
+            <div style="display: flex; flex-wrap: wrap; gap: 0.35rem;">
+              <button type="button" class="btn btn-secondary btn-sm" onclick="setPullTag('qwen2.5:7b')">qwen2.5:7b ⭐</button>
+              <button type="button" class="btn btn-secondary btn-sm" onclick="setPullTag('qwen2.5:3b')">qwen2.5:3b (Lite)</button>
+              <button type="button" class="btn btn-secondary btn-sm" onclick="setPullTag('deepseek-r1:7b')">deepseek-r1:7b (CoT)</button>
+              <button type="button" class="btn btn-secondary btn-sm" onclick="setPullTag('deepseek-r1:8b')">deepseek-r1:8b</button>
+              <button type="button" class="btn btn-secondary btn-sm" onclick="setPullTag('llama3.1:8b')">llama3.1:8b</button>
+            </div>
+          </div>
+
+          <button id="btn-pull-model" class="btn btn-primary" style="width: 100%; justify-content: center;" onclick="startOllamaPull()">
+            <span>⬇️</span> Pull Model from Ollama
+          </button>
+
+          <!-- Pull Progress Bar -->
+          <div id="ollama-pull-progress-box" style="display: none; margin-top: 1rem; padding: 0.85rem; background: rgba(0, 0, 0, 0.25); border: 1px solid var(--border); border-radius: 8px;">
+            <div style="display: flex; justify-content: space-between; font-size: 0.85rem; margin-bottom: 0.4rem;">
+              <span id="ollama-pull-status-text" style="font-weight: 500;">Downloading...</span>
+              <span id="ollama-pull-percent-text" style="color: var(--sonarr); font-weight: 600;">0%</span>
+            </div>
+            <div style="width: 100%; height: 8px; background: rgba(255, 255, 255, 0.1); border-radius: 4px; overflow: hidden; margin-bottom: 0.4rem;">
+              <div id="ollama-pull-progress-bar" style="width: 0%; height: 100%; background: var(--sonarr); transition: width 0.3s ease;"></div>
+            </div>
+            <div id="ollama-pull-detail-text" style="font-size: 0.75rem; color: var(--text-dim);">Connecting to Ollama...</div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- TAB 5: Settings / Configuration -->
     <div id="tab-settings" class="tab-pane" style="display: none;">
       <div class="table-toolbar">
         <div>
@@ -1436,9 +1555,24 @@ DASHBOARD_HTML = """<!DOCTYPE html>
           </div>
 
           <div class="form-group">
-            <label class="form-label" for="cfg-ollama-model">Ollama Model</label>
-            <input type="text" id="cfg-ollama-model" class="form-input" placeholder="qwen2.5:7b">
-            <div class="form-hint">Recommended: <code>qwen2.5:7b</code> (or <code>qwen2.5:3b</code> for low-spec systems)</div>
+            <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 0.35rem;">
+              <label class="form-label" for="cfg-ollama-model-select" style="margin-bottom: 0;">Ollama Model</label>
+              <button type="button" class="btn btn-secondary btn-sm" onclick="switchTab('ollama')" style="font-size: 0.72rem; padding: 0.2rem 0.5rem;">
+                🦙 Manage Ollama Models &rarr;
+              </button>
+            </div>
+            <div style="display: flex; gap: 0.4rem; align-items: center;">
+              <select id="cfg-ollama-model-select" class="form-input" style="flex: 1;" onchange="onOllamaSelectChange()">
+                <option value="qwen2.5:7b">Loading models...</option>
+              </select>
+              <button type="button" class="btn btn-secondary btn-sm" onclick="loadOllamaModels(true)" title="Refresh installed models from Ollama" style="padding: 0.45rem 0.65rem;">
+                🔄
+              </button>
+            </div>
+            <div style="margin-top: 0.4rem;">
+              <input type="text" id="cfg-ollama-model" class="form-input" placeholder="qwen2.5:7b" oninput="onOllamaInputChange()">
+              <div class="form-hint">Selected model tag. Recommended: <code>qwen2.5:7b</code> (or <code>qwen2.5:3b</code> for low-spec systems)</div>
+            </div>
           </div>
         </div>
 
@@ -1653,6 +1787,9 @@ DASHBOARD_HTML = """<!DOCTYPE html>
 
       if (tabName === 'settings') {
         loadConfigFromApi();
+      }
+      if (tabName === 'ollama') {
+        loadOllamaModels(false);
       }
     }
 
@@ -2316,6 +2453,7 @@ DASHBOARD_HTML = """<!DOCTYPE html>
         document.getElementById('cfg-gemini-model').value = gm.model || 'auto';
         document.getElementById('cfg-ollama-url').value = ol.base_url || 'http://localhost:11434';
         document.getElementById('cfg-ollama-model').value = ol.model || 'qwen2.5:7b';
+        renderOllamaModelsDropdown();
 
         document.getElementById('cfg-sonarr-enabled').checked = Boolean(s.enabled);
         document.getElementById('cfg-sonarr-url').value = s.url || 'http://localhost:8989';
@@ -2436,9 +2574,373 @@ DASHBOARD_HTML = """<!DOCTYPE html>
       }
     }
 
+    // ==========================================
+    // Ollama Model Management
+    // ==========================================
+    let ollamaModelsList = [];
+    let ollamaPullPollInterval = null;
+
+    async function loadOllamaModels(showToastNotification = false) {
+      const connStatus = document.getElementById('ollama-conn-status');
+      const urlStatus = document.getElementById('ollama-status-url');
+      const currentUrl = document.getElementById('cfg-ollama-url')?.value || 'http://localhost:11434';
+      if (urlStatus) urlStatus.textContent = `Host: ${currentUrl}`;
+      if (connStatus) {
+        connStatus.textContent = '● Checking...';
+        connStatus.style.background = 'rgba(148, 163, 184, 0.12)';
+        connStatus.style.color = 'var(--text-muted)';
+      }
+
+      try {
+        const res = await fetch('/api/ollama/models');
+        const data = await res.json();
+        if (data.status === 'ok') {
+          ollamaModelsList = data.models || [];
+          if (connStatus) {
+            connStatus.textContent = `● Connected (${ollamaModelsList.length} models)`;
+            connStatus.style.background = 'rgba(34, 197, 94, 0.15)';
+            connStatus.style.color = '#22c55e';
+          }
+          const badge = document.getElementById('badge-ollama-models');
+          if (badge) {
+            badge.textContent = ollamaModelsList.length;
+            badge.style.display = ollamaModelsList.length > 0 ? 'inline-block' : 'none';
+          }
+          renderOllamaModelsDropdown();
+          renderOllamaModelsManager();
+          if (showToastNotification) {
+            showToast(`Loaded ${ollamaModelsList.length} model(s) from Ollama`, 'success');
+          }
+        } else {
+          if (connStatus) {
+            connStatus.textContent = '✖ Disconnected';
+            connStatus.style.background = 'rgba(239, 68, 68, 0.15)';
+            connStatus.style.color = '#ef4444';
+          }
+          renderOllamaError(data.message || 'Cannot connect to Ollama');
+          if (showToastNotification) {
+            showToast(data.message || 'Cannot connect to Ollama', 'danger');
+          }
+        }
+      } catch (err) {
+        if (connStatus) {
+          connStatus.textContent = '✖ Connection Error';
+          connStatus.style.background = 'rgba(239, 68, 68, 0.15)';
+          connStatus.style.color = '#ef4444';
+        }
+        renderOllamaError(err.message || 'Connection error');
+        if (showToastNotification) {
+          showToast('Error querying Ollama server', 'danger');
+        }
+      }
+    }
+
+    function renderOllamaModelsDropdown() {
+      const select = document.getElementById('cfg-ollama-model-select');
+      const input = document.getElementById('cfg-ollama-model');
+      if (!select || !input) return;
+
+      const currentVal = input.value.trim() || 'qwen2.5:7b';
+      select.innerHTML = '';
+
+      let foundCurrent = false;
+      ollamaModelsList.forEach(m => {
+        const opt = document.createElement('option');
+        opt.value = m.name;
+        const tag = m.parameter_size ? ` (${m.parameter_size} • ${m.size_human})` : ` (${m.size_human})`;
+        opt.textContent = `${m.name}${tag}`;
+        if (m.name === currentVal) {
+          opt.selected = true;
+          foundCurrent = true;
+        }
+        select.appendChild(opt);
+      });
+
+      if (!foundCurrent && currentVal) {
+        const customOpt = document.createElement('option');
+        customOpt.value = currentVal;
+        customOpt.textContent = `${currentVal} (Not Installed / Custom)`;
+        customOpt.selected = true;
+        select.prepend(customOpt);
+      }
+
+      const customTagOpt = document.createElement('option');
+      customTagOpt.value = '__custom__';
+      customTagOpt.textContent = '✎ Enter Custom Model Tag...';
+      select.appendChild(customTagOpt);
+    }
+
+    function onOllamaSelectChange() {
+      const select = document.getElementById('cfg-ollama-model-select');
+      const input = document.getElementById('cfg-ollama-model');
+      if (!select || !input) return;
+
+      if (select.value === '__custom__') {
+        input.focus();
+        input.select();
+      } else {
+        input.value = select.value;
+      }
+    }
+
+    function onOllamaInputChange() {
+      const select = document.getElementById('cfg-ollama-model-select');
+      const input = document.getElementById('cfg-ollama-model');
+      if (!select || !input) return;
+      const val = input.value.trim();
+      const exists = Array.from(select.options).some(o => o.value === val);
+      if (exists) {
+        select.value = val;
+      }
+    }
+
+    function renderOllamaModelsManager() {
+      const container = document.getElementById('ollama-models-container');
+      const countBadge = document.getElementById('ollama-installed-count');
+      if (countBadge) countBadge.textContent = ollamaModelsList.length;
+      if (!container) return;
+
+      if (ollamaModelsList.length === 0) {
+        container.innerHTML = `
+          <div style="text-align: center; padding: 2.5rem 1rem; color: var(--text-dim);">
+            <div style="font-size: 2.2rem; margin-bottom: 0.5rem;">🦙</div>
+            <div style="font-size: 1rem; font-weight: 500; color: var(--text-muted); margin-bottom: 0.25rem;">No Models Installed on Ollama</div>
+            <div style="font-size: 0.85rem;">Use the panel on the right to pull your first model (e.g. <code>qwen2.5:7b</code>).</div>
+          </div>
+        `;
+        return;
+      }
+
+      const activeModel = document.getElementById('cfg-ollama-model')?.value || 'qwen2.5:7b';
+
+      let html = `
+        <div style="overflow-x: auto;">
+          <table class="data-table" style="width: 100%;">
+            <thead>
+              <tr>
+                <th>Model Tag</th>
+                <th>Parameters</th>
+                <th>Quant</th>
+                <th>Size</th>
+                <th>Status</th>
+                <th style="text-align: right;">Actions</th>
+              </tr>
+            </thead>
+            <tbody>
+      `;
+
+      ollamaModelsList.forEach(m => {
+        const isActive = (m.name === activeModel || m.model === activeModel);
+        html += `
+          <tr>
+            <td>
+              <div style="font-weight: 600; color: var(--text-main);">${escapeHtml(m.name)}</div>
+              <div style="font-size: 0.72rem; color: var(--text-dim);">${escapeHtml(m.family || '')}</div>
+            </td>
+            <td><span class="badge" style="background: rgba(99, 102, 241, 0.15); color: var(--accent);">${escapeHtml(m.parameter_size || '—')}</span></td>
+            <td><span style="font-size: 0.8rem; color: var(--text-muted);">${escapeHtml(m.quantization_level || '—')}</span></td>
+            <td><span style="font-weight: 500;">${escapeHtml(m.size_human)}</span></td>
+            <td>
+              ${isActive 
+                ? '<span class="status-badge" style="background: rgba(34, 197, 94, 0.15); color: #22c55e;">● Active</span>' 
+                : '<span class="status-badge" style="background: rgba(148, 163, 184, 0.1); color: var(--text-dim);">Ready</span>'}
+            </td>
+            <td style="text-align: right;">
+              <div style="display: flex; gap: 0.4rem; justify-content: flex-end;">
+                ${!isActive ? `
+                  <button class="btn btn-secondary btn-sm" onclick="setActiveOllamaModel('${escapeHtml(m.name)}')">
+                    Set as Active
+                  </button>
+                ` : ''}
+                <button class="btn btn-danger btn-sm" onclick="deleteOllamaModel('${escapeHtml(m.name)}')">
+                  🗑️ Delete
+                </button>
+              </div>
+            </td>
+          </tr>
+        `;
+      });
+
+      html += `
+            </tbody>
+          </table>
+        </div>
+      `;
+      container.innerHTML = html;
+    }
+
+    function renderOllamaError(message) {
+      const container = document.getElementById('ollama-models-container');
+      if (!container) return;
+      container.innerHTML = `
+        <div style="text-align: center; padding: 2.5rem 1rem; color: var(--text-dim);">
+          <div style="font-size: 2.2rem; margin-bottom: 0.5rem; opacity: 0.6;">⚠️</div>
+          <div style="font-size: 1rem; font-weight: 500; color: #f87171; margin-bottom: 0.35rem;">Unable to Reach Ollama</div>
+          <div style="font-size: 0.82rem; max-width: 480px; margin: 0 auto; line-height: 1.4;">${escapeHtml(message)}</div>
+          <button class="btn btn-secondary btn-sm" style="margin-top: 1rem;" onclick="loadOllamaModels(true)">Try Again</button>
+        </div>
+      `;
+    }
+
+    async function setActiveOllamaModel(modelName) {
+      try {
+        const res = await fetch('/api/config', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            ai: {
+              ollama: {
+                model: modelName
+              }
+            }
+          })
+        });
+        if (res.ok) {
+          document.getElementById('cfg-ollama-model').value = modelName;
+          renderOllamaModelsDropdown();
+          renderOllamaModelsManager();
+          showToast(`Active Ollama model set to "${modelName}"`, 'success');
+        } else {
+          showToast('Failed to update active model in configuration', 'danger');
+        }
+      } catch (err) {
+        showToast('Error updating configuration: ' + err.message, 'danger');
+      }
+    }
+
+    async function deleteOllamaModel(modelName) {
+      if (!confirm(`Are you sure you want to delete model "${modelName}" from Ollama?\n\nThis will free up disk space on the Ollama host.`)) {
+        return;
+      }
+
+      showToast(`Deleting model "${modelName}"...`, 'info');
+      try {
+        const res = await fetch('/api/ollama/delete', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ name: modelName })
+        });
+        const data = await res.json();
+        if (data.status === 'ok') {
+          showToast(data.message || `Deleted model "${modelName}"`, 'success');
+          await loadOllamaModels(false);
+        } else {
+          showToast(data.message || 'Failed to delete model', 'danger');
+        }
+      } catch (err) {
+        showToast('Error deleting model: ' + err.message, 'danger');
+      }
+    }
+
+    function setPullTag(tag) {
+      const input = document.getElementById('ollama-pull-tag');
+      if (input) {
+        input.value = tag;
+        input.focus();
+      }
+    }
+
+    async function startOllamaPull() {
+      const tagInput = document.getElementById('ollama-pull-tag');
+      const tag = tagInput ? tagInput.value.trim() : '';
+      if (!tag) {
+        showToast('Please enter a model tag to pull (e.g. qwen2.5:7b)', 'warning');
+        return;
+      }
+
+      const btn = document.getElementById('btn-pull-model');
+      if (btn) btn.disabled = true;
+
+      try {
+        const res = await fetch('/api/ollama/pull', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ name: tag })
+        });
+        const data = await res.json();
+        if (data.status === 'ok') {
+          showToast(`Started downloading "${tag}" from Ollama...`, 'info');
+          showPullProgress();
+          startPollingPullStatus();
+        } else {
+          showToast(data.message || 'Failed to start pull', 'danger');
+          if (btn) btn.disabled = false;
+        }
+      } catch (err) {
+        showToast('Error starting pull: ' + err.message, 'danger');
+        if (btn) btn.disabled = false;
+      }
+    }
+
+    function showPullProgress() {
+      const box = document.getElementById('ollama-pull-progress-box');
+      if (box) box.style.display = 'block';
+    }
+
+    function startPollingPullStatus() {
+      if (ollamaPullPollInterval) clearInterval(ollamaPullPollInterval);
+
+      ollamaPullPollInterval = setInterval(async () => {
+        try {
+          const res = await fetch('/api/ollama/pull-status');
+          const data = await res.json();
+          const statusText = document.getElementById('ollama-pull-status-text');
+          const percentText = document.getElementById('ollama-pull-percent-text');
+          const bar = document.getElementById('ollama-pull-progress-bar');
+          const detailText = document.getElementById('ollama-pull-detail-text');
+          const btn = document.getElementById('btn-pull-model');
+
+          if (data.status === 'pulling') {
+            if (statusText) statusText.textContent = `Downloading ${data.model || ''}...`;
+            if (percentText) percentText.textContent = `${data.percent || 0}%`;
+            if (bar) {
+              bar.style.width = `${Math.min(100, data.percent || 0)}%`;
+              bar.style.background = 'var(--sonarr)';
+            }
+            if (detailText) {
+              const detail = data.message || 'Downloading...';
+              const totalStr = data.total > 0 ? ` (${formatBytesJs(data.completed)} / ${formatBytesJs(data.total)})` : '';
+              detailText.textContent = `${detail}${totalStr}`;
+            }
+          } else if (data.status === 'success') {
+            clearInterval(ollamaPullPollInterval);
+            ollamaPullPollInterval = null;
+            if (btn) btn.disabled = false;
+            if (statusText) statusText.textContent = 'Complete! 🎉';
+            if (percentText) percentText.textContent = '100%';
+            if (bar) {
+              bar.style.width = '100%';
+              bar.style.background = 'var(--success)';
+            }
+            if (detailText) detailText.textContent = data.message || 'Model downloaded and ready!';
+            showToast(data.message || 'Model installed successfully!', 'success');
+            await loadOllamaModels(false);
+          } else if (data.status === 'error') {
+            clearInterval(ollamaPullPollInterval);
+            ollamaPullPollInterval = null;
+            if (btn) btn.disabled = false;
+            if (statusText) statusText.textContent = 'Error';
+            if (bar) bar.style.background = 'var(--danger)';
+            if (detailText) detailText.textContent = data.message || 'Download failed.';
+            showToast(data.message || 'Download failed', 'danger');
+          }
+        } catch (e) {
+          console.warn('Pull status polling error:', e);
+        }
+      }, 1000);
+    }
+
+    function formatBytesJs(b) {
+      if (!b || b <= 0) return '0 B';
+      const units = ['B', 'KB', 'MB', 'GB', 'TB'];
+      const i = Math.floor(Math.log(b) / Math.log(1024));
+      return (b / Math.pow(1024, i)).toFixed(2) + ' ' + units[i];
+    }
+
     // Initialize
     fetchData();
     loadConfigFromApi();
+    loadOllamaModels(false);
     updateAutoRefresh();
   </script>
 </body>
@@ -2446,6 +2948,165 @@ DASHBOARD_HTML = """<!DOCTYPE html>
 """
 
 RENDERED_DASHBOARD_HTML = DASHBOARD_HTML.replace("{{VERSION}}", __version__)
+
+
+def format_bytes(b: int) -> str:
+    """Format bytes into human-readable string (e.g. 4.68 GB)."""
+    if not b or b <= 0:
+        return "0 B"
+    units = ["B", "KB", "MB", "GB", "TB"]
+    i = min(len(units) - 1, int(math.floor(math.log(b, 1024))))
+    p = math.pow(1024, i)
+    s = round(b / p, 2)
+    return f"{s} {units[i]}"
+
+
+def get_ollama_models(base_url: str) -> Dict[str, Any]:
+    """Fetch installed models from Ollama's /api/tags endpoint."""
+    url = f"{base_url.rstrip('/')}/api/tags"
+    req = urllib.request.Request(url, headers={"Accept": "application/json"})
+    try:
+        with urllib.request.urlopen(req, timeout=6.0) as resp:
+            data = json.loads(resp.read().decode("utf-8"))
+            raw_models = data.get("models", [])
+            formatted = []
+            for m in raw_models:
+                sz = m.get("size", 0)
+                details = m.get("details", {}) or {}
+                formatted.append({
+                    "name": m.get("name", ""),
+                    "model": m.get("model", ""),
+                    "size": sz,
+                    "size_human": format_bytes(sz),
+                    "modified_at": m.get("modified_at", ""),
+                    "parameter_size": details.get("parameter_size", ""),
+                    "quantization_level": details.get("quantization_level", ""),
+                    "family": details.get("family", ""),
+                })
+            return {"status": "ok", "base_url": base_url, "models": formatted}
+    except urllib.error.HTTPError as e:
+        return {"status": "error", "base_url": base_url, "message": f"Ollama returned HTTP {e.code}", "models": []}
+    except Exception as e:
+        return {"status": "error", "base_url": base_url, "message": f"Cannot connect to Ollama at {base_url}: {e}", "models": []}
+
+
+def delete_ollama_model(base_url: str, model_name: str) -> Tuple[bool, str]:
+    """Delete an installed model from Ollama using /api/delete."""
+    url = f"{base_url.rstrip('/')}/api/delete"
+    payload = json.dumps({"name": model_name}).encode("utf-8")
+    req = urllib.request.Request(
+        url,
+        data=payload,
+        headers={"Content-Type": "application/json"},
+        method="DELETE"
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=15.0) as resp:
+            return True, f"Successfully deleted model '{model_name}'"
+    except urllib.error.HTTPError as e:
+        body = e.read().decode("utf-8", errors="replace")
+        try:
+            err_json = json.loads(body)
+            msg = err_json.get("error", body)
+        except Exception:
+            msg = body or str(e)
+        return False, f"Ollama returned HTTP {e.code}: {msg}"
+    except Exception as e:
+        return False, f"Failed to delete model: {e}"
+
+
+class OllamaPullManager:
+    """Tracks background pulls of Ollama models with live progress reporting."""
+
+    def __init__(self):
+        self._lock = threading.Lock()
+        self._active_pull: Dict[str, Any] = {
+            "status": "idle",
+            "model": None,
+            "completed": 0,
+            "total": 0,
+            "percent": 0.0,
+            "message": "",
+            "started_at": 0.0,
+        }
+
+    def get_status(self) -> Dict[str, Any]:
+        with self._lock:
+            return dict(self._active_pull)
+
+    def start_pull(self, base_url: str, model_name: str) -> Tuple[bool, str]:
+        with self._lock:
+            if self._active_pull["status"] == "pulling":
+                current = self._active_pull["model"]
+                return False, f"A pull is already in progress for '{current}'."
+            self._active_pull = {
+                "status": "pulling",
+                "model": model_name,
+                "completed": 0,
+                "total": 0,
+                "percent": 0.0,
+                "message": f"Initiating pull for '{model_name}'...",
+                "started_at": time.time(),
+            }
+
+        thread = threading.Thread(
+            target=self._run_pull,
+            args=(base_url, model_name),
+            daemon=True,
+        )
+        thread.start()
+        return True, "Pull started."
+
+    def _run_pull(self, base_url: str, model_name: str) -> None:
+        url = f"{base_url.rstrip('/')}/api/pull"
+        payload = json.dumps({"name": model_name, "stream": True}).encode("utf-8")
+        req = urllib.request.Request(
+            url,
+            data=payload,
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        try:
+            with urllib.request.urlopen(req, timeout=900) as resp:
+                for raw_line in resp:
+                    if not raw_line:
+                        continue
+                    try:
+                        data = json.loads(raw_line.decode("utf-8"))
+                    except Exception:
+                        continue
+
+                    status_msg = data.get("status", "")
+                    if status_msg == "success":
+                        with self._lock:
+                            self._active_pull["status"] = "success"
+                            self._active_pull["percent"] = 100.0
+                            self._active_pull["message"] = f"Successfully installed '{model_name}'!"
+                        return
+
+                    completed = data.get("completed", 0)
+                    total = data.get("total", 0)
+                    pct = round((completed / total * 100), 1) if total > 0 else 0.0
+
+                    with self._lock:
+                        self._active_pull["completed"] = completed
+                        self._active_pull["total"] = total
+                        self._active_pull["percent"] = pct
+                        self._active_pull["message"] = status_msg
+
+            with self._lock:
+                if self._active_pull["status"] == "pulling":
+                    self._active_pull["status"] = "success"
+                    self._active_pull["percent"] = 100.0
+                    self._active_pull["message"] = f"Finished pulling '{model_name}'."
+        except Exception as e:
+            logger.error(f"Error pulling Ollama model '{model_name}': {e}")
+            with self._lock:
+                self._active_pull["status"] = "error"
+                self._active_pull["message"] = f"Pull failed: {e}"
+
+
+ollama_pull_manager = OllamaPullManager()
 
 
 class MetricsHTTPHandler(BaseHTTPRequestHandler):
@@ -2556,6 +3217,17 @@ class MetricsHTTPHandler(BaseHTTPRequestHandler):
         # REST API: Configuration
         if path == "/api/config":
             self._send_json(config_to_dict(self.config))
+            return
+
+        # REST API: Ollama Models List
+        if path == "/api/ollama/models":
+            base_url = self.config.ai.ollama.base_url
+            self._send_json(get_ollama_models(base_url))
+            return
+
+        # REST API: Ollama Pull Status
+        if path == "/api/ollama/pull-status":
+            self._send_json(ollama_pull_manager.get_status())
             return
 
         # REST API: Health
@@ -2694,6 +3366,48 @@ class MetricsHTTPHandler(BaseHTTPRequestHandler):
                 return
 
             self.send_error(HTTPStatus.BAD_REQUEST, "Must specify 'id' or 'all: true'")
+            return
+
+        # Ollama Model Management: Pull
+        if path == "/api/ollama/pull":
+            try:
+                length = int(self.headers.get("Content-Length", 0))
+                body = self.rfile.read(length).decode("utf-8") if length > 0 else "{}"
+                data = json.loads(body) if body.strip() else {}
+                model_name = str(data.get("name") or "").strip()
+                if not model_name:
+                    self._send_json({"status": "error", "message": "Model name is required"}, status=400)
+                    return
+                base_url = self.config.ai.ollama.base_url
+                ok, msg = ollama_pull_manager.start_pull(base_url, model_name)
+                if ok:
+                    self._send_json({"status": "ok", "message": msg, "model": model_name})
+                else:
+                    self._send_json({"status": "error", "message": msg}, status=409)
+            except Exception as e:
+                logger.error(f"Error starting Ollama model pull: {e}")
+                self._send_json({"status": "error", "message": str(e)}, status=500)
+            return
+
+        # Ollama Model Management: Delete
+        if path == "/api/ollama/delete":
+            try:
+                length = int(self.headers.get("Content-Length", 0))
+                body = self.rfile.read(length).decode("utf-8") if length > 0 else "{}"
+                data = json.loads(body) if body.strip() else {}
+                model_name = str(data.get("name") or "").strip()
+                if not model_name:
+                    self._send_json({"status": "error", "message": "Model name is required"}, status=400)
+                    return
+                base_url = self.config.ai.ollama.base_url
+                ok, msg = delete_ollama_model(base_url, model_name)
+                if ok:
+                    self._send_json({"status": "ok", "message": msg})
+                else:
+                    self._send_json({"status": "error", "message": msg}, status=500)
+            except Exception as e:
+                logger.error(f"Error deleting Ollama model: {e}")
+                self._send_json({"status": "error", "message": str(e)}, status=500)
             return
 
         self.send_error(HTTPStatus.NOT_FOUND, "Endpoint not found")
