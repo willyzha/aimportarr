@@ -145,6 +145,13 @@ flowchart TD
 - **Tier 2 Single Bulk AI Evaluation**: If any missing episodes remain unresolved (e.g., Pinyin / Chinese / non-standard naming), AImportarr evaluates them against candidate releases in a **single bulk AI prompt** (`evaluate_backfill_episodes_bulk`).
 - **Immediate Targeted Fallback (Safety Net)**: If an older episode was pushed out of the 100-result season pool by indexer pagination, AImportarr immediately falls back to a targeted `GET /api/v3/release?episodeId=E` search with a strict **30-second delay** between targeted calls to protect indexers.
 
+### 3. Missing Movies: Missing Movie Search (Radarr)
+- **Eligibility**: Verified via `is_movie_eligible_for_search()`. The movie must be monitored (`monitored == True`), missing from disk (`hasFile == False`), and its physical or digital release date must be at least `min_release_delay_days` in the past (default: 1 day).
+- **Two-Tier Movie Matching**:
+  - **Tier 1 (0 AI Tokens)**: Approves releases with 0 rejections where Radarr cleanly matches the movie ID, sorted by Custom Format score and seeders.
+  - **Tier 2 (AI Evaluation)**: Evaluates candidate releases that were rejected by Radarr solely for "Unknown Movie" or title mismatch (common with Pinyin titles, international transliterations, roman numerals, or multi-part releases) via `evaluate_missing_movie`.
+- **Per-Movie Cooldown**: Each searched movie enters a cooldown (`movie_cooldown_days`, default: 7 days) to prevent repeated tracker hits if no acceptable releases are currently available (resettable in the Web UI via Retry).
+
 ---
 
 ## Statuses, Filters, and Retry Lifecycle
@@ -174,6 +181,7 @@ All settings can be configured in `/config/config.yml` (see [`config.example.yml
 | `general.min_confidence` | `MIN_CONFIDENCE` | `0.85` | Minimum AI confidence required (`0.0`–`1.0`) to import or delete files. |
 | `general.reject_on_low_confidence` | `REJECT_ON_LOW_CONFIDENCE` | `false` | `false` leaves low-confidence items in queue (`In Queue`); `true` dismisses & blocklists while keeping files in client. |
 | `general.log_level` | `LOG_LEVEL` | `INFO` | Logging verbosity (`DEBUG`, `INFO`, `WARNING`, `ERROR`). |
+| `general.timezone` | `TIMEZONE`, `TZ` | `""` | IANA timezone for cron schedules (e.g. `America/Los_Angeles`). Defaults to container `TZ` or UTC. |
 | `ai.provider` | `AI_PROVIDER` | `gemini` | Primary AI backend (`gemini` or `ollama`). |
 | `ai.fallback_enabled` | `AI_FALLBACK_ENABLED` | `true` | Automatically fail over to secondary provider on rate limits or errors. |
 | `ai.gemini.api_key` | `GEMINI_API_KEY` | `""` | Google Gemini API key. |
@@ -192,6 +200,11 @@ All settings can be configured in `/config/config.yml` (see [`config.example.yml
 | `sonarr.missing_episode_retry.max_episodes_per_run` | `SONARR_EPISODE_RETRY_MAX_EPISODES_PER_RUN` | `5` | Maximum number of episodes queried via targeted fallback search per run. |
 | `sonarr.missing_episode_retry.episode_cooldown_hours` | `SONARR_EPISODE_RETRY_COOLDOWN_HOURS` | `24` | Cooldown in hours before re-attempting search for an unfulfilled episode release. |
 | `radarr.enabled` / `url` / `api_key` | `RADARR_ENABLED`, `RADARR_URL`, `RADARR_API_KEY` | — | Radarr connection settings. |
+| `radarr.missing_movie_search.enabled` | `RADARR_MOVIE_SEARCH_ENABLED` | `false` | Opt-in: periodically search and grab missing monitored movies past their release delay. |
+| `radarr.missing_movie_search.cron` | `RADARR_MOVIE_SEARCH_CRON` | `0 3 * * *` | Cron schedule for missing movie search (e.g. daily at 3:00 AM; does not trigger on container startup). |
+| `radarr.missing_movie_search.min_release_delay_days` | `RADARR_MOVIE_SEARCH_MIN_RELEASE_DELAY_DAYS` | `1` | Post-release grace period in days after physical/digital release before searching. |
+| `radarr.missing_movie_search.max_movies_per_run` | `RADARR_MOVIE_SEARCH_MAX_MOVIES_PER_RUN` | `5` | Maximum number of missing movies queried per scheduled run. |
+| `radarr.missing_movie_search.movie_cooldown_days` | `RADARR_MOVIE_SEARCH_COOLDOWN_DAYS` | `7` | Per-movie cooldown in days before re-searching the same movie (resettable via UI Retry). |
 | `extraction.enabled` | `EXTRACTION_ENABLED` | `true` | Enable archive inspection & staging extraction. |
 | `extraction.delete_after_import` | `EXTRACTION_DELETE_AFTER_IMPORT` | `true` | Clean up extracted staging folder once imported. |
 | `extraction.staging_suffix` | `EXTRACTION_STAGING_SUFFIX` | `_extracted` | Suffix for temporary staging extraction directories. |

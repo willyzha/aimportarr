@@ -25,6 +25,7 @@
   - **Completed Seasons**: Automatically backfills finished seasons with missing episodes using full season packs, even if Sonarr rejects the pack because some episodes on disk have higher quality.
   - **Ongoing Seasons & Bulk Matching**: Retries missing aired episodes for incomplete seasons using **bulk season searches (1 tracker query per season)**, zero-token Tier 1 in-memory matching, multi-episode greedy satisfaction (e.g. `E01-E02`), and single bulk AI prompts for unresolved titles.
   - **Inline Zero-Tracker Fallback**: If a completed season finds 0 qualifying season packs, it immediately falls back inline to match individual missing episodes using the already-fetched release pool—**without hitting trackers again**.
+- **Radarr Missing Movie Search**: Periodically searches and grabs missing monitored movies past their release delay, utilizing zero-token Tier 1 deterministic matching and Stage 2 AI evaluation for foreign/non-standard release titles.
 - **Automatic Archive Extraction**: Inspects `.rar`, `.zip`, `.7z`, and `.tar` headers before extracting. Valid video archives are unpacked into a temporary `<stem>_extracted` staging folder, imported, and automatically cleaned up so disk space is never duplicated.
 - **Safe Rejection Policy**:
   - **Imported**: Valid upgrades and unmapped episodes/movies are matched and imported automatically.
