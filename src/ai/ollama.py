@@ -52,10 +52,17 @@ def extract_ollama_error_details(e: Exception) -> Tuple[str, str]:
 
 
 class OllamaProvider(BaseAIProvider):
-    def __init__(self, base_url: str = "http://localhost:11434", model: str = "qwen2.5:7b", num_gpu: Optional[int] = None):
+    def __init__(
+        self,
+        base_url: str = "http://localhost:11434",
+        model: str = "qwen2.5:7b",
+        num_gpu: Optional[int] = None,
+        timeout: float = 60.0,
+    ):
         self.base_url = base_url.rstrip("/")
         self.model = model
         self.num_gpu = num_gpu
+        self.timeout = float(timeout)
         self.chat_url = f"{self.base_url}/api/chat"
 
     @property
@@ -87,7 +94,7 @@ class OllamaProvider(BaseAIProvider):
 
         start_time = time.time()
         try:
-            async with httpx.AsyncClient(timeout=60.0) as client:
+            async with httpx.AsyncClient(timeout=self.timeout) as client:
                 resp = await client.post(self.chat_url, json=payload)
                 resp.raise_for_status()
                 data = resp.json()

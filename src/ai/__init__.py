@@ -35,7 +35,8 @@ def get_ai_provider(config: AIConfig) -> BaseAIProvider:
                 )
                 return OllamaProvider(
                     base_url=config.ollama.base_url,
-                    model=config.ollama.model
+                    model=config.ollama.model,
+                    timeout=config.ollama.timeout_seconds,
                 )
             raise ValueError("Gemini API key is required when ai.provider is set to 'gemini' and fallback is disabled.")
 
@@ -47,7 +48,8 @@ def get_ai_provider(config: AIConfig) -> BaseAIProvider:
         if config.fallback_enabled:
             fallback = OllamaProvider(
                 base_url=config.ollama.base_url,
-                model=config.ollama.model
+                model=config.ollama.model,
+                timeout=config.ollama.timeout_seconds,
             )
             logger.info(f"AI Provider initialized: Gemini ({config.gemini.model}) with automatic fallback to Ollama ({config.ollama.model})")
             return FallbackProvider(primary=primary, fallback=fallback)
@@ -57,7 +59,8 @@ def get_ai_provider(config: AIConfig) -> BaseAIProvider:
     elif config.provider == "ollama":
         primary = OllamaProvider(
             base_url=config.ollama.base_url,
-            model=config.ollama.model
+            model=config.ollama.model,
+            timeout=config.ollama.timeout_seconds,
         )
 
         has_gemini_key = _is_valid_key(config.gemini.api_key)

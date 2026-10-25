@@ -22,6 +22,7 @@ class GeminiConfig(BaseModel):
 class OllamaConfig(BaseModel):
     base_url: str = "http://localhost:11434"
     model: str = "qwen2.5:7b"
+    timeout_seconds: float = 60.0
 
 class AIConfig(BaseModel):
     provider: Literal["gemini", "ollama"] = "gemini"
@@ -212,6 +213,7 @@ def config_to_dict(config: AppConfig) -> Dict[str, Any]:
             "ollama": {
                 "base_url": str(config.ai.ollama.base_url),
                 "model": str(config.ai.ollama.model),
+                "timeout_seconds": float(config.ai.ollama.timeout_seconds),
             },
         },
         "sonarr": {
@@ -304,6 +306,8 @@ def update_config_from_dict(config: AppConfig, data: Dict[str, Any]) -> AppConfi
                 config.ai.ollama.base_url = str(ol["base_url"]).strip().rstrip("/")
             if "model" in ol and ol["model"]:
                 config.ai.ollama.model = str(ol["model"]).strip()
+            if "timeout_seconds" in ol and ol["timeout_seconds"] is not None:
+                config.ai.ollama.timeout_seconds = max(5.0, float(ol["timeout_seconds"]))
 
     if "sonarr" in data and isinstance(data["sonarr"], dict):
         s = data["sonarr"]
@@ -469,6 +473,11 @@ def load_config(config_path: Optional[str] = None) -> AppConfig:
         config.ai.ollama.base_url = env_ollama_url
     if env_ollama_model := os.getenv("OLLAMA_MODEL"):
         config.ai.ollama.model = env_ollama_model
+    if env_ollama_timeout := (os.getenv("OLLAMA_TIMEOUT_SECONDS") or os.getenv("OLLAMA_TIMEOUT")):
+        try:
+            config.ai.ollama.timeout_seconds = max(5.0, float(env_ollama_timeout.strip()))
+        except ValueError:
+            pass
 
     # Sonarr overrides
     if env_sonarr_enabled := os.getenv("SONARR_ENABLED"):

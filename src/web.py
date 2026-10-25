@@ -287,11 +287,17 @@ DASHBOARD_HTML = """<!DOCTYPE html>
 
     .ollama-connection-url-col {
       flex: 1;
-      min-width: 240px;
+      min-width: 220px;
     }
 
     .ollama-connection-model-col {
-      width: 220px;
+      width: 200px;
+      min-width: 150px;
+    }
+
+    .ollama-connection-timeout-col {
+      width: 110px;
+      min-width: 90px;
     }
 
     .ollama-models-desktop {
@@ -1523,7 +1529,8 @@ DASHBOARD_HTML = """<!DOCTYPE html>
         gap: 0.65rem;
       }
       .ollama-connection-url-col,
-      .ollama-connection-model-col {
+      .ollama-connection-model-col,
+      .ollama-connection-timeout-col {
         width: 100% !important;
         min-width: 0 !important;
       }
@@ -1749,7 +1756,6 @@ DASHBOARD_HTML = """<!DOCTYPE html>
         </button>
         <button class="tab-btn" onclick="switchTab('ollama')">
           🦙 Ollama Models
-          <span class="tab-badge" id="badge-ollama-models" style="display: none;">0</span>
         </button>
         <button class="tab-btn" onclick="switchTab('settings')">
           ⚙️ Settings
@@ -1953,7 +1959,7 @@ DASHBOARD_HTML = """<!DOCTYPE html>
           </div>
         </div>
 
-        <!-- Host URL & Active Model Configuration Bar -->
+        <!-- Host URL, Active Model & Timeout Configuration Bar -->
         <div class="ollama-connection-form">
           <div class="ollama-connection-url-col">
             <label class="form-label" for="cfg-ollama-url" style="margin-bottom: 0.25rem; font-size: 0.75rem;">Ollama Base URL</label>
@@ -1962,6 +1968,10 @@ DASHBOARD_HTML = """<!DOCTYPE html>
           <div class="ollama-connection-model-col">
             <label class="form-label" for="cfg-ollama-model" style="margin-bottom: 0.25rem; font-size: 0.75rem;">Active Model Tag</label>
             <input type="text" id="cfg-ollama-model" class="form-input" placeholder="qwen2.5:7b" value="qwen2.5:7b" oninput="updateOllamaSummaryCards()">
+          </div>
+          <div class="ollama-connection-timeout-col">
+            <label class="form-label" for="cfg-ollama-timeout" style="margin-bottom: 0.25rem; font-size: 0.75rem;">Timeout (s)</label>
+            <input type="number" id="cfg-ollama-timeout" class="form-input" min="5" max="900" step="5" placeholder="60" value="60" oninput="updateOllamaSummaryCards()" title="HTTP timeout in seconds for Ollama inference calls (increase for slower hardware)">
           </div>
           <div>
             <button type="button" class="btn btn-primary btn-sm" onclick="saveOllamaSettings()">Save &amp; Connect</button>
@@ -1979,7 +1989,6 @@ DASHBOARD_HTML = """<!DOCTYPE html>
         <div class="analytics-card">
           <div class="analytics-card-title">
             <span>📦</span> Installed Models on Ollama
-            <span class="tab-badge" id="ollama-installed-count">0</span>
           </div>
           <div id="ollama-models-container">
             <div style="text-align: center; padding: 2rem; color: var(--text-dim);">Loading models from Ollama...</div>
@@ -2157,7 +2166,7 @@ DASHBOARD_HTML = """<!DOCTYPE html>
                 <div>
                   <div style="font-weight: 600; font-size: 0.88rem;">Ollama Local Engine</div>
                   <div class="form-hint" style="font-size: 0.75rem; margin-top: 0.1rem;">
-                    Host: <span id="summary-ollama-host">http://localhost:11434</span> &bull; Active: <code id="summary-ollama-model">qwen2.5:7b</code>
+                    Host: <span id="summary-ollama-host">http://localhost:11434</span> &bull; Active: <code id="summary-ollama-model">qwen2.5:7b</code> &bull; Timeout: <span id="summary-ollama-timeout">60</span>s
                   </div>
                 </div>
               </div>
@@ -3526,7 +3535,8 @@ DASHBOARD_HTML = """<!DOCTYPE html>
           },
           ollama: {
             base_url: (document.getElementById('cfg-ollama-url')?.value || '').trim(),
-            model: (document.getElementById('cfg-ollama-model')?.value || '').trim()
+            model: (document.getElementById('cfg-ollama-model')?.value || '').trim(),
+            timeout_seconds: parseFloat(document.getElementById('cfg-ollama-timeout')?.value || '60') || 60
           }
         },
         sonarr: {
@@ -3656,6 +3666,9 @@ DASHBOARD_HTML = """<!DOCTYPE html>
         document.getElementById('cfg-gemini-model').value = gm.model || 'auto';
         document.getElementById('cfg-ollama-url').value = ol.base_url || 'http://localhost:11434';
         document.getElementById('cfg-ollama-model').value = ol.model || 'qwen2.5:7b';
+        if (document.getElementById('cfg-ollama-timeout')) {
+          document.getElementById('cfg-ollama-timeout').value = ol.timeout_seconds || 60;
+        }
         updateOllamaSummaryCards();
 
         document.getElementById('cfg-sonarr-enabled').checked = Boolean(s.enabled);
@@ -3735,19 +3748,24 @@ DASHBOARD_HTML = """<!DOCTYPE html>
     function updateOllamaSummaryCards() {
       const hostVal = document.getElementById('cfg-ollama-url')?.value || 'http://localhost:11434';
       const modelVal = document.getElementById('cfg-ollama-model')?.value || 'qwen2.5:7b';
+      const timeoutVal = document.getElementById('cfg-ollama-timeout')?.value || '60';
       const sumHost = document.getElementById('summary-ollama-host');
       const sumModel = document.getElementById('summary-ollama-model');
+      const sumTimeout = document.getElementById('summary-ollama-timeout');
       const statusUrl = document.getElementById('ollama-status-url');
       if (sumHost) sumHost.textContent = hostVal;
       if (sumModel) sumModel.textContent = modelVal;
-      if (statusUrl) statusUrl.textContent = `Configured Host: ${hostVal}`;
+      if (sumTimeout) sumTimeout.textContent = timeoutVal;
+      if (statusUrl) statusUrl.textContent = `Configured Host: ${hostVal} (${timeoutVal}s timeout)`;
     }
 
     async function saveOllamaSettings() {
       const urlInput = document.getElementById('cfg-ollama-url');
       const modelInput = document.getElementById('cfg-ollama-model');
+      const timeoutInput = document.getElementById('cfg-ollama-timeout');
       const newUrl = urlInput ? urlInput.value.trim() : 'http://localhost:11434';
       const newModel = modelInput ? modelInput.value.trim() : 'qwen2.5:7b';
+      const newTimeout = timeoutInput ? (parseFloat(timeoutInput.value) || 60) : 60;
 
       try {
         const res = await fetch('/api/config', {
@@ -3757,13 +3775,14 @@ DASHBOARD_HTML = """<!DOCTYPE html>
             ai: {
               ollama: {
                 base_url: newUrl,
-                model: newModel
+                model: newModel,
+                timeout_seconds: newTimeout
               }
             }
           })
         });
         if (res.ok) {
-          showToast(`Ollama settings saved: ${newModel} @ ${newUrl}`, 'success');
+          showToast(`Ollama settings saved: ${newModel} @ ${newUrl} (${newTimeout}s)`, 'success');
           updateOllamaSummaryCards();
           await loadOllamaModels(false);
         } else {
@@ -3805,23 +3824,18 @@ DASHBOARD_HTML = """<!DOCTYPE html>
         if (data.status === 'ok') {
           ollamaModelsList = data.models || [];
           if (connStatus) {
-            connStatus.textContent = `● Connected (${ollamaModelsList.length} models)`;
+            connStatus.textContent = '● Connected';
             connStatus.style.background = 'rgba(34, 197, 94, 0.15)';
             connStatus.style.color = '#22c55e';
           }
           if (settingsBadge) {
-            settingsBadge.textContent = `● Connected (${ollamaModelsList.length})`;
+            settingsBadge.textContent = '● Connected';
             settingsBadge.style.background = 'rgba(34, 197, 94, 0.15)';
             settingsBadge.style.color = '#22c55e';
           }
-          const badge = document.getElementById('badge-ollama-models');
-          if (badge) {
-            badge.textContent = ollamaModelsList.length;
-            badge.style.display = ollamaModelsList.length > 0 ? 'inline-block' : 'none';
-          }
           renderOllamaModelsManager();
           if (showToastNotification) {
-            showToast(`Connected to Ollama (${ollamaModelsList.length} models available)`, 'success');
+            showToast('Connected to Ollama', 'success');
           }
         } else {
           if (connStatus) {
@@ -3834,8 +3848,6 @@ DASHBOARD_HTML = """<!DOCTYPE html>
             settingsBadge.style.background = 'rgba(148, 163, 184, 0.12)';
             settingsBadge.style.color = 'var(--text-muted)';
           }
-          const badge = document.getElementById('badge-ollama-models');
-          if (badge) badge.style.display = 'none';
           renderOllamaUnconfiguredState(currentUrl);
           if (showToastNotification) {
             showToast('Ollama is offline or unreachable at ' + currentUrl, 'warning');
@@ -3852,8 +3864,6 @@ DASHBOARD_HTML = """<!DOCTYPE html>
           settingsBadge.style.background = 'rgba(148, 163, 184, 0.12)';
           settingsBadge.style.color = 'var(--text-muted)';
         }
-        const badge = document.getElementById('badge-ollama-models');
-        if (badge) badge.style.display = 'none';
         renderOllamaUnconfiguredState(currentUrl);
         if (showToastNotification) {
           showToast('Cannot reach Ollama at ' + currentUrl, 'warning');

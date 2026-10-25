@@ -47,6 +47,7 @@ ai:
   ollama:
     base_url: "http://localhost:11434"
     model: "qwen2.5:7b" # Recommended: "qwen2.5:7b" (or "qwen2.5:3b" for lightweight setups)
+    timeout_seconds: 60.0 # Inference HTTP timeout in seconds (increase if running on slower CPU hardware)
 
 # ==========================================
 # *arr Services
