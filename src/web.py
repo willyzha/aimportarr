@@ -275,6 +275,76 @@ DASHBOARD_HTML = """<!DOCTYPE html>
       }
     }
 
+    .ollama-connection-form {
+      display: flex;
+      gap: 0.75rem;
+      align-items: flex-end;
+      flex-wrap: wrap;
+      margin-top: 0.85rem;
+      padding-top: 0.85rem;
+      border-top: 1px solid var(--border);
+    }
+
+    .ollama-connection-url-col {
+      flex: 1;
+      min-width: 240px;
+    }
+
+    .ollama-connection-model-col {
+      width: 220px;
+    }
+
+    .ollama-models-desktop {
+      display: block;
+      overflow-x: auto;
+    }
+
+    .ollama-models-mobile {
+      display: none;
+    }
+
+    .ollama-model-mobile-card {
+      background: rgba(0, 0, 0, 0.25);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 0.85rem;
+      display: flex;
+      flex-direction: column;
+      gap: 0.55rem;
+    }
+
+    .ollama-model-mobile-card.active-model {
+      border-color: rgba(34, 197, 94, 0.45);
+      background: rgba(34, 197, 94, 0.04);
+    }
+
+    .ollama-preset-chip {
+      background: rgba(255, 255, 255, 0.05);
+      border: 1px solid var(--border);
+      border-radius: 9999px;
+      padding: 0.22rem 0.6rem;
+      font-size: 0.73rem;
+      color: var(--sonarr);
+      text-decoration: none;
+      display: inline-flex;
+      align-items: center;
+      word-break: break-all;
+      transition: all 0.15s ease;
+    }
+
+    .ollama-preset-chip:hover {
+      background: rgba(56, 189, 248, 0.15);
+      border-color: var(--sonarr);
+      color: #fff;
+    }
+
+    .ollama-unconfigured-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+      gap: 0.85rem;
+      margin-bottom: 1.25rem;
+    }
+
     .toast-container {
       position: fixed;
       bottom: 1.5rem;
@@ -1253,6 +1323,14 @@ DASHBOARD_HTML = """<!DOCTYPE html>
       .search-box {
         max-width: 100%;
       }
+      .ollama-models-desktop {
+        display: none !important;
+      }
+      .ollama-models-mobile {
+        display: flex !important;
+        flex-direction: column;
+        gap: 0.65rem;
+      }
     }
 
     @media (max-width: 600px) {
@@ -1372,6 +1450,23 @@ DASHBOARD_HTML = """<!DOCTYPE html>
         text-align: center;
         line-height: 1;
         font-size: 0.8rem;
+      }
+      .ollama-connection-form {
+        flex-direction: column;
+        align-items: stretch;
+        gap: 0.65rem;
+      }
+      .ollama-connection-url-col,
+      .ollama-connection-model-col {
+        width: 100% !important;
+        min-width: 0 !important;
+      }
+      .ollama-connection-form button {
+        width: 100%;
+        justify-content: center;
+      }
+      .ollama-unconfigured-grid {
+        grid-template-columns: 1fr !important;
       }
     }
   </style>
@@ -1763,12 +1858,12 @@ DASHBOARD_HTML = """<!DOCTYPE html>
         </div>
 
         <!-- Host URL & Active Model Configuration Bar -->
-        <div style="display: flex; gap: 0.75rem; align-items: flex-end; flex-wrap: wrap; margin-top: 0.85rem; padding-top: 0.85rem; border-top: 1px solid var(--border);">
-          <div style="flex: 1; min-width: 260px;">
+        <div class="ollama-connection-form">
+          <div class="ollama-connection-url-col">
             <label class="form-label" for="cfg-ollama-url" style="margin-bottom: 0.25rem; font-size: 0.75rem;">Ollama Base URL</label>
             <input type="text" id="cfg-ollama-url" class="form-input" placeholder="http://localhost:11434" value="http://localhost:11434" onchange="updateOllamaSummaryCards()">
           </div>
-          <div style="width: 220px;">
+          <div class="ollama-connection-model-col">
             <label class="form-label" for="cfg-ollama-model" style="margin-bottom: 0.25rem; font-size: 0.75rem;">Active Model Tag</label>
             <input type="text" id="cfg-ollama-model" class="form-input" placeholder="qwen2.5:7b" value="qwen2.5:7b" oninput="updateOllamaSummaryCards()">
           </div>
@@ -1776,10 +1871,10 @@ DASHBOARD_HTML = """<!DOCTYPE html>
             <button type="button" class="btn btn-primary btn-sm" onclick="saveOllamaSettings()">Save &amp; Connect</button>
           </div>
         </div>
-        <div class="form-hint" style="margin-top: 0.4rem; font-size: 0.75rem;">
-          Host Presets:
-          <a href="javascript:void(0)" onclick="setOllamaHostPreset('http://localhost:11434')" style="color: var(--sonarr); text-decoration: underline; margin-right: 0.4rem;">localhost:11434</a>
-          <a href="javascript:void(0)" onclick="setOllamaHostPreset('http://host.docker.internal:11434')" style="color: var(--sonarr); text-decoration: underline;">host.docker.internal:11434 (Docker bridge)</a>
+        <div class="form-hint" style="margin-top: 0.5rem; font-size: 0.75rem; display: flex; align-items: center; gap: 0.45rem; flex-wrap: wrap;">
+          <span>Host Presets:</span>
+          <a href="javascript:void(0)" onclick="setOllamaHostPreset('http://localhost:11434')" class="ollama-preset-chip">localhost:11434</a>
+          <a href="javascript:void(0)" onclick="setOllamaHostPreset('http://host.docker.internal:11434')" class="ollama-preset-chip">host.docker.internal:11434 (Docker bridge)</a>
         </div>
       </div>
 
@@ -3428,18 +3523,18 @@ DASHBOARD_HTML = """<!DOCTYPE html>
       if (!container) return;
 
       container.innerHTML = `
-        <div style="padding: 1.5rem; background: rgba(0, 0, 0, 0.2); border: 1px solid var(--border); border-radius: 8px;">
-          <div style="display: flex; align-items: flex-start; gap: 1rem;">
-            <span style="font-size: 2.2rem; line-height: 1;">🦙</span>
-            <div style="flex: 1;">
+        <div style="padding: 1.25rem; background: rgba(0, 0, 0, 0.2); border: 1px solid var(--border); border-radius: 8px;">
+          <div style="display: flex; align-items: flex-start; gap: 0.75rem; flex-wrap: wrap;">
+            <span style="font-size: 2rem; line-height: 1;">🦙</span>
+            <div style="flex: 1; min-width: 220px;">
               <div style="font-weight: 600; font-size: 1.05rem; color: var(--text-main); margin-bottom: 0.35rem;">
                 Ollama Is Offline or Not Configured
               </div>
-              <p style="font-size: 0.85rem; color: var(--text-muted); margin-bottom: 1rem; line-height: 1.5;">
+              <p style="font-size: 0.85rem; color: var(--text-muted); margin-bottom: 1rem; line-height: 1.5; word-break: break-all;">
                 No local Ollama server was detected at <code>${escapeHtml(currentUrl)}</code>. AImportarr works seamlessly with or without Ollama.
               </p>
 
-              <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 0.85rem; margin-bottom: 1.25rem;">
+              <div class="ollama-unconfigured-grid">
                 <div style="background: rgba(255, 255, 255, 0.03); border: 1px solid var(--border); border-radius: 6px; padding: 0.85rem;">
                   <div style="font-weight: 600; font-size: 0.85rem; color: var(--accent); margin-bottom: 0.35rem;">✨ Using Google Gemini?</div>
                   <div style="font-size: 0.78rem; color: var(--text-muted); line-height: 1.4; margin-bottom: 0.65rem;">
@@ -3461,8 +3556,8 @@ DASHBOARD_HTML = """<!DOCTYPE html>
                 </div>
               </div>
 
-              <div style="font-size: 0.78rem; color: var(--text-dim); background: rgba(0, 0, 0, 0.35); padding: 0.65rem 0.85rem; border-radius: 6px; border: 1px solid var(--border-subtle);">
-                <strong>Want to run local AI?</strong> Install Ollama on your host: <code style="color: #a5f3fc;">curl -fsSL https://ollama.com/install.sh | sh</code>
+              <div style="font-size: 0.78rem; color: var(--text-dim); background: rgba(0, 0, 0, 0.35); padding: 0.65rem 0.85rem; border-radius: 6px; border: 1px solid var(--border-subtle); word-break: break-all;">
+                <strong>Want to run local AI?</strong> Install Ollama on your host: <code style="color: #a5f3fc; word-break: break-all;">curl -fsSL https://ollama.com/install.sh | sh</code>
               </div>
             </div>
           </div>
@@ -3503,7 +3598,8 @@ DASHBOARD_HTML = """<!DOCTYPE html>
           </div>
         </div>
 
-        <div style="overflow-x: auto;">
+        <!-- Desktop View (>= 768px): Full Table -->
+        <div class="ollama-models-desktop">
           <table class="data-table" style="width: 100%;">
             <thead>
               <tr>
@@ -3553,6 +3649,49 @@ DASHBOARD_HTML = """<!DOCTYPE html>
       html += `
             </tbody>
           </table>
+        </div>
+
+        <!-- Mobile View (< 768px): Responsive Touch Cards -->
+        <div class="ollama-models-mobile">
+      `;
+
+      ollamaModelsList.forEach(m => {
+        const isActive = (m.name === activeModel || m.model === activeModel);
+        html += `
+          <div class="ollama-model-mobile-card ${isActive ? 'active-model' : ''}">
+            <div style="display: flex; justify-content: space-between; align-items: flex-start; gap: 0.5rem;">
+              <div style="min-width: 0; flex: 1;">
+                <div style="font-weight: 700; font-size: 0.95rem; color: var(--text-main); word-break: break-all;">${escapeHtml(m.name)}</div>
+                <div style="font-size: 0.72rem; color: var(--text-dim); margin-top: 0.15rem;">Family: ${escapeHtml(m.family || 'unknown')}</div>
+              </div>
+              <div style="display: flex; align-items: center; gap: 0.35rem; flex-shrink: 0;">
+                <span class="badge" style="background: rgba(99, 102, 241, 0.15); color: var(--accent);">${escapeHtml(m.parameter_size || '—')}</span>
+                ${isActive 
+                  ? '<span class="status-badge" style="background: rgba(34, 197, 94, 0.15); color: #22c55e; font-size: 0.72rem; padding: 0.15rem 0.45rem;">● Active</span>' 
+                  : '<span class="status-badge" style="background: rgba(148, 163, 184, 0.1); color: var(--text-dim); font-size: 0.72rem; padding: 0.15rem 0.45rem;">Ready</span>'}
+              </div>
+            </div>
+
+            <div style="display: flex; gap: 0.85rem; font-size: 0.75rem; color: var(--text-muted); background: rgba(0, 0, 0, 0.2); padding: 0.45rem 0.65rem; border-radius: 6px; flex-wrap: wrap;">
+              <div><span style="color: var(--text-dim);">Format:</span> <strong>${escapeHtml(m.quantization_level || '—')}</strong></div>
+              <div><span style="color: var(--text-dim);">Size:</span> <strong>${escapeHtml(m.size_human || '—')}</strong></div>
+            </div>
+
+            <div style="display: flex; gap: 0.5rem; margin-top: 0.15rem;">
+              ${!isActive ? `
+                <button class="btn btn-secondary btn-sm" style="flex: 1; justify-content: center;" onclick="setActiveOllamaModel('${escapeHtml(m.name)}')">
+                  ✨ Set as Active
+                </button>
+              ` : ''}
+              <button class="btn btn-danger btn-sm" style="${isActive ? 'width: 100%;' : ''} justify-content: center;" onclick="deleteOllamaModel('${escapeHtml(m.name)}')">
+                🗑️ Delete
+              </button>
+            </div>
+          </div>
+        `;
+      });
+
+      html += `
         </div>
       `;
       container.innerHTML = html;
