@@ -56,6 +56,11 @@ DASHBOARD_HTML = """<!DOCTYPE html>
       padding: 0;
     }
 
+    html, body {
+      overflow-x: hidden;
+      max-width: 100vw;
+    }
+
     body {
       font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
       background-color: var(--bg-base);
@@ -592,16 +597,25 @@ DASHBOARD_HTML = """<!DOCTYPE html>
     .tabs-bar {
       display: flex;
       align-items: center;
-      justify-content: space-between;
       border-bottom: 1px solid var(--border);
       margin-bottom: 1.25rem;
       gap: 1rem;
-      flex-wrap: wrap;
+      overflow-x: auto;
+      overflow-y: hidden;
+      white-space: nowrap;
+      -webkit-overflow-scrolling: touch;
+      scrollbar-width: none;
+    }
+
+    .tabs-bar::-webkit-scrollbar {
+      display: none;
     }
 
     .tab-buttons {
       display: flex;
       gap: 0.5rem;
+      flex-wrap: nowrap;
+      min-width: max-content;
     }
 
     .tab-btn {
@@ -619,6 +633,8 @@ DASHBOARD_HTML = """<!DOCTYPE html>
       align-items: center;
       gap: 0.5rem;
       transition: color 0.15s ease;
+      white-space: nowrap;
+      flex-shrink: 0;
     }
 
     .tab-btn:hover {
@@ -1131,6 +1147,23 @@ DASHBOARD_HTML = """<!DOCTYPE html>
       border-bottom: none;
     }
 
+    .automation-params-grid {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 0.65rem;
+    }
+
+    .path-mapping-row {
+      display: flex;
+      gap: 0.45rem;
+      align-items: center;
+    }
+
+    .path-mapping-arrow {
+      color: var(--text-dim);
+      flex-shrink: 0;
+    }
+
     .toggle-switch {
       position: relative;
       display: inline-block;
@@ -1221,6 +1254,126 @@ DASHBOARD_HTML = """<!DOCTYPE html>
         max-width: 100%;
       }
     }
+
+    @media (max-width: 600px) {
+      header {
+        padding: 0.6rem 0.75rem;
+      }
+      .brand {
+        gap: 0.5rem;
+      }
+      .brand-title {
+        font-size: 1rem;
+      }
+      .brand-subtitle {
+        display: none;
+      }
+      .header-actions {
+        gap: 0.4rem;
+      }
+      .header-refresh-label {
+        display: none;
+      }
+      .header-btn-text {
+        display: none;
+      }
+      .status-badge {
+        padding: 0.25rem 0.45rem;
+      }
+      .status-badge #header-status {
+        display: none;
+      }
+      #refresh-btn {
+        padding: 0.35rem 0.55rem;
+      }
+      main {
+        padding: 0.75rem 0.65rem;
+      }
+      .metrics-grid {
+        grid-template-columns: repeat(2, 1fr);
+        gap: 0.6rem;
+        margin-bottom: 1rem;
+      }
+      .metric-card {
+        padding: 0.75rem 0.8rem;
+      }
+      .metric-card:last-child {
+        grid-column: span 2;
+      }
+      .metric-title {
+        font-size: 0.68rem;
+      }
+      .metric-value {
+        font-size: 1.35rem;
+        margin-bottom: 0.2rem;
+      }
+      .metric-sub {
+        font-size: 0.68rem;
+      }
+      .automation-tasks-grid {
+        grid-template-columns: 1fr;
+        gap: 0.75rem;
+      }
+      .automation-tasks-card {
+        padding: 0.85rem;
+        margin-bottom: 1rem;
+      }
+      .task-card {
+        padding: 0.75rem;
+      }
+      .task-card-top {
+        flex-direction: column;
+        align-items: stretch;
+        gap: 0.6rem;
+      }
+      .task-card-top button {
+        width: 100%;
+        justify-content: center;
+      }
+      .task-meta-row {
+        flex-direction: column;
+        align-items: flex-start;
+        gap: 0.35rem;
+      }
+      .tabs-bar {
+        margin-bottom: 1rem;
+      }
+      .tab-buttons {
+        gap: 0.35rem;
+      }
+      .tab-btn {
+        padding: 0.5rem 0.75rem;
+        font-size: 0.8rem;
+      }
+      .settings-grid {
+        grid-template-columns: 1fr;
+        gap: 1rem;
+      }
+      .analytics-grid {
+        grid-template-columns: 1fr;
+        gap: 1rem;
+      }
+      .analytics-card {
+        padding: 0.95rem;
+      }
+      .automation-params-grid {
+        grid-template-columns: 1fr !important;
+        gap: 0.5rem;
+      }
+      .path-mapping-row {
+        flex-direction: column;
+        align-items: stretch;
+        gap: 0.35rem;
+        background: rgba(0, 0, 0, 0.2);
+        padding: 0.6rem;
+        border-radius: 6px;
+      }
+      .path-mapping-arrow {
+        text-align: center;
+        line-height: 1;
+        font-size: 0.8rem;
+      }
+    }
   </style>
 </head>
 <body>
@@ -1246,7 +1399,7 @@ DASHBOARD_HTML = """<!DOCTYPE html>
       </div>
 
       <div style="display: flex; align-items: center; gap: 0.4rem;">
-        <label for="refresh-interval" style="font-size: 0.75rem; color: var(--text-muted);">Auto-refresh:</label>
+        <label for="refresh-interval" class="header-refresh-label" style="font-size: 0.75rem; color: var(--text-muted);">Auto-refresh:</label>
         <select id="refresh-interval" class="input-select" onchange="updateAutoRefresh()">
           <option value="5000" selected>5s</option>
           <option value="10000">10s</option>
@@ -1255,8 +1408,8 @@ DASHBOARD_HTML = """<!DOCTYPE html>
         </select>
       </div>
 
-      <button id="refresh-btn" class="btn" onclick="fetchData(true)">
-        <span id="refresh-icon">🔄</span> Refresh
+      <button id="refresh-btn" class="btn" onclick="fetchData(true)" title="Refresh data">
+        <span id="refresh-icon">🔄</span><span class="header-btn-text"> Refresh</span>
       </button>
     </div>
   </header>
@@ -1697,8 +1850,7 @@ DASHBOARD_HTML = """<!DOCTYPE html>
           <div style="font-size: 0.78rem; color: var(--text-muted);">Changes are saved to your config file and hot-reloaded immediately without restarting the container.</div>
         </div>
         <div style="display: flex; gap: 0.6rem;">
-          <button class="btn" onclick="loadConfigFromApi()">↺ Reload</button>
-          <button class="btn btn-primary" onclick="saveConfigToApi()">💾 Save Configuration</button>
+          <button class="btn btn-secondary btn-sm" onclick="loadConfigFromApi()" title="Reload settings from disk">↺ Reload</button>
         </div>
       </div>
 
@@ -1892,7 +2044,7 @@ DASHBOARD_HTML = """<!DOCTYPE html>
               </label>
             </div>
 
-            <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 0.65rem;">
+            <div class="automation-params-grid">
               <div class="form-group" style="margin-bottom: 0.5rem;">
                 <label class="form-label" for="cfg-sonarr-backfill-cron">Cron Schedule</label>
                 <input type="text" id="cfg-sonarr-backfill-cron" class="form-input" value="0 2 * * *" placeholder="0 2 * * *">
@@ -1929,7 +2081,7 @@ DASHBOARD_HTML = """<!DOCTYPE html>
               </label>
             </div>
 
-            <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 0.65rem;">
+            <div class="automation-params-grid">
               <div class="form-group" style="margin-bottom: 0.5rem;">
                 <label class="form-label" for="cfg-sonarr-ep-retry-cron">Cron Schedule</label>
                 <input type="text" id="cfg-sonarr-ep-retry-cron" class="form-input" value="0 */6 * * *" placeholder="0 */6 * * *">
@@ -1972,7 +2124,7 @@ DASHBOARD_HTML = """<!DOCTYPE html>
               </label>
             </div>
 
-            <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 0.65rem;">
+            <div class="automation-params-grid">
               <div class="form-group" style="margin-bottom: 0.5rem;">
                 <label class="form-label" for="cfg-radarr-movie-search-cron">Cron Schedule</label>
                 <input type="text" id="cfg-radarr-movie-search-cron" class="form-input" value="0 3 * * *" placeholder="0 3 * * *">
@@ -2108,7 +2260,12 @@ DASHBOARD_HTML = """<!DOCTYPE html>
       const targetBtn = Array.from(document.querySelectorAll('.tab-btn')).find(b =>
         b.getAttribute('onclick').includes(tabName)
       );
-      if (targetBtn) targetBtn.classList.add('active');
+      if (targetBtn) {
+        targetBtn.classList.add('active');
+        try {
+          targetBtn.scrollIntoView({ behavior: 'smooth', block: 'nearest', inline: 'center' });
+        } catch (_) {}
+      }
 
       if (tabName === 'settings') {
         if (!checkSettingsDirty()) {
@@ -3018,10 +3175,9 @@ DASHBOARD_HTML = """<!DOCTYPE html>
       if (!container) return;
       const row = document.createElement('div');
       row.className = 'path-mapping-row';
-      row.style.cssText = 'display: flex; gap: 0.45rem; align-items: center;';
       row.innerHTML = `
         <input type="text" class="form-input pm-from" placeholder="/remote/downloads" value="${escapeHtml(fromVal)}" style="flex: 1;">
-        <span style="color: var(--text-dim);">&rarr;</span>
+        <span class="path-mapping-arrow">&rarr;</span>
         <input type="text" class="form-input pm-to" placeholder="/data/downloads" value="${escapeHtml(toVal)}" style="flex: 1;">
         <button type="button" class="btn btn-sm" onclick="this.parentElement.remove(); updateSettingsDirtyUI();" title="Remove">✕</button>
       `;
