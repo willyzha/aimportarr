@@ -242,7 +242,7 @@ async def automation_worker_loop(
             manual_movie_search = movie_search_event.is_set()
             movie_search_event.clear()
 
-            now_utc = datetime.now(timezone.utc)
+            now_local = datetime.now().astimezone()
             curr_sonarr: Optional[SonarrClient] = state.get("sonarr_client")
             curr_radarr: Optional[RadarrClient] = state.get("radarr_client")
             curr_ai = state.get("ai_provider")
@@ -260,7 +260,7 @@ async def automation_worker_loop(
 
                 if next_bf_run is None:
                     try:
-                        next_bf_run = get_next_cron_run(bf_cfg.cron, now_utc)
+                        next_bf_run = get_next_cron_run(bf_cfg.cron, now_local)
                         metrics.update_task_status(
                             "season_pack_backfill",
                             state="idle",
@@ -274,19 +274,19 @@ async def automation_worker_loop(
                             progress=f"Invalid cron: {bf_cfg.cron}",
                         )
 
-            bf_due = bf_enabled and next_bf_run is not None and now_utc >= next_bf_run
+            bf_due = bf_enabled and next_bf_run is not None and now_local >= next_bf_run
 
             if (manual_backfill or bf_due) and curr_sonarr and running and bf_enabled:
                 t0 = time.monotonic()
                 metrics.update_task_status(
                     "season_pack_backfill",
                     state="running",
-                    last_run=now_utc.isoformat(),
+                    last_run=now_local.isoformat(),
                 )
                 try:
                     grabbed = await curr_sonarr.run_season_pack_backfill(ai_provider=curr_ai)
                     dur = time.monotonic() - t0
-                    next_bf_run = get_next_cron_run(bf_cfg.cron, datetime.now(timezone.utc))
+                    next_bf_run = get_next_cron_run(bf_cfg.cron, datetime.now().astimezone())
                     metrics.update_task_status(
                         "season_pack_backfill",
                         state="idle",
@@ -296,7 +296,7 @@ async def automation_worker_loop(
                     )
                 except Exception as e:
                     logger.error(f"Error during Sonarr Season Pack Backfill: {e}")
-                    next_bf_run = get_next_cron_run(bf_cfg.cron, datetime.now(timezone.utc))
+                    next_bf_run = get_next_cron_run(bf_cfg.cron, datetime.now().astimezone())
                     metrics.update_task_status(
                         "season_pack_backfill",
                         state="idle",
@@ -307,7 +307,7 @@ async def automation_worker_loop(
             # 2. Ongoing Seasons: Missing Episode Retry
             mer_cfg = config.sonarr.missing_episode_retry
             mer_enabled = config.sonarr.enabled and mer_cfg.enabled
-            now_utc = datetime.now(timezone.utc)
+            now_local = datetime.now().astimezone()
             if not mer_enabled:
                 metrics.update_task_status("missing_episode_retry", state="disabled")
                 next_mer_run = None
@@ -318,7 +318,7 @@ async def automation_worker_loop(
 
                 if next_mer_run is None:
                     try:
-                        next_mer_run = get_next_cron_run(mer_cfg.cron, now_utc)
+                        next_mer_run = get_next_cron_run(mer_cfg.cron, now_local)
                         metrics.update_task_status(
                             "missing_episode_retry",
                             state="idle",
@@ -332,19 +332,19 @@ async def automation_worker_loop(
                             progress=f"Invalid cron: {mer_cfg.cron}",
                         )
 
-            mer_due = mer_enabled and next_mer_run is not None and now_utc >= next_mer_run
+            mer_due = mer_enabled and next_mer_run is not None and now_local >= next_mer_run
 
             if (manual_ep_retry or mer_due) and curr_sonarr and running and mer_enabled:
                 t0 = time.monotonic()
                 metrics.update_task_status(
                     "missing_episode_retry",
                     state="running",
-                    last_run=now_utc.isoformat(),
+                    last_run=now_local.isoformat(),
                 )
                 try:
                     grabbed = await curr_sonarr.run_missing_episode_retry(ai_provider=curr_ai)
                     dur = time.monotonic() - t0
-                    next_mer_run = get_next_cron_run(mer_cfg.cron, datetime.now(timezone.utc))
+                    next_mer_run = get_next_cron_run(mer_cfg.cron, datetime.now().astimezone())
                     metrics.update_task_status(
                         "missing_episode_retry",
                         state="idle",
@@ -354,7 +354,7 @@ async def automation_worker_loop(
                     )
                 except Exception as e:
                     logger.error(f"Error during Sonarr Missing Episode Retry: {e}")
-                    next_mer_run = get_next_cron_run(mer_cfg.cron, datetime.now(timezone.utc))
+                    next_mer_run = get_next_cron_run(mer_cfg.cron, datetime.now().astimezone())
                     metrics.update_task_status(
                         "missing_episode_retry",
                         state="idle",
@@ -365,7 +365,7 @@ async def automation_worker_loop(
             # 3. Missing Movies: Missing Movie Search (Radarr)
             mms_cfg = config.radarr.missing_movie_search
             mms_enabled = config.radarr.enabled and mms_cfg.enabled
-            now_utc = datetime.now(timezone.utc)
+            now_local = datetime.now().astimezone()
             if not mms_enabled:
                 metrics.update_task_status("missing_movie_search", state="disabled")
                 next_mms_run = None
@@ -376,7 +376,7 @@ async def automation_worker_loop(
 
                 if next_mms_run is None:
                     try:
-                        next_mms_run = get_next_cron_run(mms_cfg.cron, now_utc)
+                        next_mms_run = get_next_cron_run(mms_cfg.cron, now_local)
                         metrics.update_task_status(
                             "missing_movie_search",
                             state="idle",
@@ -390,19 +390,19 @@ async def automation_worker_loop(
                             progress=f"Invalid cron: {mms_cfg.cron}",
                         )
 
-            mms_due = mms_enabled and next_mms_run is not None and now_utc >= next_mms_run
+            mms_due = mms_enabled and next_mms_run is not None and now_local >= next_mms_run
 
             if (manual_movie_search or mms_due) and curr_radarr and running and mms_enabled:
                 t0 = time.monotonic()
                 metrics.update_task_status(
                     "missing_movie_search",
                     state="running",
-                    last_run=now_utc.isoformat(),
+                    last_run=now_local.isoformat(),
                 )
                 try:
                     grabbed = await curr_radarr.run_missing_movie_search(ai_provider=curr_ai)
                     dur = time.monotonic() - t0
-                    next_mms_run = get_next_cron_run(mms_cfg.cron, datetime.now(timezone.utc))
+                    next_mms_run = get_next_cron_run(mms_cfg.cron, datetime.now().astimezone())
                     metrics.update_task_status(
                         "missing_movie_search",
                         state="idle",
@@ -412,7 +412,7 @@ async def automation_worker_loop(
                     )
                 except Exception as e:
                     logger.error(f"Error during Radarr Missing Movie Search: {e}")
-                    next_mms_run = get_next_cron_run(mms_cfg.cron, datetime.now(timezone.utc))
+                    next_mms_run = get_next_cron_run(mms_cfg.cron, datetime.now().astimezone())
                     metrics.update_task_status(
                         "missing_movie_search",
                         state="idle",
@@ -442,6 +442,17 @@ async def main():
 
     logger.info("Starting AImportarr - AI-Powered *arr Media Importer (Sonarr & Radarr)")
     config = load_config()
+
+    # Configure system timezone if specified in config or environment
+    tz = config.general.timezone or os.getenv("TZ")
+    if tz:
+        try:
+            os.environ["TZ"] = tz
+            if hasattr(time, "tzset"):
+                time.tzset()
+            logger.info(f"System timezone active: {tz} (Current local time: {datetime.now().astimezone().strftime('%Y-%m-%d %H:%M:%S %Z')})")
+        except Exception as e:
+            logger.warning(f"Could not apply timezone '{tz}': {e}")
 
     log_level = getattr(logging, config.general.log_level.upper(), logging.INFO)
     log_dir = Path("/config") if Path("/config").is_dir() else Path(config.database.path).parent

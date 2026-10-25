@@ -1676,6 +1676,12 @@ DASHBOARD_HTML = """<!DOCTYPE html>
               <option value="ERROR">ERROR</option>
             </select>
           </div>
+
+          <div class="form-group">
+            <label class="form-label" for="cfg-timezone">System Timezone</label>
+            <input type="text" id="cfg-timezone" class="form-input" placeholder="e.g. America/Los_Angeles, Europe/London (default: TZ env or UTC)">
+            <div class="form-hint">Used for cron schedules and logs. Leave blank to inherit from container <code>TZ</code> environment variable or UTC.</div>
+          </div>
         </div>
 
         <!-- AI Provider Configuration -->
@@ -2828,6 +2834,8 @@ DASHBOARD_HTML = """<!DOCTYPE html>
         document.getElementById('cfg-check-interval').value = g.check_interval_seconds ?? 30;
         document.getElementById('cfg-ai-cooldown').value = g.ai_cooldown_seconds ?? 4.0;
         document.getElementById('cfg-log-level').value = g.log_level || 'INFO';
+        const tzEl = document.getElementById('cfg-timezone');
+        if (tzEl) tzEl.value = g.timezone || '';
         const whInput = document.getElementById('cfg-webhook-url');
         if (whInput && window.location.origin) {
           whInput.value = `${window.location.origin}/api/webhook`;
@@ -2899,7 +2907,8 @@ DASHBOARD_HTML = """<!DOCTYPE html>
           min_confidence: parseFloat(document.getElementById('cfg-min-confidence').value) || 0.85,
           check_interval_seconds: parseInt(document.getElementById('cfg-check-interval').value, 10) || 30,
           ai_cooldown_seconds: parseFloat(document.getElementById('cfg-ai-cooldown').value) ?? 4.0,
-          log_level: document.getElementById('cfg-log-level').value || 'INFO'
+          log_level: document.getElementById('cfg-log-level').value || 'INFO',
+          timezone: (document.getElementById('cfg-timezone')?.value || '').trim()
         },
         ai: {
           provider: document.getElementById('cfg-ai-provider').value,

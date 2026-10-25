@@ -105,12 +105,12 @@ def get_next_cron_run(expr: str, now: Optional[datetime] = None) -> datetime:
     """
     Calculate the next execution datetime matching `expr` after `now`.
     Uses croniter if available, otherwise falls back to the pure-Python engine.
-    Always returns an explicit UTC datetime.
+    Returns a timezone-aware datetime preserving `now`'s timezone (or system local timezone if now is None).
     """
     if now is None:
-        now = datetime.now(timezone.utc)
+        now = datetime.now().astimezone()
     elif now.tzinfo is None:
-        now = now.replace(tzinfo=timezone.utc)
+        now = now.astimezone()
 
     # 1. Try croniter if installed
     try:
@@ -119,7 +119,7 @@ def get_next_cron_run(expr: str, now: Optional[datetime] = None) -> datetime:
         itr = croniter.croniter(normalized, now)
         next_dt = itr.get_next(datetime)
         if next_dt.tzinfo is None:
-            next_dt = next_dt.replace(tzinfo=timezone.utc)
+            next_dt = next_dt.replace(tzinfo=now.tzinfo)
         return next_dt
     except ImportError:
         pass

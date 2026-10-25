@@ -94,6 +94,17 @@ class CronAndScheduleTests(unittest.IsolatedAsyncioTestCase):
         next_hourly = get_next_cron_run("@hourly", base)
         self.assertEqual(next_hourly, datetime(2026, 10, 24, 20, 0, tzinfo=timezone.utc))
 
+        # Timezone preservation
+        try:
+            import zoneinfo
+            tz_la = zoneinfo.ZoneInfo("America/Los_Angeles")
+            base_la = datetime(2026, 10, 24, 23, 15, tzinfo=tz_la)
+            next_la = get_next_cron_run("0 2 * * *", base_la)
+            self.assertEqual(next_la, datetime(2026, 10, 25, 2, 0, tzinfo=tz_la))
+            self.assertEqual(next_la.hour, 2)
+        except Exception:
+            pass
+
     def test_config_cron_initialization_and_legacy_fallback(self):
         # Default config uses cron
         spb = SeasonPackBackfillConfig()

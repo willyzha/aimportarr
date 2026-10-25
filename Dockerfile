@@ -13,9 +13,9 @@ ENV PYTHONUNBUFFERED=1 \
 
 WORKDIR /app
 
-# Install 7-Zip extraction tools
+# Install 7-Zip extraction tools and timezone data
 RUN apt-get update && \
-    apt-get install -y --no-install-recommends 7zip p7zip-full unrar-free && \
+    apt-get install -y --no-install-recommends tzdata 7zip p7zip-full unrar-free && \
     rm -rf /var/lib/apt/lists/*
 
 # Install dependencies

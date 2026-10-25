@@ -13,6 +13,7 @@ class GeneralConfig(BaseModel):
     min_confidence: float = 0.85
     reject_on_low_confidence: bool = False
     log_level: str = "INFO"
+    timezone: str = ""
 
 class GeminiConfig(BaseModel):
     api_key: str = ""
@@ -199,6 +200,7 @@ def config_to_dict(config: AppConfig) -> Dict[str, Any]:
             "min_confidence": float(config.general.min_confidence),
             "reject_on_low_confidence": bool(config.general.reject_on_low_confidence),
             "log_level": str(config.general.log_level),
+            "timezone": str(config.general.timezone or ""),
         },
         "ai": {
             "provider": str(config.ai.provider),
@@ -281,6 +283,8 @@ def update_config_from_dict(config: AppConfig, data: Dict[str, Any]) -> AppConfi
             config.general.reject_on_low_confidence = bool(g["reject_on_low_confidence"])
         if "log_level" in g and g["log_level"]:
             config.general.log_level = str(g["log_level"]).upper()
+        if "timezone" in g and g["timezone"] is not None:
+            config.general.timezone = str(g["timezone"]).strip()
 
     if "ai" in data and isinstance(data["ai"], dict):
         a = data["ai"]
@@ -446,6 +450,8 @@ def load_config(config_path: Optional[str] = None) -> AppConfig:
             pass
     if env_log_level := os.getenv("LOG_LEVEL"):
         config.general.log_level = env_log_level.strip().upper()
+    if env_tz := (os.getenv("TZ") or os.getenv("TIMEZONE")):
+        config.general.timezone = env_tz.strip()
 
     # AI overrides
     if env_provider := os.getenv("AI_PROVIDER"):

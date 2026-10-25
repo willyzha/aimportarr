@@ -23,6 +23,10 @@ general:
   # Logging level: DEBUG, INFO, WARNING, ERROR
   log_level: "INFO"
 
+  # System timezone for scheduled cron tasks and logs (e.g. "America/Los_Angeles", "Europe/London", "America/New_York")
+  # Optional: defaults to the container's TZ environment variable or UTC if left blank.
+  timezone: ""
+
 # ==========================================
 # AI Provider Configuration
 # ==========================================
