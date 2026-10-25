@@ -280,3 +280,12 @@ class OllamaChunkingAndReasoningTests(unittest.IsolatedAsyncioTestCase):
             ok2, msg2 = mgr.start_pull("http://localhost:11434", "llama3:latest")
             self.assertFalse(ok2)
             self.assertIn("already in progress", msg2)
+
+    def test_dashboard_html_consolidated_ollama(self):
+        """Verify dashboard HTML has consolidated Ollama configuration and no redundant dropdown in settings."""
+        from src.web import DASHBOARD_HTML
+        self.assertIn('id="tab-ollama"', DASHBOARD_HTML)
+        self.assertIn('id="summary-ollama-host"', DASHBOARD_HTML)
+        self.assertIn('id="summary-ollama-model"', DASHBOARD_HTML)
+        self.assertIn('setOllamaHostPreset', DASHBOARD_HTML)
+        self.assertNotIn('cfg-ollama-model-select', DASHBOARD_HTML)

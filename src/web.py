@@ -1368,14 +1368,34 @@ DASHBOARD_HTML = """<!DOCTYPE html>
           <div style="display: flex; align-items: center; gap: 0.75rem;">
             <span style="font-size: 1.6rem;">🦙</span>
             <div>
-              <div style="font-weight: 600; font-size: 1.05rem;">Ollama Model Manager</div>
-              <div class="form-hint" id="ollama-status-url">Host: http://localhost:11434</div>
+              <div style="font-weight: 600; font-size: 1.05rem;">Ollama Host &amp; Model Engine</div>
+              <div class="form-hint" id="ollama-status-url">Configured Host: http://localhost:11434</div>
             </div>
           </div>
           <div style="display: flex; align-items: center; gap: 0.6rem;">
-            <span id="ollama-conn-status" class="status-badge" style="background: rgba(148, 163, 184, 0.12); color: var(--text-muted); font-size: 0.8rem; padding: 0.35rem 0.75rem;">● Checking...</span>
-            <button class="btn btn-secondary btn-sm" onclick="loadOllamaModels(true)">🔄 Refresh Models</button>
+            <span id="ollama-conn-status" class="status-badge" style="background: rgba(148, 163, 184, 0.12); color: var(--text-muted); font-size: 0.8rem; padding: 0.35rem 0.75rem;">○ Checking...</span>
+            <button class="btn btn-secondary btn-sm" onclick="loadOllamaModels(true)">🔄 Refresh</button>
           </div>
+        </div>
+
+        <!-- Host URL & Active Model Configuration Bar -->
+        <div style="display: flex; gap: 0.75rem; align-items: flex-end; flex-wrap: wrap; margin-top: 0.85rem; padding-top: 0.85rem; border-top: 1px solid var(--border);">
+          <div style="flex: 1; min-width: 260px;">
+            <label class="form-label" for="cfg-ollama-url" style="margin-bottom: 0.25rem; font-size: 0.75rem;">Ollama Base URL</label>
+            <input type="text" id="cfg-ollama-url" class="form-input" placeholder="http://localhost:11434" value="http://localhost:11434" onchange="updateOllamaSummaryCards()">
+          </div>
+          <div style="width: 220px;">
+            <label class="form-label" for="cfg-ollama-model" style="margin-bottom: 0.25rem; font-size: 0.75rem;">Active Model Tag</label>
+            <input type="text" id="cfg-ollama-model" class="form-input" placeholder="qwen2.5:7b" value="qwen2.5:7b" oninput="updateOllamaSummaryCards()">
+          </div>
+          <div>
+            <button type="button" class="btn btn-primary btn-sm" onclick="saveOllamaSettings()">Save &amp; Connect</button>
+          </div>
+        </div>
+        <div class="form-hint" style="margin-top: 0.4rem; font-size: 0.75rem;">
+          Host Presets:
+          <a href="javascript:void(0)" onclick="setOllamaHostPreset('http://localhost:11434')" style="color: var(--sonarr); text-decoration: underline; margin-right: 0.4rem;">localhost:11434</a>
+          <a href="javascript:void(0)" onclick="setOllamaHostPreset('http://host.docker.internal:11434')" style="color: var(--sonarr); text-decoration: underline;">host.docker.internal:11434 (Docker bridge)</a>
         </div>
       </div>
 
@@ -1549,29 +1569,24 @@ DASHBOARD_HTML = """<!DOCTYPE html>
             <div class="form-hint">Use "auto" to dynamically select the fastest active Flash model</div>
           </div>
 
-          <div class="form-group">
-            <label class="form-label" for="cfg-ollama-url">Ollama Base URL</label>
-            <input type="text" id="cfg-ollama-url" class="form-input" placeholder="http://localhost:11434">
-          </div>
-
-          <div class="form-group">
-            <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 0.35rem;">
-              <label class="form-label" for="cfg-ollama-model-select" style="margin-bottom: 0;">Ollama Model</label>
-              <button type="button" class="btn btn-secondary btn-sm" onclick="switchTab('ollama')" style="font-size: 0.72rem; padding: 0.2rem 0.5rem;">
-                🦙 Manage Ollama Models &rarr;
-              </button>
-            </div>
-            <div style="display: flex; gap: 0.4rem; align-items: center;">
-              <select id="cfg-ollama-model-select" class="form-input" style="flex: 1;" onchange="onOllamaSelectChange()">
-                <option value="qwen2.5:7b">Loading models...</option>
-              </select>
-              <button type="button" class="btn btn-secondary btn-sm" onclick="loadOllamaModels(true)" title="Refresh installed models from Ollama" style="padding: 0.45rem 0.65rem;">
-                🔄
-              </button>
-            </div>
-            <div style="margin-top: 0.4rem;">
-              <input type="text" id="cfg-ollama-model" class="form-input" placeholder="qwen2.5:7b" oninput="onOllamaInputChange()">
-              <div class="form-hint">Selected model tag. Recommended: <code>qwen2.5:7b</code> (or <code>qwen2.5:3b</code> for low-spec systems)</div>
+          <!-- Consolidated Ollama Local Engine Summary in Settings -->
+          <div style="background: rgba(0, 0, 0, 0.25); border: 1px solid var(--border); border-radius: 8px; padding: 0.85rem; margin-top: 0.75rem;">
+            <div style="display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 0.6rem;">
+              <div style="display: flex; align-items: center; gap: 0.65rem;">
+                <span style="font-size: 1.35rem;">🦙</span>
+                <div>
+                  <div style="font-weight: 600; font-size: 0.88rem;">Ollama Local Engine</div>
+                  <div class="form-hint" style="font-size: 0.75rem; margin-top: 0.1rem;">
+                    Host: <span id="summary-ollama-host">http://localhost:11434</span> &bull; Active: <code id="summary-ollama-model">qwen2.5:7b</code>
+                  </div>
+                </div>
+              </div>
+              <div style="display: flex; align-items: center; gap: 0.5rem;">
+                <span id="settings-ollama-badge" class="status-badge" style="background: rgba(148, 163, 184, 0.12); color: var(--text-muted); font-size: 0.75rem; padding: 0.25rem 0.55rem;">○ Offline</span>
+                <button type="button" class="btn btn-secondary btn-sm" onclick="switchTab('ollama')">
+                  🦙 Configure Host &amp; Manage Models &rarr;
+                </button>
+              </div>
             </div>
           </div>
         </div>
@@ -2453,7 +2468,7 @@ DASHBOARD_HTML = """<!DOCTYPE html>
         document.getElementById('cfg-gemini-model').value = gm.model || 'auto';
         document.getElementById('cfg-ollama-url').value = ol.base_url || 'http://localhost:11434';
         document.getElementById('cfg-ollama-model').value = ol.model || 'qwen2.5:7b';
-        renderOllamaModelsDropdown();
+        updateOllamaSummaryCards();
 
         document.getElementById('cfg-sonarr-enabled').checked = Boolean(s.enabled);
         document.getElementById('cfg-sonarr-url').value = s.url || 'http://localhost:8989';
@@ -2580,15 +2595,71 @@ DASHBOARD_HTML = """<!DOCTYPE html>
     let ollamaModelsList = [];
     let ollamaPullPollInterval = null;
 
+    function updateOllamaSummaryCards() {
+      const hostVal = document.getElementById('cfg-ollama-url')?.value || 'http://localhost:11434';
+      const modelVal = document.getElementById('cfg-ollama-model')?.value || 'qwen2.5:7b';
+      const sumHost = document.getElementById('summary-ollama-host');
+      const sumModel = document.getElementById('summary-ollama-model');
+      const statusUrl = document.getElementById('ollama-status-url');
+      if (sumHost) sumHost.textContent = hostVal;
+      if (sumModel) sumModel.textContent = modelVal;
+      if (statusUrl) statusUrl.textContent = `Configured Host: ${hostVal}`;
+    }
+
+    async function saveOllamaSettings() {
+      const urlInput = document.getElementById('cfg-ollama-url');
+      const modelInput = document.getElementById('cfg-ollama-model');
+      const newUrl = urlInput ? urlInput.value.trim() : 'http://localhost:11434';
+      const newModel = modelInput ? modelInput.value.trim() : 'qwen2.5:7b';
+
+      try {
+        const res = await fetch('/api/config', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            ai: {
+              ollama: {
+                base_url: newUrl,
+                model: newModel
+              }
+            }
+          })
+        });
+        if (res.ok) {
+          showToast(`Ollama settings saved: ${newModel} @ ${newUrl}`, 'success');
+          updateOllamaSummaryCards();
+          await loadOllamaModels(false);
+        } else {
+          showToast('Failed to save Ollama settings', 'danger');
+        }
+      } catch (e) {
+        showToast('Network error saving Ollama settings: ' + e.message, 'danger');
+      }
+    }
+
+    function setOllamaHostPreset(presetUrl) {
+      const urlInput = document.getElementById('cfg-ollama-url');
+      if (urlInput) {
+        urlInput.value = presetUrl;
+        saveOllamaSettings();
+      }
+    }
+
     async function loadOllamaModels(showToastNotification = false) {
       const connStatus = document.getElementById('ollama-conn-status');
-      const urlStatus = document.getElementById('ollama-status-url');
+      const settingsBadge = document.getElementById('settings-ollama-badge');
       const currentUrl = document.getElementById('cfg-ollama-url')?.value || 'http://localhost:11434';
-      if (urlStatus) urlStatus.textContent = `Host: ${currentUrl}`;
+      updateOllamaSummaryCards();
+
       if (connStatus) {
-        connStatus.textContent = '● Checking...';
+        connStatus.textContent = '○ Checking...';
         connStatus.style.background = 'rgba(148, 163, 184, 0.12)';
         connStatus.style.color = 'var(--text-muted)';
+      }
+      if (settingsBadge) {
+        settingsBadge.textContent = 'Checking...';
+        settingsBadge.style.background = 'rgba(148, 163, 184, 0.12)';
+        settingsBadge.style.color = 'var(--text-muted)';
       }
 
       try {
@@ -2601,97 +2672,103 @@ DASHBOARD_HTML = """<!DOCTYPE html>
             connStatus.style.background = 'rgba(34, 197, 94, 0.15)';
             connStatus.style.color = '#22c55e';
           }
+          if (settingsBadge) {
+            settingsBadge.textContent = `● Connected (${ollamaModelsList.length})`;
+            settingsBadge.style.background = 'rgba(34, 197, 94, 0.15)';
+            settingsBadge.style.color = '#22c55e';
+          }
           const badge = document.getElementById('badge-ollama-models');
           if (badge) {
             badge.textContent = ollamaModelsList.length;
             badge.style.display = ollamaModelsList.length > 0 ? 'inline-block' : 'none';
           }
-          renderOllamaModelsDropdown();
           renderOllamaModelsManager();
           if (showToastNotification) {
-            showToast(`Loaded ${ollamaModelsList.length} model(s) from Ollama`, 'success');
+            showToast(`Connected to Ollama (${ollamaModelsList.length} models available)`, 'success');
           }
         } else {
           if (connStatus) {
-            connStatus.textContent = '✖ Disconnected';
-            connStatus.style.background = 'rgba(239, 68, 68, 0.15)';
-            connStatus.style.color = '#ef4444';
+            connStatus.textContent = '○ Offline / Not Configured';
+            connStatus.style.background = 'rgba(148, 163, 184, 0.12)';
+            connStatus.style.color = 'var(--text-muted)';
           }
-          renderOllamaError(data.message || 'Cannot connect to Ollama');
+          if (settingsBadge) {
+            settingsBadge.textContent = '○ Offline';
+            settingsBadge.style.background = 'rgba(148, 163, 184, 0.12)';
+            settingsBadge.style.color = 'var(--text-muted)';
+          }
+          const badge = document.getElementById('badge-ollama-models');
+          if (badge) badge.style.display = 'none';
+          renderOllamaUnconfiguredState(currentUrl);
           if (showToastNotification) {
-            showToast(data.message || 'Cannot connect to Ollama', 'danger');
+            showToast('Ollama is offline or unreachable at ' + currentUrl, 'warning');
           }
         }
       } catch (err) {
         if (connStatus) {
-          connStatus.textContent = '✖ Connection Error';
-          connStatus.style.background = 'rgba(239, 68, 68, 0.15)';
-          connStatus.style.color = '#ef4444';
+          connStatus.textContent = '○ Offline / Not Configured';
+          connStatus.style.background = 'rgba(148, 163, 184, 0.12)';
+          connStatus.style.color = 'var(--text-muted)';
         }
-        renderOllamaError(err.message || 'Connection error');
+        if (settingsBadge) {
+          settingsBadge.textContent = '○ Offline';
+          settingsBadge.style.background = 'rgba(148, 163, 184, 0.12)';
+          settingsBadge.style.color = 'var(--text-muted)';
+        }
+        const badge = document.getElementById('badge-ollama-models');
+        if (badge) badge.style.display = 'none';
+        renderOllamaUnconfiguredState(currentUrl);
         if (showToastNotification) {
-          showToast('Error querying Ollama server', 'danger');
+          showToast('Cannot reach Ollama at ' + currentUrl, 'warning');
         }
       }
     }
 
-    function renderOllamaModelsDropdown() {
-      const select = document.getElementById('cfg-ollama-model-select');
-      const input = document.getElementById('cfg-ollama-model');
-      if (!select || !input) return;
+    function renderOllamaUnconfiguredState(currentUrl) {
+      const container = document.getElementById('ollama-models-container');
+      if (!container) return;
 
-      const currentVal = input.value.trim() || 'qwen2.5:7b';
-      select.innerHTML = '';
+      container.innerHTML = `
+        <div style="padding: 1.5rem; background: rgba(0, 0, 0, 0.2); border: 1px solid var(--border); border-radius: 8px;">
+          <div style="display: flex; align-items: flex-start; gap: 1rem;">
+            <span style="font-size: 2.2rem; line-height: 1;">🦙</span>
+            <div style="flex: 1;">
+              <div style="font-weight: 600; font-size: 1.05rem; color: var(--text-main); margin-bottom: 0.35rem;">
+                Ollama Is Offline or Not Configured
+              </div>
+              <p style="font-size: 0.85rem; color: var(--text-muted); margin-bottom: 1rem; line-height: 1.5;">
+                No local Ollama server was detected at <code>${escapeHtml(currentUrl)}</code>. AImportarr works seamlessly with or without Ollama.
+              </p>
 
-      let foundCurrent = false;
-      ollamaModelsList.forEach(m => {
-        const opt = document.createElement('option');
-        opt.value = m.name;
-        const tag = m.parameter_size ? ` (${m.parameter_size} • ${m.size_human})` : ` (${m.size_human})`;
-        opt.textContent = `${m.name}${tag}`;
-        if (m.name === currentVal) {
-          opt.selected = true;
-          foundCurrent = true;
-        }
-        select.appendChild(opt);
-      });
+              <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 0.85rem; margin-bottom: 1.25rem;">
+                <div style="background: rgba(255, 255, 255, 0.03); border: 1px solid var(--border); border-radius: 6px; padding: 0.85rem;">
+                  <div style="font-weight: 600; font-size: 0.85rem; color: var(--accent); margin-bottom: 0.35rem;">✨ Using Google Gemini?</div>
+                  <div style="font-size: 0.78rem; color: var(--text-muted); line-height: 1.4; margin-bottom: 0.65rem;">
+                    If you use Google Gemini for AI evaluations, Ollama is entirely optional. AImportarr runs completely through your Gemini API key.
+                  </div>
+                  <button type="button" class="btn btn-secondary btn-sm" onclick="switchTab('settings')">
+                    Configure Gemini in Settings &rarr;
+                  </button>
+                </div>
 
-      if (!foundCurrent && currentVal) {
-        const customOpt = document.createElement('option');
-        customOpt.value = currentVal;
-        customOpt.textContent = `${currentVal} (Not Installed / Custom)`;
-        customOpt.selected = true;
-        select.prepend(customOpt);
-      }
+                <div style="background: rgba(255, 255, 255, 0.03); border: 1px solid var(--border); border-radius: 6px; padding: 0.85rem;">
+                  <div style="font-weight: 600; font-size: 0.85rem; color: var(--sonarr); margin-bottom: 0.35rem;">🐳 Running Ollama in Docker or LAN?</div>
+                  <div style="font-size: 0.78rem; color: var(--text-muted); line-height: 1.4; margin-bottom: 0.65rem;">
+                    In Docker, <code>localhost</code> points inside this container. Use <code>host.docker.internal</code> or your host LAN IP above.
+                  </div>
+                  <button type="button" class="btn btn-secondary btn-sm" onclick="setOllamaHostPreset('http://host.docker.internal:11434')">
+                    Try host.docker.internal &rarr;
+                  </button>
+                </div>
+              </div>
 
-      const customTagOpt = document.createElement('option');
-      customTagOpt.value = '__custom__';
-      customTagOpt.textContent = '✎ Enter Custom Model Tag...';
-      select.appendChild(customTagOpt);
-    }
-
-    function onOllamaSelectChange() {
-      const select = document.getElementById('cfg-ollama-model-select');
-      const input = document.getElementById('cfg-ollama-model');
-      if (!select || !input) return;
-
-      if (select.value === '__custom__') {
-        input.focus();
-        input.select();
-      } else {
-        input.value = select.value;
-      }
-    }
-
-    function onOllamaInputChange() {
-      const select = document.getElementById('cfg-ollama-model-select');
-      const input = document.getElementById('cfg-ollama-model');
-      if (!select || !input) return;
-      const val = input.value.trim();
-      const exists = Array.from(select.options).some(o => o.value === val);
-      if (exists) {
-        select.value = val;
-      }
+              <div style="font-size: 0.78rem; color: var(--text-dim); background: rgba(0, 0, 0, 0.35); padding: 0.65rem 0.85rem; border-radius: 6px; border: 1px solid var(--border-subtle);">
+                <strong>Want to run local AI?</strong> Install Ollama on your host: <code style="color: #a5f3fc;">curl -fsSL https://ollama.com/install.sh | sh</code>
+              </div>
+            </div>
+          </div>
+        </div>
+      `;
     }
 
     function renderOllamaModelsManager() {
@@ -2700,20 +2777,33 @@ DASHBOARD_HTML = """<!DOCTYPE html>
       if (countBadge) countBadge.textContent = ollamaModelsList.length;
       if (!container) return;
 
+      const activeModel = document.getElementById('cfg-ollama-model')?.value || 'qwen2.5:7b';
+
       if (ollamaModelsList.length === 0) {
         container.innerHTML = `
           <div style="text-align: center; padding: 2.5rem 1rem; color: var(--text-dim);">
             <div style="font-size: 2.2rem; margin-bottom: 0.5rem;">🦙</div>
-            <div style="font-size: 1rem; font-weight: 500; color: var(--text-muted); margin-bottom: 0.25rem;">No Models Installed on Ollama</div>
+            <div style="font-size: 1rem; font-weight: 500; color: var(--text-muted); margin-bottom: 0.25rem;">Connected to Ollama, but no models installed yet</div>
             <div style="font-size: 0.85rem;">Use the panel on the right to pull your first model (e.g. <code>qwen2.5:7b</code>).</div>
           </div>
         `;
         return;
       }
 
-      const activeModel = document.getElementById('cfg-ollama-model')?.value || 'qwen2.5:7b';
-
       let html = `
+        <div style="display: flex; justify-content: space-between; align-items: center; background: rgba(0, 0, 0, 0.25); border: 1px solid var(--border); border-radius: 6px; padding: 0.65rem 0.85rem; margin-bottom: 0.85rem; flex-wrap: wrap; gap: 0.5rem;">
+          <div>
+            <div style="font-size: 0.72rem; color: var(--text-dim); text-transform: uppercase; font-weight: 600; letter-spacing: 0.03em;">Active Engine in AImportarr</div>
+            <div style="display: flex; align-items: center; gap: 0.5rem; margin-top: 0.15rem;">
+              <span style="font-weight: 700; font-size: 0.95rem; color: var(--text-main);">${escapeHtml(activeModel)}</span>
+              <span class="status-badge" style="background: rgba(34, 197, 94, 0.15); color: #22c55e; font-size: 0.7rem; padding: 0.15rem 0.45rem;">● Active</span>
+            </div>
+          </div>
+          <div style="font-size: 0.75rem; color: var(--text-dim);">
+            Click <strong>Set as Active</strong> on any installed model below to switch engines.
+          </div>
+        </div>
+
         <div style="overflow-x: auto;">
           <table class="data-table" style="width: 100%;">
             <thead>
@@ -2769,19 +2859,6 @@ DASHBOARD_HTML = """<!DOCTYPE html>
       container.innerHTML = html;
     }
 
-    function renderOllamaError(message) {
-      const container = document.getElementById('ollama-models-container');
-      if (!container) return;
-      container.innerHTML = `
-        <div style="text-align: center; padding: 2.5rem 1rem; color: var(--text-dim);">
-          <div style="font-size: 2.2rem; margin-bottom: 0.5rem; opacity: 0.6;">⚠️</div>
-          <div style="font-size: 1rem; font-weight: 500; color: #f87171; margin-bottom: 0.35rem;">Unable to Reach Ollama</div>
-          <div style="font-size: 0.82rem; max-width: 480px; margin: 0 auto; line-height: 1.4;">${escapeHtml(message)}</div>
-          <button class="btn btn-secondary btn-sm" style="margin-top: 1rem;" onclick="loadOllamaModels(true)">Try Again</button>
-        </div>
-      `;
-    }
-
     async function setActiveOllamaModel(modelName) {
       try {
         const res = await fetch('/api/config', {
@@ -2796,8 +2873,9 @@ DASHBOARD_HTML = """<!DOCTYPE html>
           })
         });
         if (res.ok) {
-          document.getElementById('cfg-ollama-model').value = modelName;
-          renderOllamaModelsDropdown();
+          const mInput = document.getElementById('cfg-ollama-model');
+          if (mInput) mInput.value = modelName;
+          updateOllamaSummaryCards();
           renderOllamaModelsManager();
           showToast(`Active Ollama model set to "${modelName}"`, 'success');
         } else {
@@ -2812,6 +2890,130 @@ DASHBOARD_HTML = """<!DOCTYPE html>
       if (!confirm(`Are you sure you want to delete model "${modelName}" from Ollama?\n\nThis will free up disk space on the Ollama host.`)) {
         return;
       }
+
+      showToast(`Deleting model "${modelName}"...`, 'info');
+      try {
+        const res = await fetch('/api/ollama/delete', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ name: modelName })
+        });
+        const data = await res.json();
+        if (data.status === 'ok') {
+          showToast(data.message || `Deleted model "${modelName}"`, 'success');
+          await loadOllamaModels(false);
+        } else {
+          showToast(data.message || 'Failed to delete model', 'danger');
+        }
+      } catch (err) {
+        showToast('Error deleting model: ' + err.message, 'danger');
+      }
+    }
+
+    function setPullTag(tag) {
+      const input = document.getElementById('ollama-pull-tag');
+      if (input) {
+        input.value = tag;
+        input.focus();
+      }
+    }
+
+    async function startOllamaPull() {
+      const tagInput = document.getElementById('ollama-pull-tag');
+      const tag = tagInput ? tagInput.value.trim() : '';
+      if (!tag) {
+        showToast('Please enter a model tag to pull (e.g. qwen2.5:7b)', 'warning');
+        return;
+      }
+
+      const btn = document.getElementById('btn-pull-model');
+      if (btn) btn.disabled = true;
+
+      try {
+        const res = await fetch('/api/ollama/pull', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ name: tag })
+        });
+        const data = await res.json();
+        if (data.status === 'ok') {
+          showToast(`Started downloading "${tag}" from Ollama...`, 'info');
+          showPullProgress();
+          startPollingPullStatus();
+        } else {
+          showToast(data.message || 'Failed to start pull', 'danger');
+          if (btn) btn.disabled = false;
+        }
+      } catch (err) {
+        showToast('Error starting pull: ' + err.message, 'danger');
+        if (btn) btn.disabled = false;
+      }
+    }
+
+    function showPullProgress() {
+      const box = document.getElementById('ollama-pull-progress-box');
+      if (box) box.style.display = 'block';
+    }
+
+    function startPollingPullStatus() {
+      if (ollamaPullPollInterval) clearInterval(ollamaPullPollInterval);
+
+      ollamaPullPollInterval = setInterval(async () => {
+        try {
+          const res = await fetch('/api/ollama/pull-status');
+          const data = await res.json();
+          const statusText = document.getElementById('ollama-pull-status-text');
+          const percentText = document.getElementById('ollama-pull-percent-text');
+          const bar = document.getElementById('ollama-pull-progress-bar');
+          const detailText = document.getElementById('ollama-pull-detail-text');
+          const btn = document.getElementById('btn-pull-model');
+
+          if (data.status === 'pulling') {
+            if (statusText) statusText.textContent = `Downloading ${data.model || ''}...`;
+            if (percentText) percentText.textContent = `${data.percent || 0}%`;
+            if (bar) {
+              bar.style.width = `${Math.min(100, data.percent || 0)}%`;
+              bar.style.background = 'var(--sonarr)';
+            }
+            if (detailText) {
+              const detail = data.message || 'Downloading...';
+              const totalStr = data.total > 0 ? ` (${formatBytesJs(data.completed)} / ${formatBytesJs(data.total)})` : '';
+              detailText.textContent = `${detail}${totalStr}`;
+            }
+          } else if (data.status === 'success') {
+            clearInterval(ollamaPullPollInterval);
+            ollamaPullPollInterval = null;
+            if (btn) btn.disabled = false;
+            if (statusText) statusText.textContent = 'Complete! 🎉';
+            if (percentText) percentText.textContent = '100%';
+            if (bar) {
+              bar.style.width = '100%';
+              bar.style.background = 'var(--success)';
+            }
+            if (detailText) detailText.textContent = data.message || 'Model downloaded and ready!';
+            showToast(data.message || 'Model installed successfully!', 'success');
+            await loadOllamaModels(false);
+          } else if (data.status === 'error') {
+            clearInterval(ollamaPullPollInterval);
+            ollamaPullPollInterval = null;
+            if (btn) btn.disabled = false;
+            if (statusText) statusText.textContent = 'Error';
+            if (bar) bar.style.background = 'var(--danger)';
+            if (detailText) detailText.textContent = data.message || 'Download failed.';
+            showToast(data.message || 'Download failed', 'danger');
+          }
+        } catch (e) {
+          console.warn('Pull status polling error:', e);
+        }
+      }, 1000);
+    }
+
+    function formatBytesJs(b) {
+      if (!b || b <= 0) return '0 B';
+      const units = ['B', 'KB', 'MB', 'GB', 'TB'];
+      const i = Math.floor(Math.log(b) / Math.log(1024));
+      return (b / Math.pow(1024, i)).toFixed(2) + ' ' + units[i];
+    }
 
       showToast(`Deleting model "${modelName}"...`, 'info');
       try {
