@@ -42,7 +42,7 @@ ai:
   # Ollama configuration (Local / Self-hosted)
   ollama:
     base_url: "http://localhost:11434"
-    model: "qwen2.5:1.5b"
+    model: "qwen2.5:7b" # Recommended: "qwen2.5:7b" (or "qwen2.5:3b" for lightweight setups)
 
 # ==========================================
 # *arr Services

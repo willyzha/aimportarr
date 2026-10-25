@@ -1437,7 +1437,8 @@ DASHBOARD_HTML = """<!DOCTYPE html>
 
           <div class="form-group">
             <label class="form-label" for="cfg-ollama-model">Ollama Model</label>
-            <input type="text" id="cfg-ollama-model" class="form-input" placeholder="qwen2.5:1.5b">
+            <input type="text" id="cfg-ollama-model" class="form-input" placeholder="qwen2.5:7b">
+            <div class="form-hint">Recommended: <code>qwen2.5:7b</code> (or <code>qwen2.5:3b</code> for low-spec systems)</div>
           </div>
         </div>
 
@@ -2314,7 +2315,7 @@ DASHBOARD_HTML = """<!DOCTYPE html>
         document.getElementById('cfg-gemini-key').value = gm.api_key || '';
         document.getElementById('cfg-gemini-model').value = gm.model || 'auto';
         document.getElementById('cfg-ollama-url').value = ol.base_url || 'http://localhost:11434';
-        document.getElementById('cfg-ollama-model').value = ol.model || 'qwen2.5:1.5b';
+        document.getElementById('cfg-ollama-model').value = ol.model || 'qwen2.5:7b';
 
         document.getElementById('cfg-sonarr-enabled').checked = Boolean(s.enabled);
         document.getElementById('cfg-sonarr-url').value = s.url || 'http://localhost:8989';

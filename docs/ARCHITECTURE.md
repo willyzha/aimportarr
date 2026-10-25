@@ -179,7 +179,7 @@ All settings can be configured in `/config/config.yml` (see [`config.example.yml
 | `ai.gemini.api_key` | `GEMINI_API_KEY` | `""` | Google Gemini API key. |
 | `ai.gemini.model` | `GEMINI_MODEL` | `auto` | Gemini model name (`auto` resolves fastest active Flash model). |
 | `ai.ollama.base_url` | `OLLAMA_BASE_URL` | `http://localhost:11434` | Ollama server URL. |
-| `ai.ollama.model` | `OLLAMA_MODEL` | `qwen2.5:1.5b` | Ollama model tag. |
+| `ai.ollama.model` | `OLLAMA_MODEL` | `qwen2.5:7b` | Ollama model tag (recommended `qwen2.5:7b` or `qwen2.5:3b`). |
 | `sonarr.enabled` / `url` / `api_key` | `SONARR_ENABLED`, `SONARR_URL`, `SONARR_API_KEY` | — | Sonarr connection settings. |
 | `sonarr.season_pack_backfill.enabled` | `SONARR_BACKFILL_ENABLED` | `false` | Opt-in: search and force-grab Season Packs for completed seasons with missing episodes when Sonarr rejects the pack solely because other episodes on disk have higher quality. |
 | `sonarr.season_pack_backfill.cron` | `SONARR_BACKFILL_CRON` | `0 2 * * *` | Cron schedule for Season Pack Backfill (e.g. daily at 2:00 AM; does not trigger on container startup). |

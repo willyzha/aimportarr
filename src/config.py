@@ -20,7 +20,7 @@ class GeminiConfig(BaseModel):
 
 class OllamaConfig(BaseModel):
     base_url: str = "http://localhost:11434"
-    model: str = "qwen2.5:1.5b"
+    model: str = "qwen2.5:7b"
 
 class AIConfig(BaseModel):
     provider: Literal["gemini", "ollama"] = "gemini"

@@ -396,10 +396,10 @@ class GeminiProvider(BaseAIProvider):
         schema = (
             "Return JSON adhering strictly to this schema:\n"
             "{\n"
+            '  "reasoning": "brief explanation of triage evaluation",\n'
             '  "action": "extract" | "no_extraction" | "reject_delete",\n'
             '  "category_tag": "malware_or_corrupt" | "sample_only" | "archive_extracted" | "triage_passed",\n'
-            '  "confidence": float (0.0 to 1.0),\n'
-            '  "reasoning": "brief explanation"\n'
+            '  "confidence": float (0.0 to 1.0)\n'
             "}"
         )
         prompt = (
@@ -471,6 +471,7 @@ class GeminiProvider(BaseAIProvider):
         schema = (
             "Return JSON adhering strictly to this schema:\n"
             "{\n"
+            '  "reasoning": "clear step-by-step explanation of identity match, file mapping, and quality upgrade/downgrade check",\n'
             '  "decision": "import" | "reject_keep_in_client" | "reject_delete" | "dismiss_pack",\n'
             '  "matched_media_id": integer or null,\n'
             '  "files_to_import": [\n'
@@ -481,8 +482,7 @@ class GeminiProvider(BaseAIProvider):
             '    }\n'
             '  ],\n'
             '  "category_tag": "id_match" | "unknown_media" | "episode_parsed" | "quality_downgrade" | "wrong_media" | "sample_only" | "malware_or_corrupt" | "season_pack",\n'
-            '  "confidence": float (0.0 to 1.0),\n'
-            '  "reasoning": "clear explanation of identity match, file mapping, and quality upgrade/downgrade check"\n'
+            '  "confidence": float (0.0 to 1.0)\n'
             "}"
         )
         prompt = (
@@ -579,9 +579,9 @@ class GeminiProvider(BaseAIProvider):
         schema = (
             "Return JSON adhering strictly to this schema:\n"
             "{\n"
+            '  "reasoning": "step-by-step analysis: 1. check series title & aliases; 2. check exact season specification; 3. quality comparison and conclusion",\n'
             '  "matched_guid": "exact guid from candidate_releases or null if none match",\n'
-            '  "confidence": float (0.0 to 1.0),\n'
-            '  "reasoning": "brief explanation of why the selected release matches the target series and season"\n'
+            '  "confidence": float (0.0 to 1.0)\n'
             "}"
         )
         prompt = (
@@ -590,10 +590,12 @@ class GeminiProvider(BaseAIProvider):
             f"Candidate Season Pack Releases (flagged by Sonarr as 'Unknown Series'):\n"
             f"{json.dumps(candidate_releases[:25], ensure_ascii=False, indent=2)}\n\n"
             "Task:\n"
-            "1. Determine if any candidate release is a genuine full-season pack for the Target Series and Target Season Number "
-            "(accounting for alternate titles, Chinese Pinyin, Romaji, foreign titles, or year variations).\n"
-            "2. If multiple candidates match the series and season, pick the one with the highest customFormatScore / qualityWeight / seeders.\n"
-            "3. If none of the candidates actually belong to this series and season, return matched_guid: null.\n\n"
+            "1. Series Identity: Verify that the candidate release belongs to Target Series (accounting for alternate titles, Chinese Pinyin, Romaji, foreign titles, or year variations).\n"
+            f"2. Season Verification: Candidate release MUST be a full-season pack specifically for Season {season_number:02d} (e.g. 'S{season_number:02d}', 'Season {season_number}', or 'Season {season_number:02d}').\n"
+            "   - CAUTION: Reject multi-season packs or complete series packs (e.g. 'S01-S02', 'complete S01 and 2', 'Seasons 1-4', 'Complete Series') when searching for a single target season, as they span multiple seasons or may be misidentified.\n"
+            "   - Reject releases belonging to other seasons (e.g. S02, S03).\n"
+            f"3. If multiple candidates are valid packs for Season {season_number:02d}, pick the one with highest customFormatScore / qualityWeight / seeders.\n"
+            f"4. If none of the candidates are valid packs for Season {season_number:02d}, return matched_guid: null with confidence 0.0.\n\n"
             f"REQUIRED JSON OUTPUT SCHEMA:\n{schema}"
         )
         series_label = f"{series_info.get('title', 'Series')} S{season_number:02d}"
@@ -641,9 +643,9 @@ class GeminiProvider(BaseAIProvider):
         schema = (
             "Return JSON adhering strictly to this schema:\n"
             "{\n"
+            '  "reasoning": "step-by-step analysis: 1. check series title & aliases; 2. verify exact season and episode; 3. quality comparison and conclusion",\n'
             '  "matched_guid": "exact guid from candidate_releases or null if none match",\n'
-            '  "confidence": float (0.0 to 1.0),\n'
-            '  "reasoning": "brief explanation of why the selected release matches the target series and episode"\n'
+            '  "confidence": float (0.0 to 1.0)\n'
             "}"
         )
         prompt = (
@@ -652,10 +654,11 @@ class GeminiProvider(BaseAIProvider):
             f"Candidate Episode Releases (flagged by Sonarr as 'Unknown Series'):\n"
             f"{json.dumps(candidate_releases[:25], ensure_ascii=False, indent=2)}\n\n"
             "Task:\n"
-            f"1. Determine if any candidate release is a genuine episode release for S{season_number:02d}E{episode_number:02d} "
-            "of the Target Series (accounting for alternate titles, Chinese Pinyin, Romaji, foreign titles, or year variations).\n"
-            "2. If multiple candidates match the series and episode, pick the one with the highest customFormatScore / qualityWeight / seeders.\n"
-            "3. If none of the candidates actually belong to this series and episode, return matched_guid: null.\n\n"
+            "1. Series Identity: Verify that the candidate release belongs to Target Series (accounting for alternate titles, Chinese Pinyin, Romaji, foreign titles, or year variations).\n"
+            f"2. Episode Verification: Candidate release MUST be a genuine episode release specifically for S{season_number:02d}E{episode_number:02d} "
+            "(or a multi-episode release containing this episode). Reject releases belonging to different seasons or episodes.\n"
+            "3. If multiple candidates match the series and episode, pick the one with the highest customFormatScore / qualityWeight / seeders.\n"
+            "4. If none of the candidates actually belong to this series and episode, return matched_guid: null with confidence 0.0.\n\n"
             f"REQUIRED JSON OUTPUT SCHEMA:\n{schema}"
         )
         ep_label = f"{series_info.get('title', 'Series')} S{season_number:02d}E{episode_number:02d}"
@@ -706,9 +709,9 @@ class GeminiProvider(BaseAIProvider):
             '  "matches": [\n'
             '    {\n'
             '      "episode_number": integer,\n'
+            '      "reasoning": "step-by-step rationale for matching or rejecting candidate releases for this episode",\n'
             '      "matched_guid": "exact guid from candidate_releases or null if none match",\n'
-            '      "confidence": float (0.0 to 1.0),\n'
-            '      "reasoning": "brief explanation of match or rejection"\n'
+            '      "confidence": float (0.0 to 1.0)\n'
             '    }\n'
             '  ]\n'
             "}"
