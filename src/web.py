@@ -1787,7 +1787,7 @@ DASHBOARD_HTML = """<!DOCTYPE html>
         <table>
           <thead>
             <tr>
-              <th style="width: 130px;">Time</th>
+              <th style="width: 140px;">Date &amp; Time</th>
               <th style="width: 80px;">App</th>
               <th>Release / Item Title</th>
               <th style="width: 140px;">Category</th>
@@ -1856,7 +1856,7 @@ DASHBOARD_HTML = """<!DOCTYPE html>
         <table>
           <thead>
             <tr>
-              <th style="width: 105px;">Time</th>
+              <th style="width: 125px;">Date &amp; Time</th>
               <th style="min-width: 130px;">Operation</th>
               <th style="width: 125px;">Model</th>
               <th style="width: 70px; text-align: right;">Prompt</th>
@@ -2432,14 +2432,48 @@ DASHBOARD_HTML = """<!DOCTYPE html>
       return Number(num).toLocaleString();
     }
 
-    function formatTime(isoStr) {
-      if (!isoStr) return '--';
-      try {
-        const d = new Date(isoStr);
-        return d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
-      } catch (e) {
-        return isoStr;
+    function parseUtcDate(isoStr) {
+      if (!isoStr) return null;
+      let s = String(isoStr).trim();
+      if (!s.endsWith('Z') && !/[+-]\\d{2}(:\\d{2})?$/.test(s)) {
+        s += 'Z';
       }
+      const d = new Date(s);
+      return isNaN(d.getTime()) ? null : d;
+    }
+
+    function formatDate(isoStr) {
+      const d = parseUtcDate(isoStr);
+      if (!d) return '--';
+      try {
+        return d.toLocaleDateString([], { year: 'numeric', month: '2-digit', day: '2-digit' });
+      } catch (_) { return isoStr; }
+    }
+
+    function formatTime(isoStr) {
+      const d = parseUtcDate(isoStr);
+      if (!d) return '--';
+      try {
+        return d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+      } catch (_) { return isoStr; }
+    }
+
+    function formatDateTime(isoStr) {
+      const d = parseUtcDate(isoStr);
+      if (!d) return '--';
+      try {
+        return `${d.toLocaleDateString([], { year: 'numeric', month: '2-digit', day: '2-digit' })} ${d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })}`;
+      } catch (_) { return isoStr; }
+    }
+
+    function formatDateTimeCell(isoStr) {
+      const d = parseUtcDate(isoStr);
+      if (!d) return '--';
+      try {
+        const dStr = d.toLocaleDateString([], { year: 'numeric', month: '2-digit', day: '2-digit' });
+        const tStr = d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+        return `<div style="font-weight: 500; font-feature-settings: 'tnum'; white-space: nowrap;">${dStr}</div><div style="font-size: 0.72rem; color: var(--text-dim); font-feature-settings: 'tnum'; white-space: nowrap;">${tStr}</div>`;
+      } catch (_) { return escapeHtml(isoStr); }
     }
 
     function switchTab(tabName) {
@@ -2718,7 +2752,7 @@ DASHBOARD_HTML = """<!DOCTYPE html>
 
           return `
             <tr class="clickable-row" onclick="toggleReasoning(${item.id})">
-              <td>${formatTime(item.timestamp)}</td>
+              <td>${formatDateTimeCell(item.timestamp)}</td>
               <td><span class="badge ${appClass}">${item.app || 'App'}</span></td>
               <td class="title-cell">
                 <div class="title-main">${escapeHtml(item.title)}</div>
@@ -2741,7 +2775,7 @@ DASHBOARD_HTML = """<!DOCTYPE html>
                   </div>
                   <div>${escapeHtml(item.reasoning || item.details || 'No reasoning details recorded.')}</div>
                   <div style="font-size: 0.7rem; color: var(--text-dim); margin-top: 0.35rem;">
-                    ID: #${item.id} &bull; Timestamp: ${item.timestamp} &bull; Model: ${escapeHtml(modelText)} &bull; Confidence: ${confText}
+                    ID: #${item.id} &bull; Time: ${formatDateTime(item.timestamp)} &bull; Model: ${escapeHtml(modelText)} &bull; Confidence: ${confText}
                   </div>
                 </div>
               </td>
@@ -2779,7 +2813,10 @@ DASHBOARD_HTML = """<!DOCTYPE html>
                   <span class="badge ${appClass}">${item.app || 'App'}</span>
                   <span class="badge ${statusClass}" title="${escapeHtml(statusTooltip)}">${normStatus}</span>
                 </div>
-                <div style="font-size: 0.72rem; color: var(--text-dim); flex-shrink: 0;">${formatTime(item.timestamp)}</div>
+                <div style="font-size: 0.72rem; color: var(--text-dim); text-align: right; line-height: 1.25; flex-shrink: 0;">
+                  <div>${formatDate(item.timestamp)}</div>
+                  <div>${formatTime(item.timestamp)}</div>
+                </div>
               </div>
 
               <div style="margin: 0.15rem 0;">
@@ -2817,7 +2854,7 @@ DASHBOARD_HTML = """<!DOCTYPE html>
                   </div>
                   <div style="line-height: 1.45; word-break: break-word;">${escapeHtml(item.reasoning || item.details || 'No reasoning details recorded.')}</div>
                   <div style="font-size: 0.7rem; color: var(--text-dim); margin-top: 0.45rem;">
-                    ID: #${item.id} &bull; Timestamp: ${item.timestamp} &bull; Model: ${escapeHtml(modelText)} &bull; Confidence: ${confText}
+                    ID: #${item.id} &bull; Time: ${formatDateTime(item.timestamp)} &bull; Model: ${escapeHtml(modelText)} &bull; Confidence: ${confText}
                   </div>
                 </div>
               </div>
@@ -2893,7 +2930,7 @@ DASHBOARD_HTML = """<!DOCTYPE html>
 
           return `
             <tr class="clickable-row" onclick="toggleTokenDetails(${t.id})">
-              <td>${formatTime(t.timestamp)}</td>
+              <td>${formatDateTimeCell(t.timestamp)}</td>
               <td>
                 <div style="font-weight: 600; font-family: monospace; font-size: 0.8rem;">${escapeHtml(t.operation)}</div>
                 ${t.item_title ? `<div class="title-sub">${escapeHtml(t.item_title)}</div>` : ''}
@@ -2934,7 +2971,7 @@ DASHBOARD_HTML = """<!DOCTYPE html>
                     </div>
                   </div>
                   <div style="font-size: 0.7rem; color: var(--text-dim); margin-top: 0.45rem;">
-                    ID: #${t.id} &bull; Timestamp: ${t.timestamp} &bull; Model: ${escapeHtml(t.model)} &bull; Latency: ${latency} ${t.error_code ? `&bull; Error: ${escapeHtml(t.error_code)}` : ''}
+                    ID: #${t.id} &bull; Time: ${formatDateTime(t.timestamp)} &bull; Model: ${escapeHtml(t.model)} &bull; Latency: ${latency} ${t.error_code ? `&bull; Error: ${escapeHtml(t.error_code)}` : ''}
                   </div>
                 </div>
               </td>
@@ -2979,7 +3016,10 @@ DASHBOARD_HTML = """<!DOCTYPE html>
                 </div>
                 <div style="text-align: right; flex-shrink: 0;">
                   <div>${statusBadge}</div>
-                  <div style="font-size: 0.7rem; color: var(--text-dim); margin-top: 0.2rem;">${formatTime(t.timestamp)} &bull; ${latency}</div>
+                  <div style="font-size: 0.7rem; color: var(--text-dim); margin-top: 0.2rem; text-align: right; line-height: 1.25;">
+                    <div>${formatDate(t.timestamp)} ${formatTime(t.timestamp)}</div>
+                    <div>${latency}</div>
+                  </div>
                 </div>
               </div>
 
@@ -3027,7 +3067,7 @@ DASHBOARD_HTML = """<!DOCTYPE html>
                     </div>
                   </div>
                   <div style="font-size: 0.7rem; color: var(--text-dim); margin-top: 0.45rem;">
-                    ID: #${t.id} &bull; Timestamp: ${t.timestamp} &bull; Model: ${escapeHtml(t.model)} &bull; Latency: ${latency} ${t.error_code ? `&bull; Error: ${escapeHtml(t.error_code)}` : ''}
+                    ID: #${t.id} &bull; Time: ${formatDateTime(t.timestamp)} &bull; Model: ${escapeHtml(t.model)} &bull; Latency: ${latency} ${t.error_code ? `&bull; Error: ${escapeHtml(t.error_code)}` : ''}
                   </div>
                 </div>
               </div>
@@ -3112,7 +3152,9 @@ DASHBOARD_HTML = """<!DOCTYPE html>
 
     function formatRelativeTime(isoStr) {
       if (!isoStr) return 'Never';
-      const diffSec = Math.round((Date.now() - new Date(isoStr).getTime()) / 1000);
+      const d = parseUtcDate(isoStr);
+      if (!d) return '--';
+      const diffSec = Math.round((Date.now() - d.getTime()) / 1000);
       if (diffSec < 5) return 'Just now';
       if (diffSec < 60) return `${diffSec}s ago`;
       const diffMin = Math.round(diffSec / 60);
@@ -3127,7 +3169,9 @@ DASHBOARD_HTML = """<!DOCTYPE html>
       if (state === 'disabled') return 'Disabled';
       if (state === 'running') return 'In Progress';
       if (!isoStr) return '--';
-      const diffSec = Math.round((new Date(isoStr).getTime() - Date.now()) / 1000);
+      const d = parseUtcDate(isoStr);
+      if (!d) return '--';
+      const diffSec = Math.round((d.getTime() - Date.now()) / 1000);
       if (diffSec <= 0) return 'Due now';
       if (diffSec < 60) return `in ${diffSec}s`;
       const diffMin = Math.round(diffSec / 60);
@@ -3236,6 +3280,11 @@ DASHBOARD_HTML = """<!DOCTYPE html>
             text += ` (${info.last_duration_sec}s)`;
           }
           lastRun.innerText = text;
+          if (info.last_run) {
+            lastRun.title = formatDateTime(info.last_run);
+          } else {
+            lastRun.removeAttribute('title');
+          }
         }
 
         if (lastGrabbed) {
@@ -3245,6 +3294,11 @@ DASHBOARD_HTML = """<!DOCTYPE html>
 
         if (nextRun) {
           nextRun.innerText = formatNextRun(info.next_run, state);
+          if (info.next_run) {
+            nextRun.title = formatDateTime(info.next_run);
+          } else {
+            nextRun.removeAttribute('title');
+          }
         }
       });
     }

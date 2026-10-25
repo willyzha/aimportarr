@@ -264,7 +264,7 @@ async def automation_worker_loop(
                         metrics.update_task_status(
                             "season_pack_backfill",
                             state="idle",
-                            next_run=next_bf_run.isoformat(),
+                            next_run=next_bf_run.astimezone(timezone.utc).isoformat(),
                         )
                     except Exception as e:
                         logger.error(f"Invalid cron expression for season_pack_backfill '{bf_cfg.cron}': {e}")
@@ -281,7 +281,7 @@ async def automation_worker_loop(
                 metrics.update_task_status(
                     "season_pack_backfill",
                     state="running",
-                    last_run=now_local.isoformat(),
+                    last_run=datetime.now(timezone.utc).isoformat(),
                 )
                 try:
                     grabbed = await curr_sonarr.run_season_pack_backfill(ai_provider=curr_ai)
@@ -292,7 +292,7 @@ async def automation_worker_loop(
                         state="idle",
                         duration_sec=dur,
                         items_grabbed=grabbed,
-                        next_run=next_bf_run.isoformat(),
+                        next_run=next_bf_run.astimezone(timezone.utc).isoformat(),
                     )
                 except Exception as e:
                     logger.error(f"Error during Sonarr Season Pack Backfill: {e}")
@@ -301,7 +301,7 @@ async def automation_worker_loop(
                         "season_pack_backfill",
                         state="idle",
                         progress=f"Error: {e}",
-                        next_run=next_bf_run.isoformat(),
+                        next_run=next_bf_run.astimezone(timezone.utc).isoformat(),
                     )
 
             # 2. Ongoing Seasons: Missing Episode Retry
@@ -322,7 +322,7 @@ async def automation_worker_loop(
                         metrics.update_task_status(
                             "missing_episode_retry",
                             state="idle",
-                            next_run=next_mer_run.isoformat(),
+                            next_run=next_mer_run.astimezone(timezone.utc).isoformat(),
                         )
                     except Exception as e:
                         logger.error(f"Invalid cron expression for missing_episode_retry '{mer_cfg.cron}': {e}")
@@ -339,7 +339,7 @@ async def automation_worker_loop(
                 metrics.update_task_status(
                     "missing_episode_retry",
                     state="running",
-                    last_run=now_local.isoformat(),
+                    last_run=datetime.now(timezone.utc).isoformat(),
                 )
                 try:
                     grabbed = await curr_sonarr.run_missing_episode_retry(ai_provider=curr_ai)
@@ -350,7 +350,7 @@ async def automation_worker_loop(
                         state="idle",
                         duration_sec=dur,
                         items_grabbed=grabbed,
-                        next_run=next_mer_run.isoformat(),
+                        next_run=next_mer_run.astimezone(timezone.utc).isoformat(),
                     )
                 except Exception as e:
                     logger.error(f"Error during Sonarr Missing Episode Retry: {e}")
@@ -359,7 +359,7 @@ async def automation_worker_loop(
                         "missing_episode_retry",
                         state="idle",
                         progress=f"Error: {e}",
-                        next_run=next_mer_run.isoformat(),
+                        next_run=next_mer_run.astimezone(timezone.utc).isoformat(),
                     )
 
             # 3. Missing Movies: Missing Movie Search (Radarr)
@@ -380,7 +380,7 @@ async def automation_worker_loop(
                         metrics.update_task_status(
                             "missing_movie_search",
                             state="idle",
-                            next_run=next_mms_run.isoformat(),
+                            next_run=next_mms_run.astimezone(timezone.utc).isoformat(),
                         )
                     except Exception as e:
                         logger.error(f"Invalid cron expression for missing_movie_search '{mms_cfg.cron}': {e}")
@@ -397,7 +397,7 @@ async def automation_worker_loop(
                 metrics.update_task_status(
                     "missing_movie_search",
                     state="running",
-                    last_run=now_local.isoformat(),
+                    last_run=datetime.now(timezone.utc).isoformat(),
                 )
                 try:
                     grabbed = await curr_radarr.run_missing_movie_search(ai_provider=curr_ai)
@@ -408,7 +408,7 @@ async def automation_worker_loop(
                         state="idle",
                         duration_sec=dur,
                         items_grabbed=grabbed,
-                        next_run=next_mms_run.isoformat(),
+                        next_run=next_mms_run.astimezone(timezone.utc).isoformat(),
                     )
                 except Exception as e:
                     logger.error(f"Error during Radarr Missing Movie Search: {e}")
@@ -417,7 +417,7 @@ async def automation_worker_loop(
                         "missing_movie_search",
                         state="idle",
                         progress=f"Error: {e}",
-                        next_run=next_mms_run.isoformat(),
+                        next_run=next_mms_run.astimezone(timezone.utc).isoformat(),
                     )
 
             for _ in range(5):
