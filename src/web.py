@@ -1236,10 +1236,6 @@ DASHBOARD_HTML = """<!DOCTYPE html>
         </select>
       </div>
 
-      <button id="scan-btn" class="btn btn-primary" onclick="triggerImmediateScan()" title="Immediately check Sonarr/Radarr queues and push stuck items into the FIFO queue">
-        <span>⚡</span> Scan Now
-      </button>
-
       <button id="refresh-btn" class="btn" onclick="fetchData(true)">
         <span id="refresh-icon">🔄</span> Refresh
       </button>
