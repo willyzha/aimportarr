@@ -161,9 +161,9 @@ flowchart TD
 | **`imported`** | Imported into media library | Untouched | Imported & removed | No | `Imported` |
 | **`dismissed`** | Ignored (quality downgrade, wrong media, or satisfied pack) | Untouched (kept in client) | Removed (and blocklisted if bad match/downgrade) | No | `Dismissed` |
 | **`rejected`** | Malware, sample-only, or corrupt release | **Deleted from client** | Removed & blocklisted | No | `Rejected` |
-| **`skipped`** | Left in queue (low AI confidence or unmounted path) | Untouched | Still in queue | **Yes (`🔄 Retry`)** | `In Queue` |
-| **`failed`** | Manual import API call failed | Untouched | Still in queue | **Yes (`🔄 Retry`)** | `In Queue` |
-| **`dry_run`** | Simulated decision (`general.dry_run: true`) | Untouched | Still in queue | **Yes (`🔄 Retry`)** | `In Queue` |
+| **`skipped`** | Skipped without action (no release found, cooldown, or review) | Untouched | Retried or kept in queue | **Yes (`🔄 Retry`)** | `Skipped` |
+| **`failed`** | Manual import API or grab failed | Untouched | Still in queue | **Yes (`🔄 Retry`)** | `Failed` |
+| **`dry_run`** | Simulated decision (`general.dry_run: true`) | Untouched | Still in queue | **Yes (`🔄 Retry`)** | — |
 
 When an `In Queue` item is retried and re-evaluated on the next scan cycle, its previous row in SQLite (`processed_items`) is replaced by the new result so stale retry rows never accumulate.
 

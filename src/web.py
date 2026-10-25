@@ -993,6 +993,7 @@ DASHBOARD_HTML = """<!DOCTYPE html>
     .badge-rejected { background: rgba(239, 68, 68, 0.12); color: #f87171; }
     .badge-dismissed { background: var(--info-bg); color: var(--info); }
     .badge-skipped { background: rgba(148, 163, 184, 0.12); color: var(--text-muted); }
+    .badge-failed { background: rgba(245, 158, 11, 0.15); color: #f59e0b; }
 
     .badge-sonarr { background: rgba(56, 189, 248, 0.15); color: var(--sonarr); }
     .badge-radarr { background: rgba(251, 146, 60, 0.15); color: var(--radarr); }
@@ -1768,12 +1769,10 @@ DASHBOARD_HTML = """<!DOCTYPE html>
           <div class="filter-pills">
             <div class="filter-pill active" data-filter="all" onclick="setFilter('all')">All</div>
             <div class="filter-pill" data-filter="imported" onclick="setFilter('imported')" title="Imported into Sonarr/Radarr media library">Imported</div>
+            <div class="filter-pill" data-filter="skipped" onclick="setFilter('skipped')" title="Skipped (no release found, cooldown applied, or review needed)">Skipped</div>
+            <div class="filter-pill" data-filter="rejected" onclick="setFilter('rejected')" title="Deleted from download client &amp; blocklisted (malware/corrupt)">Rejected</div>
             <div class="filter-pill" data-filter="dismissed" onclick="setFilter('dismissed')" title="Ignored/removed from *arr queue, files kept in download client">Dismissed</div>
-            <div class="filter-pill" data-filter="rejected" onclick="setFilter('rejected')" title="Deleted from download client &amp; blocklisted">Rejected</div>
-            <div class="filter-pill" data-filter="in_queue" onclick="setFilter('in_queue')" title="Items still sitting in the *arr queue (skipped, failed, or dry run) — eligible for retry">In Queue</div>
-            <div class="filter-pill" data-filter="season_backfill" onclick="setFilter('season_backfill')" title="Season Pack Backfill items">📦 Backfill</div>
-            <div class="filter-pill" data-filter="episode_retry" onclick="setFilter('episode_retry')" title="Missing Episode Retry items">🔎 Episode Retry</div>
-            <div class="filter-pill" data-filter="missing_movie" onclick="setFilter('missing_movie')" title="Missing Movie Search items">🎬 Movie Search</div>
+            <div class="filter-pill" data-filter="failed" onclick="setFilter('failed')" title="Import or grab errors (eligible for retry)">Failed</div>
           </div>
         </div>
 
@@ -2684,8 +2683,8 @@ DASHBOARD_HTML = """<!DOCTYPE html>
       if (s === 'imported') return 'Imported into Sonarr/Radarr media library';
       if (s === 'rejected') return 'Deleted from download client & blocklisted (malware, sample, or corrupt)';
       if (s === 'dismissed') return 'Ignored/removed from *arr queue, files kept in download client';
-      if (s === 'skipped') return 'Left in queue without action (eligible for retry)';
-      if (s === 'failed') return 'Manual import failed, still in queue (eligible for retry)';
+      if (s === 'skipped') return 'Skipped without action (no qualifying release found, cooldown applied, or review needed)';
+      if (s === 'failed') return 'Manual import or grab failed (eligible for retry)';
       if (s === 'dry_run') return 'Simulated in Dry Run mode, still in queue (eligible for retry)';
       return s;
     }

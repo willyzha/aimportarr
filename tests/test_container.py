@@ -601,8 +601,8 @@ class ContainerSmokeTests(unittest.TestCase):
         self.assertIn('id="task-episode-retry-card"', RENDERED_DASHBOARD_HTML)
         self.assertIn('id="btn-trigger-backfill"', RENDERED_DASHBOARD_HTML)
         self.assertIn('id="btn-trigger-episode-retry"', RENDERED_DASHBOARD_HTML)
-        self.assertIn('data-filter="season_backfill"', RENDERED_DASHBOARD_HTML)
-        self.assertIn('data-filter="episode_retry"', RENDERED_DASHBOARD_HTML)
+        self.assertIn('data-filter="skipped"', RENDERED_DASHBOARD_HTML)
+        self.assertIn('data-filter="failed"', RENDERED_DASHBOARD_HTML)
 
     def test_ai_debug_trace_error_details_and_nonzero_tokens(self):
         """Verify errors record error_code, detailed response_text, and non-zero estimated prompt tokens."""
