@@ -289,3 +289,158 @@ class OllamaChunkingAndReasoningTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn('id="summary-ollama-model"', DASHBOARD_HTML)
         self.assertIn('setOllamaHostPreset', DASHBOARD_HTML)
         self.assertNotIn('cfg-ollama-model-select', DASHBOARD_HTML)
+
+    def test_compact_ollama_stage2_context(self):
+        """Verify Ollama context compactor prunes library candidates and compacts on-disk ranges."""
+        from src.ai.base import compact_ollama_stage2_context, format_episode_ranges
+
+        # 1. Range formatter
+        self.assertEqual(format_episode_ranges([1, 2, 3, 4, 5]), "E01-E05")
+        self.assertEqual(format_episode_ranges([1, 2, 4, 5, 8]), "E01-E02, E04-E05, E08")
+        self.assertEqual(format_episode_ranges([]), "none")
+
+        # 2. Prunes library candidates when candidate_media is known
+        lib_cands = [{"id": i, "title": f"Show {i}", "year": 2020} for i in range(20)]
+        pruned_lib, c_files, c_disk, c_known = compact_ollama_stage2_context(
+            candidate_media={"id": 10, "title": "Target Show"},
+            library_candidates=lib_cands,
+            manual_import_files=[{"path": f"/downloads/ep{i}.mkv"} for i in range(15)],
+            existing_disk_files=[
+                {"season": 1, "episode": ep, "quality": "WEBDL-1080p", "customFormatScore": 75}
+                for ep in range(1, 7)
+            ],
+            known_episodes=[
+                {"season": 1, "episode": ep, "hasFile": ep <= 6}
+                for ep in range(1, 17)
+            ],
+        )
+        self.assertIsNone(pruned_lib, "library_candidates must be pruned when candidate_media is known")
+        self.assertEqual(len(c_files), 10, "Candidate files must be capped at 10 for Ollama")
+        self.assertEqual(len(c_disk), 1)
+        self.assertEqual(c_disk[0]["on_disk"], "E01-E06 (WEBDL-1080p, CF:75)")
+        self.assertEqual(c_known[0]["missing"], "E07-E16")
+
+        # 3. Retains top 5 library candidates when candidate_media is None
+        pruned_lib_none, _, _, _ = compact_ollama_stage2_context(
+            candidate_media=None,
+            library_candidates=lib_cands,
+            manual_import_files=[],
+            existing_disk_files=[],
+        )
+        self.assertIsNotNone(pruned_lib_none)
+        self.assertEqual(len(pruned_lib_none), 5)
+
+    async def test_ollama_two_pass_simulated_thinking_pipeline(self):
+        """Verify evaluate_import_decision executes Pass 1 (thinking) then Pass 2 (JSON) with deliberation text."""
+        provider = OllamaProvider(base_url="http://localhost:11434", model="qwen2.5:7b")
+
+        deliberation_output = (
+            "1. Identity: Release 'Show.S01E12' corresponds directly to Target Show S01.\n"
+            "2. Quality: Target episode 12 is missing on disk. Candidate WEBDL-1080p is valid.\n"
+            "3. Action: Import candidate file for S01E12."
+        )
+
+        json_output = {
+            "reasoning": "Episode 12 is missing from disk, matching candidate file.",
+            "decision": "import",
+            "matched_media_id": 10,
+            "files_to_import": [
+                {"path": "/downloads/Show.S01E12.mkv", "season_number": 1, "episode_numbers": [12]}
+            ],
+            "category_tag": "missing_backfill",
+            "confidence": 0.95,
+        }
+
+        call_log = []
+
+        async def mock_call_with_raw(system_prompt, user_prompt, operation="ai_query", item_title=None, response_format="json"):
+            call_log.append({
+                "operation": operation,
+                "response_format": response_format,
+                "user_prompt": user_prompt,
+            })
+            if response_format is None:
+                # Pass 1: thinking text
+                return None, deliberation_output, None
+            else:
+                # Pass 2: JSON
+                return json_output, json.dumps(json_output), None
+
+        with patch.object(provider, "_call_ollama_with_raw", side_effect=mock_call_with_raw):
+            res = await provider.evaluate_import_decision(
+                media_type="series",
+                release_title="Show.S01E12.1080p",
+                folder_name="Show.S01E12",
+                queue_messages=[],
+                candidate_media={"id": 10, "title": "Target Show"},
+                library_candidates=[],
+                manual_import_files=[{
+                    "path": "/downloads/Show.S01E12.mkv",
+                    "name": "Show.S01E12.mkv",
+                    "episodes": [{"seasonNumber": 1, "episodeNumber": 12}],
+                }],
+                existing_disk_files=[],
+            )
+
+            # Two calls must be made
+            self.assertEqual(len(call_log), 2)
+            self.assertEqual(call_log[0]["operation"], "evaluate_import_decision_thinking")
+            self.assertIsNone(call_log[0]["response_format"])
+            self.assertEqual(call_log[1]["operation"], "evaluate_import_decision_json")
+            self.assertEqual(call_log[1]["response_format"], "json")
+
+            # Pass 2 prompt must receive deliberation text from Pass 1
+            self.assertIn("Expert Deliberation:\n", call_log[1]["user_prompt"])
+            self.assertIn("Release 'Show.S01E12' corresponds directly to Target Show", call_log[1]["user_prompt"])
+
+            # Result decision and combined reasoning
+            self.assertEqual(res.decision, "import")
+            self.assertEqual(res.matched_media_id, 10)
+            self.assertEqual(len(res.files_to_import), 1)
+            self.assertIn("Episode 12 is missing from disk", res.reasoning)
+            self.assertIn("Thinking:", res.reasoning)
+
+    async def test_gemini_native_system_instruction(self):
+        """Verify Gemini provider routes persona and rules to systemInstruction in API payload."""
+        gemini = GeminiProvider(api_key="test_api_key", model="gemini-2.5-flash")
+
+        captured_payload = {}
+
+        class MockResp:
+            status_code = 200
+            def raise_for_status(self):
+                pass
+            def json(self):
+                return {
+                    "candidates": [{
+                        "content": {
+                            "parts": [{"text": '{"reasoning": "ok", "decision": "import", "matched_media_id": 1, "files_to_import": [{"path": "/test.mkv", "season_number": 1, "episode_numbers": [1]}], "category_tag": "ok", "confidence": 1.0}'}]
+                        }
+                    }]
+                }
+
+        async def mock_post(url, json=None):
+            captured_payload.update(json or {})
+            return MockResp()
+
+        with patch("httpx.AsyncClient.post", side_effect=mock_post):
+            res = await gemini.evaluate_import_decision(
+                media_type="series",
+                release_title="Show.S01E01.1080p",
+                folder_name="Show.S01E01",
+                queue_messages=[],
+                candidate_media={"id": 1, "title": "Test Show"},
+                library_candidates=[],
+                manual_import_files=[{"path": "/test.mkv", "episodes": [{"seasonNumber": 1, "episodeNumber": 1}]}],
+                existing_disk_files=[],
+            )
+            self.assertEqual(res.decision, "import")
+            # Verify systemInstruction presence in payload
+            self.assertIn("systemInstruction", captured_payload)
+            sys_text = captured_payload["systemInstruction"]["parts"][0]["text"]
+            self.assertIn("Stage 2 Unified Import vs. Reject Evaluation Rules", sys_text)
+            self.assertIn("ANTI-HALLUCINATION CAUTION", sys_text)
+            # Verify contents is purely user prompt
+            user_text = captured_payload["contents"][0]["parts"][0]["text"]
+            self.assertIn("Show.S01E01.1080p", user_text)
+            self.assertNotIn("Stage 2 Unified Import vs. Reject Evaluation Rules", user_text)

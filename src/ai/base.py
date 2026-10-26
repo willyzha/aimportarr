@@ -14,6 +14,103 @@ STAGE1_VALID_ACTIONS = {"extract", "no_extraction", "reject_delete"}
 STAGE2_VALID_DECISIONS = {"import", "reject_keep_in_client", "reject_delete", "dismiss_pack"}
 
 
+def format_episode_ranges(numbers: List[int]) -> str:
+    """Format a list of episode numbers into compact ranges (e.g. [1, 2, 3, 5] -> 'E01-E03, E05')."""
+    valid_nums = sorted({int(n) for n in numbers if isinstance(n, (int, str)) and str(n).isdigit()})
+    if not valid_nums:
+        return "none"
+    ranges = []
+    start = valid_nums[0]
+    prev = valid_nums[0]
+    for n in valid_nums[1:]:
+        if n == prev + 1:
+            prev = n
+        else:
+            ranges.append(f"E{start:02d}" if start == prev else f"E{start:02d}-E{prev:02d}")
+            start = n
+            prev = n
+    ranges.append(f"E{start:02d}" if start == prev else f"E{start:02d}-E{prev:02d}")
+    return ", ".join(ranges)
+
+
+def compact_ollama_stage2_context(
+    candidate_media: Optional[Dict[str, Any]],
+    library_candidates: Optional[List[Dict[str, Any]]],
+    manual_import_files: List[Dict[str, Any]],
+    existing_disk_files: List[Dict[str, Any]],
+    known_episodes: Optional[List[Dict[str, Any]]] = None,
+) -> Tuple[Optional[List[Dict[str, Any]]], List[Dict[str, Any]], Any, Any]:
+    """
+    Ultra-lean context compactor specifically tailored for local Ollama models:
+    1. Prunes library_candidates completely if candidate_media is already known by *arr (saving 500-1000 tokens!).
+       If candidate_media is null/missing, retains only the top 5 library candidates.
+    2. Caps candidate_files at 10 items (instead of 25).
+    3. Transforms existing on-disk files into compact contiguous range strings (e.g. 'E01-E06 (1080p, CF:75)').
+    4. Transforms known_episodes into compact missing episode range summaries.
+    """
+    # 1. Prune library candidates
+    if candidate_media and candidate_media.get("id"):
+        pruned_library = None
+    else:
+        pruned_library = (library_candidates or [])[:5]
+
+    # 2. Cap candidate files at 10
+    compacted_candidates = manual_import_files[:10]
+
+    # 3. Compact existing disk files
+    if not existing_disk_files:
+        compacted_disk: Any = []
+    elif len(existing_disk_files) <= 4:
+        compacted_disk = existing_disk_files
+    else:
+        grouped: Dict[Tuple[Any, Any, Any], List[int]] = defaultdict(list)
+        for ef in existing_disk_files:
+            s_num = ef.get("season")
+            ep_num = ef.get("episode")
+            qual = ef.get("quality")
+            cf = ef.get("customFormatScore")
+            if ep_num is not None:
+                grouped[(s_num, qual, cf)].append(int(ep_num))
+        compacted_disk = [
+            {
+                "season": s,
+                "on_disk": f"{format_episode_ranges(eps)} ({q or 'Unknown'}, CF:{cf if cf is not None else 0})",
+                "count": len(eps),
+            }
+            for (s, q, cf), eps in sorted(grouped.items(), key=lambda x: (x[0][0] is None, x[0][0]))
+        ]
+
+    # 4. Compact known episodes
+    if not known_episodes:
+        compacted_known: Any = None
+    else:
+        by_season: Dict[Any, Dict[str, Any]] = defaultdict(
+            lambda: {"total": 0, "missing": [], "on_disk": []}
+        )
+        for ep in known_episodes:
+            s_num = ep.get("season")
+            ep_num = ep.get("episode")
+            has_file = bool(ep.get("hasFile", False))
+            s_entry = by_season[s_num]
+            s_entry["total"] += 1
+            if ep_num is not None:
+                if has_file:
+                    s_entry["on_disk"].append(int(ep_num))
+                else:
+                    s_entry["missing"].append(int(ep_num))
+
+        compacted_known = [
+            {
+                "season": s,
+                "total_episodes": info["total"],
+                "missing": format_episode_ranges(info["missing"]),
+            }
+            for s, info in sorted(by_season.items(), key=lambda x: (x[0] is None, x[0]))
+        ]
+
+    return pruned_library, compacted_candidates, compacted_disk, compacted_known
+
+
 def compact_stage2_context(
     manual_import_files: List[Dict[str, Any]],
     existing_disk_files: List[Dict[str, Any]],

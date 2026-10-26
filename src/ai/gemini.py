@@ -168,22 +168,27 @@ class GeminiProvider(BaseAIProvider):
         prompt: str,
         schema_desc: str,
         operation: str = "ai_query",
-        item_title: Optional[str] = None
+        item_title: Optional[str] = None,
+        system_instruction: Optional[str] = None,
     ) -> Tuple[Optional[dict], str, Optional[str]]:
         today_str = datetime.now().strftime("%Y-%m-%d")
-        full_prompt = (
+        default_persona = (
             "You are an expert TV and Movie media parser assistant for the *arr suite (Sonarr/Radarr).\n"
             f"Current Date: {today_str}.\n"
-            "Your job is to accurately match messy release filenames, Chinese/Asian Pinyin titles, and foreign characters to official media.\n"
-            f"{schema_desc}\n\n"
-            f"{prompt}"
+            "Your job is to accurately match messy release filenames, Chinese/Asian Pinyin titles, and foreign characters to official media."
         )
+        sys_text = f"{default_persona}\n\n{system_instruction}" if system_instruction else default_persona
+        full_prompt = f"[System Instruction]\n{sys_text}\n\n[User]\n{schema_desc}\n\n{prompt}"
+
         payload = {
+            "systemInstruction": {
+                "parts": [{"text": sys_text}]
+            },
             "contents": [
                 {
                     "parts": [
                         {
-                            "text": full_prompt
+                            "text": f"{schema_desc}\n\n{prompt}" if schema_desc else prompt
                         }
                     ]
                 }
@@ -498,6 +503,9 @@ class GeminiProvider(BaseAIProvider):
             f"Raw Files on Disk (if /manualimport found 0): {json.dumps((raw_disk_files or [])[:30], ensure_ascii=False)}\n"
             f"Existing Imported Files Already on Disk: {json.dumps(comp_existing, ensure_ascii=False)}\n"
             f"Known Episodes in Series (if TV): {json.dumps(comp_known, ensure_ascii=False)}\n\n"
+            f"REQUIRED JSON OUTPUT SCHEMA:\n{schema}"
+        )
+        system_instruction = (
             "Stage 2 Unified Import vs. Reject Evaluation Rules:\n"
             "1. Identity & Matching Verification (CRITICAL):\n"
             "   - Verify whether the release title genuinely corresponds to Candidate Media (or one of Library Candidates, accounting for aliases, foreign/translated titles, Pinyin, Romaji, and festival/theatrical release year +/- 1).\n"
@@ -513,14 +521,14 @@ class GeminiProvider(BaseAIProvider):
             "   - 'import': The release matches the target media AND at least one valid video file is either missing on disk or a genuine quality upgrade. Populate matched_media_id and files_to_import (with season_number and episode_numbers for TV series).\n"
             "   - 'reject_keep_in_client': The release is a quality downgrade/not an upgrade over existing disk files, OR is the wrong series/movie or unwanted language. (Preserves files in download client while blocklisting in *arr).\n"
             "   - 'reject_delete': ONLY when the files are virus/malware, 100% disposable samples/trailers with no real media, or corrupt/unusable files. (Deletes from client and blocklists).\n"
-            "   - 'dismiss_pack': A multi-episode/season pack where needed episodes were already imported and remaining episodes are missing or already satisfied on disk.\n\n"
-            f"REQUIRED JSON OUTPUT SCHEMA:\n{schema}"
+            "   - 'dismiss_pack': A multi-episode/season pack where needed episodes were already imported and remaining episodes are missing or already satisfied on disk."
         )
         data, raw_text, parse_err = await self._call_gemini_with_raw(
             prompt,
             schema,
             operation="evaluate_import_decision",
-            item_title=release_title
+            item_title=release_title,
+            system_instruction=system_instruction,
         )
         val_errors = (
             [parse_err]

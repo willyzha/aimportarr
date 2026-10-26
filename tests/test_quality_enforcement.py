@@ -928,7 +928,7 @@ class QualityEnforcementTests(unittest.IsolatedAsyncioTestCase):
                 ],
             )
 
-            mock_stage2_call.assert_called_once()
+            self.assertEqual(mock_stage2_call.call_count, 2)
             mock_stage3_call.assert_called_once()
             self.assertEqual(mock_stage3_call.call_args.kwargs["operation"], "stage3_output_interpreter")
             self.assertEqual(result.decision, "import")

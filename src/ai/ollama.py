@@ -17,6 +17,7 @@ from .base import (
     AliasVerificationResult,
     AIProviderError,
     compact_stage2_context,
+    compact_ollama_stage2_context,
     validate_stage1_payload,
     validate_stage2_payload,
     validate_backfill_payload,
@@ -77,22 +78,24 @@ class OllamaProvider(BaseAIProvider):
         user_prompt: str,
         operation: str = "ai_query",
         item_title: Optional[str] = None,
-    ) -> Tuple[Optional[dict], str, Optional[str]]:
+        response_format: Optional[str] = "json",
+    ) -> Tuple[Optional[Any], str, Optional[str]]:
         options = {"temperature": 0.1}
         if self.num_gpu is not None:
             options["num_gpu"] = self.num_gpu
 
         full_prompt = f"[System]\n{system_prompt}\n\n[User]\n{user_prompt}"
-        payload = {
+        payload: Dict[str, Any] = {
             "model": self.model,
             "messages": [
                 {"role": "system", "content": system_prompt},
                 {"role": "user", "content": user_prompt}
             ],
-            "format": "json",
             "stream": False,
             "options": options
         }
+        if response_format:
+            payload["format"] = response_format
 
         start_time = time.time()
         try:
@@ -147,11 +150,29 @@ class OllamaProvider(BaseAIProvider):
             response_text=raw_text,
         )
 
-        try:
-            parsed = json.loads(raw_text)
-            return parsed, raw_text, None
-        except json.JSONDecodeError as e:
-            return None, raw_text, f"Invalid JSON syntax: {e}"
+        if response_format == "json":
+            try:
+                parsed = json.loads(raw_text)
+                return parsed, raw_text, None
+            except json.JSONDecodeError as e:
+                return None, raw_text, f"Invalid JSON syntax: {e}"
+        return None, raw_text, None
+
+    async def _call_ollama_text(
+        self,
+        system_prompt: str,
+        user_prompt: str,
+        operation: str = "ai_query",
+        item_title: Optional[str] = None
+    ) -> str:
+        _, raw_text, _ = await self._call_ollama_with_raw(
+            system_prompt=system_prompt,
+            user_prompt=user_prompt,
+            operation=operation,
+            item_title=item_title,
+            response_format=None,
+        )
+        return raw_text.strip()
 
     async def _call_ollama(
         self,
@@ -287,59 +308,104 @@ class OllamaProvider(BaseAIProvider):
         raw_disk_files: Optional[List[str]] = None,
     ) -> Stage2DecisionResult:
         today_str = datetime.now().strftime("%Y-%m-%d")
-        comp_candidates, comp_existing, comp_known = compact_stage2_context(
+        pruned_library, comp_candidates, comp_disk, comp_known = compact_ollama_stage2_context(
+            candidate_media=candidate_media,
+            library_candidates=library_candidates,
             manual_import_files=manual_import_files,
             existing_disk_files=existing_disk_files,
             known_episodes=known_episodes,
         )
+
+        # ------------------------------------------------------------------
+        # PASS 1: Deliberation Pass (evaluate_import_decision_thinking)
+        # Unconstrained conversational reasoning to simulate deep CoT thinking
+        # ------------------------------------------------------------------
+        thinking_system_prompt = (
+            f"You are an expert TV and movie media parser and quality evaluator. Current date: {today_str}.\n"
+            "Deliberate on the release and candidate media carefully. "
+            "Write a concise analysis covering:\n"
+            "1. Identity: Does the release match Candidate Media (or an alias/translation)? "
+            "Never assume an ID match is correct if titles represent completely different works.\n"
+            "2. Quality/Upgrade: Does this release fill missing content (hasFile=false) or upgrade on-disk files? "
+            "If it is equal or lower quality than what's already on disk, it is a downgrade.\n"
+            "3. Action & Files: State clearly: import (which episode/movie files, excluding samples), "
+            "reject_keep_in_client (downgrade or wrong media), or dismiss_pack."
+        )
+        thinking_user_prompt = (
+            f"Media Type: {media_type}\n"
+            f"Release Title: {release_title}\n"
+            f"Folder Name: {folder_name}\n"
+            f"Queue Status Messages: {json.dumps(queue_messages[:6], ensure_ascii=False)}\n"
+            f"Candidate Media: {json.dumps(candidate_media, ensure_ascii=False)}\n"
+        )
+        if pruned_library:
+            thinking_user_prompt += f"Library Candidates: {json.dumps(pruned_library, ensure_ascii=False)}\n"
+        thinking_user_prompt += (
+            f"Candidate Files: {json.dumps(comp_candidates, ensure_ascii=False)}\n"
+            f"On-Disk Existing Files: {json.dumps(comp_disk, ensure_ascii=False)}\n"
+        )
+        if comp_known:
+            thinking_user_prompt += f"Known Episodes: {json.dumps(comp_known, ensure_ascii=False)}\n"
+        if raw_disk_files and not comp_candidates:
+            thinking_user_prompt += f"Raw Disk Files: {json.dumps(raw_disk_files[:10], ensure_ascii=False)}\n"
+        thinking_user_prompt += "\nWrite your concise 3-point expert deliberation:"
+
+        deliberation_text = await self._call_ollama_text(
+            system_prompt=thinking_system_prompt,
+            user_prompt=thinking_user_prompt,
+            operation="evaluate_import_decision_thinking",
+            item_title=release_title,
+        )
+
+        # ------------------------------------------------------------------
+        # PASS 2: Structured JSON Extraction Pass (evaluate_import_decision_json)
+        # Pure translation from Pass 1 deliberation into strict target JSON schema
+        # ------------------------------------------------------------------
         target_schema = (
             "{\n"
-            '  "reasoning": "step-by-step analysis: 1. check identity; 2. check quality upgrade vs downgrade; 3. determine files and decision",\n'
+            '  "reasoning": "concise summary of identity, quality check, and file choices",\n'
             '  "decision": "import" | "reject_keep_in_client" | "reject_delete" | "dismiss_pack",\n'
-            '  "matched_media_id": integer or null (MUST be series/movie id from Candidate Media or Library Candidates, NOT an episode id),\n'
+            '  "matched_media_id": integer or null (series/movie ID from Candidate Media or Library Candidates, NOT an episode id),\n'
             '  "files_to_import": [{"path": "exact file path string", "season_number": integer or null, "episode_numbers": [integer]}],\n'
             '  "category_tag": "short_snake_case_reason",\n'
             '  "confidence": float (0.0 to 1.0)\n'
             "}"
         )
-        system_prompt = (
-            f"You are an expert media import and quality evaluator for Sonarr and Radarr. Current date: {today_str}. "
-            "Respond ONLY with a valid JSON object with keys: "
-            "'reasoning' (string), "
-            "'decision' ('import' | 'reject_keep_in_client' | 'reject_delete' | 'dismiss_pack'), "
-            "'matched_media_id' (integer or null), "
-            "'files_to_import' (list of objects with 'path', 'season_number', 'episode_numbers'), "
-            "'category_tag' (string), and 'confidence' (float 0.0-1.0)."
+        json_system_prompt = (
+            f"You are an expert JSON schema translator for media imports. Current date: {today_str}. "
+            "Translate the expert analysis below into ONLY a valid JSON object matching the required schema."
         )
-        user_prompt = (
-            f"Media Type: {media_type}\n"
+        candidate_file_stems = [
+            {
+                "path": m.get("path"),
+                "name": m.get("name"),
+                "size": m.get("size"),
+                "episodes": [
+                    {"season": e.get("seasonNumber"), "episode": e.get("episodeNumber")}
+                    for e in m.get("episodes", [])
+                ],
+            }
+            for m in comp_candidates
+        ]
+        json_user_prompt = (
             f"Release Title: {release_title}\n"
-            f"Folder Name: {folder_name}\n"
-            f"Queue Status Messages: {json.dumps(queue_messages[:10], ensure_ascii=False)}\n"
             f"Candidate Media: {json.dumps(candidate_media, ensure_ascii=False)}\n"
-            f"Library Candidates: {json.dumps((library_candidates or [])[:40], ensure_ascii=False)}\n"
-            f"Candidate Files (/manualimport): {json.dumps(comp_candidates, ensure_ascii=False)}\n"
-            f"Raw Files on Disk: {json.dumps((raw_disk_files or [])[:25], ensure_ascii=False)}\n"
-            f"Existing Imported Files on Disk: {json.dumps(comp_existing, ensure_ascii=False)}\n"
-            f"Known Episodes: {json.dumps(comp_known, ensure_ascii=False)}\n\n"
-            "Rules:\n"
-            "1. Identity & Matching Verification (CRITICAL): Verify that the release title genuinely matches Candidate Media (or one of Library Candidates, accounting for aliases, Romaji/Pinyin, foreign titles, and release year ±1).\n"
-            "   - CAUTION: Do NOT assume a match simply because Sonarr/Radarr matched it by ID or grab history! If the release title represents a DIFFERENT show or movie (e.g. 'A Love Other Than Yours' vs '100 Days of Deception'), they are different works. If it does not match Candidate Media, check Library Candidates (e.g. wrong ID grab); if it matches another library candidate needing this media, you may set 'matched_media_id' to that candidate. If it does not match any monitored media, choose 'reject_keep_in_client' with category_tag 'wrong_media'.\n"
-            "   - Reasoning MUST explicitly justify the title match. Stating 'matched via grab history' is NOT valid justification for import.\n"
-            "2. Upgrade vs. Missing Content Evaluation:\n"
-            "   - If the target episode or movie is MISSING on disk (hasFile == false), prioritize importing it unless corrupt, disposable sample, or unwanted language.\n"
-            "   - If ALREADY on disk, check if existing file has equal or higher quality/CF score; if downgrade or equal quality, choose 'reject_keep_in_client'.\n"
-            "3. Sample & Extra Filtering: Exclude disposable preview clips, trailers, promos, or sample files (often under 100MB or named 'sample', 'trailer', 'extra') from files_to_import.\n"
-            "4. Choose 'reject_delete' ONLY for virus/malware, corrupt files, or 100% disposable sample clips.\n"
-            "5. Choose 'dismiss_pack' for partially imported season packs where remaining episodes are already satisfied.\n"
-            "6. Choose 'import' and populate matched_media_id and files_to_import if valid and an upgrade/missing file.\n\n"
-            f"REQUIRED JSON OUTPUT SCHEMA (do NOT use 'action'; use 'decision' and include 'confidence' and 'reasoning'):\n{target_schema}"
+            f"Candidate Files: {json.dumps(candidate_file_stems, ensure_ascii=False)}\n\n"
+            f"Expert Deliberation:\n{deliberation_text}\n\n"
+            "Instructions:\n"
+            "1. Output a JSON object matching the schema below based on the Expert Deliberation.\n"
+            "2. 'reasoning' must summarize the identity, quality, and file choice.\n"
+            "3. 'decision' must be 'import', 'reject_keep_in_client', 'reject_delete', or 'dismiss_pack'.\n"
+            "4. 'matched_media_id' must be the series/movie ID.\n"
+            "5. 'files_to_import' must list the approved video file paths (excluding sample files).\n\n"
+            f"REQUIRED JSON OUTPUT SCHEMA:\n{target_schema}"
         )
         res, raw_text, parse_err = await self._call_ollama_with_raw(
-            system_prompt,
-            user_prompt,
-            operation="evaluate_import_decision",
-            item_title=release_title
+            system_prompt=json_system_prompt,
+            user_prompt=json_user_prompt,
+            operation="evaluate_import_decision_json",
+            item_title=release_title,
+            response_format="json",
         )
         val_errors = (
             [parse_err]
@@ -348,7 +414,7 @@ class OllamaProvider(BaseAIProvider):
         )
         if val_errors:
             res = await self._repair_with_stage3(
-                stage_name="evaluate_import_decision",
+                stage_name="evaluate_import_decision_json",
                 raw_output=raw_text,
                 validation_errors=val_errors,
                 target_schema=target_schema,
@@ -387,13 +453,16 @@ class OllamaProvider(BaseAIProvider):
                         episode_numbers=[int(x) for x in ep_nums],
                     )
                 )
+        reasoning_summary = res.get("reasoning", "").strip()
+        combined_reasoning = f"{reasoning_summary} | Thinking: {deliberation_text}" if deliberation_text else reasoning_summary
+
         return Stage2DecisionResult(
             decision=str(res.get("decision", "reject_keep_in_client")),
             matched_media_id=int(res["matched_media_id"]) if res.get("matched_media_id") is not None else None,
             files_to_import=files,
             category_tag=str(res.get("category_tag", "ai_decision")),
             confidence=float(res.get("confidence", 0.0)),
-            reasoning=str(res.get("reasoning", "")),
+            reasoning=combined_reasoning,
             model_name=self.name,
         )
 
