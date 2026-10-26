@@ -1178,16 +1178,38 @@ class SonarrClient:
                 # Anti-hallucination guard on ID_MATCH: verify title actually corresponds to media
                 if initial_category == ErrorCategory.ID_MATCH:
                     if not is_plausible_title_match(title, candidate_title, target_aliases):
-                        logger.warning(
-                            f"  ✖ Overriding Stage 2 AI 'import' decision for '{title}': release title has "
-                            f"zero title/alias overlap with '{candidate_title}'. Rejecting false-positive ID match."
+                        logger.info(
+                            f"  🔍 ID_MATCH has zero direct word overlap with '{candidate_title}'. "
+                            f"Running focused Second-Opinion AI Identity Confirmation for '{title}'..."
                         )
-                        stage2.decision = "reject_keep_in_client"
-                        stage2.category_tag = "wrong_media"
-                        stage2.reasoning = (
-                            f"Overridden false-positive ID match: release title '{title}' does not match "
-                            f"target series '{candidate_title}'."
+                        alias_check = await ai_provider.verify_media_alias(
+                            release_title=title,
+                            candidate_media={
+                                "id": series_info.get("id") if series_info else None,
+                                "title": candidate_title,
+                                "year": series_info.get("year") if series_info else None,
+                                "aliases": target_aliases,
+                            },
+                            media_type="series",
                         )
+                        if not alias_check.is_same_media or alias_check.confidence < self.min_confidence:
+                            logger.warning(
+                                f"  ✖ Second-Opinion AI rejected identity: '{title}' is NOT an alias or translation of "
+                                f"'{candidate_title}' ({alias_check.media_relationship}, confidence {alias_check.confidence:.0%}): {alias_check.reasoning}"
+                            )
+                            stage2.decision = "reject_keep_in_client"
+                            stage2.category_tag = "wrong_media"
+                            stage2.reasoning = (
+                                f"Rejected unrelated media (confirmed by AI identity verification): "
+                                f"release '{title}' is not an alias or translation of '{candidate_title}'. {alias_check.reasoning}"
+                            )
+                        else:
+                            logger.info(
+                                f"  ✔ Second-Opinion AI confirmed identity: '{title}' is a verified alias/translation of "
+                                f"'{candidate_title}' ({alias_check.media_relationship}, confidence {alias_check.confidence:.0%}): {alias_check.reasoning}"
+                            )
+                            stage2.reasoning = f"{stage2.reasoning} | Verified alias: {alias_check.reasoning}"
+
 
             if stage2.decision == "import":
                 if not series_id:

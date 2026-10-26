@@ -1685,6 +1685,14 @@ class QualityEnforcementTests(unittest.IsolatedAsyncioTestCase):
              patch.object(self.sonarr, "resolve_queue_item", new_callable=AsyncMock, return_value=True) as mock_resolve:
 
             self.mock_ai.evaluate_import_decision = AsyncMock(return_value=hallucinated_stage2)
+            # Default verify_media_alias returns is_same_media=False
+            from src.ai.base import AliasVerificationResult
+            self.mock_ai.verify_media_alias = AsyncMock(return_value=AliasVerificationResult(
+                is_same_media=False,
+                media_relationship="completely_different_media",
+                confidence=0.98,
+                reasoning="These are two separate Korean drama series with unrelated plots.",
+            ))
 
             res = await self.sonarr.process_queue_item(item=queue_item, ai_provider=self.mock_ai)
 
@@ -1695,6 +1703,71 @@ class QualityEnforcementTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(mock_resolve.call_args[1]["blocklist"], True)
             self.assertEqual(mock_resolve.call_args[1]["remove_from_client"], False)
             self.assertFalse(res)
+
+    async def test_sonarr_id_match_second_opinion_confirms_valid_alias_allows_import(self):
+        """When Sonarr ID_MATCH has zero direct word overlap but second-opinion AI confirms it is an authentic alias, import is allowed."""
+        from src.ai.base import Stage2DecisionResult, ApprovedFileItem, AliasVerificationResult
+
+        queue_item = {
+            "id": 8889,
+            "title": "Foreign.Working.Title.S01E01.1080p",
+            "status": "warning",
+            "trackedDownloadStatus": "warning",
+            "statusMessages": [
+                {"messages": ["Found matching series via grab history, but release was matched to series by ID."]}
+            ],
+            "series": {
+                "id": 500,
+                "title": "Official English Series",
+                "year": 2026,
+                "alternateTitles": [],
+            },
+            "outputPath": "/downloads/Foreign.Working.Title.S01E01.1080p",
+            "downloadId": "dl-valid-alias",
+        }
+
+        manual_items = [{
+            "path": "/downloads/Foreign.Working.Title.S01E01.mkv",
+            "name": "Foreign.Working.Title.S01E01.mkv",
+            "rejections": [],
+            "episodes": [{"id": 50001, "seasonNumber": 1, "episodeNumber": 1}],
+            "quality": {"quality": {"id": 3, "name": "WEBDL-1080p"}},
+        }]
+
+        stage2_decision = Stage2DecisionResult(
+            decision="import",
+            confidence=0.95,
+            reasoning="Authentic working title for this series.",
+            matched_media_id=500,
+            files_to_import=[
+                ApprovedFileItem(
+                    path="/downloads/Foreign.Working.Title.S01E01.mkv",
+                    season_number=1,
+                    episode_numbers=[1]
+                )
+            ],
+            category_tag="id_match",
+            model_name="Gemini",
+        )
+
+        with patch.object(self.sonarr, "get_manual_import_items", new_callable=AsyncMock, return_value=manual_items), \
+             patch.object(self.sonarr, "get_series_episodes", new_callable=AsyncMock, return_value=[]), \
+             patch.object(self.sonarr, "get_episode_files", new_callable=AsyncMock, return_value=[]), \
+             patch.object(self.sonarr, "get_all_series", new_callable=AsyncMock, return_value=[queue_item["series"]]), \
+             patch.object(self.sonarr, "trigger_manual_import", new_callable=AsyncMock, return_value=True) as mock_trigger:
+
+            self.mock_ai.evaluate_import_decision = AsyncMock(return_value=stage2_decision)
+            self.mock_ai.verify_media_alias = AsyncMock(return_value=AliasVerificationResult(
+                is_same_media=True,
+                media_relationship="alternate_alias",
+                confidence=0.95,
+                reasoning="Confirmed verified international working title.",
+            ))
+
+            res = await self.sonarr.process_queue_item(item=queue_item, ai_provider=self.mock_ai)
+            self.assertTrue(res)
+            mock_trigger.assert_called_once()
+
 
 
 

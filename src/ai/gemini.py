@@ -16,12 +16,14 @@ from .base import (
     BackfillPackMatchResult,
     EpisodeMatchItem,
     BackfillBulkEpisodesMatchResult,
+    AliasVerificationResult,
     AIProviderError,
     compact_stage2_context,
     validate_stage1_payload,
     validate_stage2_payload,
     validate_backfill_payload,
     validate_bulk_episodes_payload,
+    validate_alias_payload,
     build_stage3_repair_prompt,
 )
 
@@ -828,3 +830,76 @@ class GeminiProvider(BaseAIProvider):
             reasoning=str(data.get("reasoning", "")),
             model_name=self.name,
         )
+
+    async def verify_media_alias(
+        self,
+        release_title: str,
+        candidate_media: Dict[str, Any],
+        media_type: str = "series",
+    ) -> AliasVerificationResult:
+        """
+        Focused zero-shot identity verification: Confirm whether a release title is genuinely an
+        alternate title, translation, or alias of candidate_media, or an entirely different show/movie.
+        """
+        media_label = "TV Series" if media_type == "series" else "Movie"
+        target_title = candidate_media.get("title", "")
+        target_year = candidate_media.get("year", "")
+        target_aliases = candidate_media.get("aliases", [])
+
+        schema = (
+            "Return JSON adhering strictly to this schema:\n"
+            "{\n"
+            '  "is_same_media": boolean,\n'
+            '  "media_relationship": "identical" | "official_translation" | "alternate_alias" | "completely_different_media",\n'
+            '  "confidence": float (0.0 to 1.0),\n'
+            '  "reasoning": "step-by-step verification explaining whether the release title refers to this specific production or a different work"\n'
+            "}"
+        )
+        prompt = (
+            f"You are an expert entertainment metadata investigator specializing in global film and television titles.\n"
+            f"Current Date: {datetime.now().strftime('%Y-%m-%d')}.\n\n"
+            f"Task: Determine if the release filename refers to the Target {media_label}, OR if it is an entirely DIFFERENT production.\n\n"
+            f"Target {media_label}: {target_title} ({target_year})\n"
+            f"Known Aliases/Alternate Titles: {json.dumps(target_aliases, ensure_ascii=False)}\n"
+            f"Release Filename: {release_title}\n\n"
+            "Investigation Instructions:\n"
+            f"1. Is '{release_title}' the original title, an official localized title, an international translation (e.g. English, CJK, Cyrillic, Pinyin, Romaji), or a verified working title of the {media_label} '{target_title}' ({target_year})?\n"
+            f"2. CRITICAL CAUTION: Different productions can have separate releases released in the same year or on similar networks. If the release title refers to a distinct, separate {media_label} (for example, 'A Love Other Than Yours' vs '100 Days of Deception'), they are TWO COMPLETELY DIFFERENT PRODUCTIONS.\n"
+            "3. If they are different productions, set is_same_media: false and media_relationship: 'completely_different_media'.\n"
+            "4. Only set is_same_media: true if you have high confidence that this release is genuinely the exact same production.\n\n"
+            f"REQUIRED JSON OUTPUT SCHEMA:\n{schema}"
+        )
+        data, raw_text, parse_err = await self._call_gemini_with_raw(
+            prompt,
+            schema,
+            operation="verify_media_alias",
+            item_title=f"{target_title} vs {release_title}",
+        )
+        val_errors = [parse_err] if parse_err else validate_alias_payload(data)
+        if val_errors:
+            data = await self._repair_with_stage3(
+                stage_name="verify_media_alias",
+                raw_output=raw_text,
+                validation_errors=val_errors,
+                target_schema=schema,
+                reference_context={
+                    "target_media": candidate_media,
+                    "release_title": release_title,
+                },
+                item_title=f"{target_title} vs {release_title}",
+            )
+            post_errors = validate_alias_payload(data)
+            if post_errors:
+                raise AIProviderError(
+                    f"Stage 3 AI Output Interpreter failed to repair alias verification output: {'; '.join(post_errors)}"
+                )
+
+        assert isinstance(data, dict)
+        return AliasVerificationResult(
+            is_same_media=bool(data.get("is_same_media", False)),
+            media_relationship=str(data.get("media_relationship", "completely_different_media")),
+            confidence=float(data.get("confidence", 0.0)),
+            reasoning=str(data.get("reasoning", "")),
+            model_name=self.name,
+        )
+

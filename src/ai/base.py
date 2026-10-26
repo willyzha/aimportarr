@@ -282,6 +282,29 @@ def validate_bulk_episodes_payload(
     return errors
 
 
+def validate_alias_payload(data: Any) -> List[str]:
+    """Validate raw parsed JSON for AliasVerificationResult."""
+    if not isinstance(data, dict):
+        return ["Response must be a JSON object"]
+    errors: List[str] = []
+    if "is_same_media" not in data:
+        errors.append("Missing required key 'is_same_media' (boolean)")
+    elif not isinstance(data.get("is_same_media"), bool):
+        errors.append(f"'is_same_media' must be a boolean, got {type(data.get('is_same_media')).__name__}")
+
+    conf = data.get("confidence")
+    if conf is None or not isinstance(conf, (int, float)) or isinstance(conf, bool):
+        errors.append(f"Missing or non-numeric 'confidence': got {conf!r}")
+    elif not (0.0 <= float(conf) <= 1.0):
+        errors.append(f"'confidence' {conf} out of range [0.0, 1.0]")
+
+    reasoning = data.get("reasoning")
+    if not isinstance(reasoning, str) or not reasoning.strip():
+        errors.append("Missing or empty 'reasoning' string")
+
+    return errors
+
+
 def build_stage3_repair_prompt(
     stage_name: str,
     raw_output: str,
@@ -367,6 +390,18 @@ class BackfillBulkEpisodesMatchResult(BaseModel):
     matches: List[EpisodeMatchItem] = Field(default_factory=list, description="Per-episode matching decisions")
     raw_response: str = Field(default="", description="Raw response text")
     model_name: Optional[str] = Field(default=None, description="Name of the model or provider that generated this result")
+
+
+class AliasVerificationResult(BaseModel):
+    is_same_media: bool = Field(default=False, description="True if release title represents the exact same media (original, translation, or alias)")
+    media_relationship: str = Field(
+        default="completely_different_media",
+        description="One of: 'identical', 'official_translation', 'alternate_alias', 'completely_different_media'"
+    )
+    confidence: float = Field(default=0.0, ge=0.0, le=1.0, description="Confidence score between 0.0 and 1.0")
+    reasoning: str = Field(default="", description="Explanation of whether release title and candidate media are the same work")
+    model_name: Optional[str] = Field(default=None, description="Name of the model or provider")
+
 
     def __init__(self, **kwargs):
         if "matches" in kwargs and isinstance(kwargs["matches"], list):
@@ -469,3 +504,22 @@ class BaseAIProvider(ABC):
         'Unknown Movie' / rejected releases from Radarr search, identify the best matching valid movie release.
         """
         return BackfillPackMatchResult(matched_guid=None, confidence=0.0, reasoning="Not implemented")
+
+    async def verify_media_alias(
+        self,
+        release_title: str,
+        candidate_media: Dict[str, Any],
+        media_type: str = "series",
+    ) -> AliasVerificationResult:
+        """
+        Focused zero-shot identity verification: Confirm whether a release title is genuinely an
+        alternate title, translation, or alias of candidate_media, or an entirely different show/movie.
+        """
+        return AliasVerificationResult(
+            is_same_media=False,
+            media_relationship="completely_different_media",
+            confidence=0.0,
+            reasoning="verify_media_alias not implemented",
+            model_name=self.name,
+        )
+
