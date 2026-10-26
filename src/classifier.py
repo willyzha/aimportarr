@@ -171,3 +171,54 @@ def resolve_import_quality(
         },
     }
 
+
+def is_plausible_title_match(
+    release_title: str,
+    media_title: str,
+    aliases: Optional[List[str]] = None,
+) -> bool:
+    """
+    Check if a release title has plausible identity alignment with a media title or its aliases.
+    Prevents hallucinated imports where an AI blindly approves importing a release simply because
+    Sonarr/Radarr matched it by ID or grab history (e.g. 'A Love Other Than Yours' into '100 Days of Deception').
+    """
+    if not release_title or not media_title:
+        return False
+
+    # 1. Non-ASCII characters (e.g. CJK, Cyrillic, Arabic) often translate into English titles,
+    # so we allow AI translation to hold for non-Latin releases.
+    if any(ord(c) > 127 for c in release_title) or any(ord(c) > 127 for c in media_title):
+        return True
+
+    import re
+    stopwords = {"a", "an", "the", "and", "or", "of", "in", "on", "at", "to", "for", "with", "by", "from", "s", "season", "complete"}
+
+    def tokenize(s: str) -> set:
+        s = re.sub(
+            r"\b(1080p|720p|2160p|4k|bluray|web-dl|webdl|webrip|h264|x264|h265|x265|hevc|ddp2|aac|amzn|nf|repack|proper|ldrip|dvdrip)\b",
+            " ",
+            s,
+            flags=re.I,
+        )
+        words = re.findall(r"[a-z0-9]+", s.lower())
+        return {w for w in words if w not in stopwords and not w.isdigit() and len(w) > 1}
+
+    rel_tokens = tokenize(release_title)
+    media_tokens = tokenize(media_title)
+
+    if rel_tokens and media_tokens and bool(rel_tokens & media_tokens):
+        return True
+
+    for alias in aliases or []:
+        if not alias:
+            continue
+        if any(ord(c) > 127 for c in alias):
+            return True
+        alias_tokens = tokenize(alias)
+        if rel_tokens and alias_tokens and bool(rel_tokens & alias_tokens):
+            return True
+
+    return False
+
+
+

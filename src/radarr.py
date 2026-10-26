@@ -17,6 +17,7 @@ from .classifier import (
     QUALITY_REJECTION_KEYWORDS,
     ALREADY_IMPORTED_KEYWORDS,
     resolve_import_quality,
+    is_plausible_title_match,
 )
 from .config import ExtractionConfig, MissingMovieSearchConfig
 from .extractor import (
@@ -869,7 +870,7 @@ class RadarrClient:
 
             all_movies: List[Dict[str, Any]] = []
             library_candidates: Optional[List[Dict[str, Any]]] = None
-            if not movie_info:
+            if not movie_info or initial_category == ErrorCategory.ID_MATCH:
                 all_movies = await self.get_all_movies()
                 library_candidates = [
                     {
@@ -963,14 +964,35 @@ class RadarrClient:
                 return False
 
             if stage2.decision == "import":
-                if not movie_info and stage2.matched_media_id:
-                    movie_info = next(
+                if stage2.matched_media_id and (not movie_info or movie_info.get("id") != stage2.matched_media_id):
+                    if not all_movies:
+                        all_movies = await self.get_all_movies()
+                    matched_movie = next(
                         (m for m in all_movies if m.get("id") == stage2.matched_media_id),
                         None,
                     )
-                    if movie_info:
+                    if matched_movie:
+                        movie_info = matched_movie
                         movie_id = movie_info.get("id")
 
+                candidate_title = movie_info.get("title", title) if movie_info else title
+                target_aliases = [a.get("title") for a in (movie_info.get("alternateTitles", []) if movie_info else [])]
+
+                # Anti-hallucination guard on ID_MATCH: verify title actually corresponds to media
+                if initial_category == ErrorCategory.ID_MATCH:
+                    if not is_plausible_title_match(title, candidate_title, target_aliases):
+                        logger.warning(
+                            f"  ✖ Overriding Stage 2 AI 'import' decision for '{title}': release title has "
+                            f"zero title/alias overlap with '{candidate_title}'. Rejecting false-positive ID match."
+                        )
+                        stage2.decision = "reject_keep_in_client"
+                        stage2.category_tag = "wrong_media"
+                        stage2.reasoning = (
+                            f"Overridden false-positive ID match: release title '{title}' does not match "
+                            f"target movie '{candidate_title}'."
+                        )
+
+            if stage2.decision == "import":
                 if not movie_id:
                     metrics.record_processed_item(
                         app="Radarr",

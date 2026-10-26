@@ -17,6 +17,7 @@ from .classifier import (
     QUALITY_REJECTION_KEYWORDS,
     ALREADY_IMPORTED_KEYWORDS,
     resolve_import_quality,
+    is_plausible_title_match,
 )
 from .config import ExtractionConfig, SeasonPackBackfillConfig, MissingEpisodeRetryConfig
 from .extractor import (
@@ -1032,7 +1033,7 @@ class SonarrClient:
 
             all_series: List[Dict[str, Any]] = []
             library_candidates: Optional[List[Dict[str, Any]]] = None
-            if not series_info:
+            if not series_info or initial_category == ErrorCategory.ID_MATCH:
                 all_series = await self.get_all_series()
                 library_candidates = [
                     {
@@ -1159,15 +1160,36 @@ class SonarrClient:
 
             # Handle Stage 2 'import' decision
             if stage2.decision == "import":
-                if not series_info and stage2.matched_media_id:
-                    series_info = next(
+                if stage2.matched_media_id and (not series_info or series_info.get("id") != stage2.matched_media_id):
+                    if not all_series:
+                        all_series = await self.get_all_series()
+                    matched_series = next(
                         (s for s in all_series if s.get("id") == stage2.matched_media_id),
                         None,
                     )
-                    if series_info:
+                    if matched_series:
+                        series_info = matched_series
                         series_id = series_info.get("id")
                         all_episodes = await self.get_series_episodes(series_id)
 
+                candidate_title = series_info.get("title", title) if series_info else title
+                target_aliases = [a.get("title") for a in (series_info.get("alternateTitles", []) if series_info else [])]
+
+                # Anti-hallucination guard on ID_MATCH: verify title actually corresponds to media
+                if initial_category == ErrorCategory.ID_MATCH:
+                    if not is_plausible_title_match(title, candidate_title, target_aliases):
+                        logger.warning(
+                            f"  ✖ Overriding Stage 2 AI 'import' decision for '{title}': release title has "
+                            f"zero title/alias overlap with '{candidate_title}'. Rejecting false-positive ID match."
+                        )
+                        stage2.decision = "reject_keep_in_client"
+                        stage2.category_tag = "wrong_media"
+                        stage2.reasoning = (
+                            f"Overridden false-positive ID match: release title '{title}' does not match "
+                            f"target series '{candidate_title}'."
+                        )
+
+            if stage2.decision == "import":
                 if not series_id:
                     metrics.record_processed_item(
                         app="Sonarr",

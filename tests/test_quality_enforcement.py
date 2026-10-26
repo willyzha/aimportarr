@@ -1597,6 +1597,106 @@ class QualityEnforcementTests(unittest.IsolatedAsyncioTestCase):
         # Explicit allow_all=True returns True
         self.assertTrue(metrics.mark_item_for_retry(imp_id, allow_all=True))
 
+    def test_is_plausible_title_match(self):
+        """Verify is_plausible_title_match distinguishes matching vs completely unrelated titles."""
+        from src.classifier import is_plausible_title_match
+
+        # Case 1: Overlapping words
+        self.assertTrue(is_plausible_title_match(
+            "A.Love.Other.Than.Yours.S01E12.Who.Do.We.Love.the.Most.1080p",
+            "A Love Other Than Yours"
+        ))
+        self.assertTrue(is_plausible_title_match(
+            "Dark.Matter.2024.S02E10.1080p.WEB.H264-FLUX",
+            "Dark Matter"
+        ))
+
+        # Case 2: Alias match
+        self.assertTrue(is_plausible_title_match(
+            "Alternative.Title.S01E01",
+            "Official Title",
+            aliases=["Alternative Title"]
+        ))
+
+        # Case 3: Non-ASCII characters (allows translation)
+        self.assertTrue(is_plausible_title_match(
+            "黄金岛历险记LDRip.mkv",
+            "Adventurous Treasure Island"
+        ))
+
+        # Case 4: Completely unrelated Latin titles (the hallucinated false-positive bug!)
+        self.assertFalse(is_plausible_title_match(
+            "A.Love.Other.Than.Yours.S01E12.Who.Do.We.Love.the.Most.1080p.AMZN.WEB-DL.DDP2.0.H.264-MrHulk",
+            "100 Days of Deception"
+        ))
+
+    async def test_sonarr_id_match_overrides_hallucinated_ai_import_for_unrelated_title(self):
+        """When Sonarr queue item is an ID_MATCH, and AI hallucinates an import for an unrelated title, guard must reject it."""
+        from src.ai.base import Stage2DecisionResult, ApprovedFileItem
+
+        queue_item = {
+            "id": 8888,
+            "title": "A.Love.Other.Than.Yours.S01E12.Who.Do.We.Love.the.Most.1080p.AMZN.WEB-DL.DDP2.0.H.264-MrHulk",
+            "status": "warning",
+            "trackedDownloadStatus": "warning",
+            "statusMessages": [
+                {"messages": ["Found matching series via grab history, but release was matched to series by ID. Automatic import is not possible."]}
+            ],
+            "series": {
+                "id": 347,
+                "title": "100 Days of Deception",
+                "year": 2026,
+                "alternateTitles": [],
+            },
+            "outputPath": "/downloads/A.Love.Other.Than.Yours.S01E12.Who.Do.We.Love.the.Most.1080p.AMZN.WEB-DL.DDP2.0.H.264-MrHulk",
+            "downloadId": "dl-wrong-series",
+        }
+
+        manual_items = [{
+            "path": "/downloads/A.Love.Other.Than.Yours.S01E12.mkv",
+            "name": "A.Love.Other.Than.Yours.S01E12.mkv",
+            "rejections": [],
+            "episodes": [{"id": 24142, "seasonNumber": 1, "episodeNumber": 12}],
+            "quality": {"quality": {"id": 3, "name": "WEBDL-1080p"}},
+        }]
+
+        # Hallucinated Stage 2 AI result approving import into 347
+        hallucinated_stage2 = Stage2DecisionResult(
+            decision="import",
+            confidence=1.0,
+            reasoning="Matched to series ID 347 via grab history.",
+            matched_media_id=347,
+            files_to_import=[
+                ApprovedFileItem(
+                    path="/downloads/A.Love.Other.Than.Yours.S01E12.mkv",
+                    season_number=1,
+                    episode_numbers=[12]
+                )
+            ],
+            category_tag="id_match",
+            model_name="Gemini",
+        )
+
+        with patch.object(self.sonarr, "get_manual_import_items", new_callable=AsyncMock, return_value=manual_items), \
+             patch.object(self.sonarr, "get_series_episodes", new_callable=AsyncMock, return_value=[]), \
+             patch.object(self.sonarr, "get_episode_files", new_callable=AsyncMock, return_value=[]), \
+             patch.object(self.sonarr, "get_all_series", new_callable=AsyncMock, return_value=[queue_item["series"]]), \
+             patch.object(self.sonarr, "trigger_manual_import", new_callable=AsyncMock) as mock_trigger, \
+             patch.object(self.sonarr, "resolve_queue_item", new_callable=AsyncMock, return_value=True) as mock_resolve:
+
+            self.mock_ai.evaluate_import_decision = AsyncMock(return_value=hallucinated_stage2)
+
+            res = await self.sonarr.process_queue_item(item=queue_item, ai_provider=self.mock_ai)
+
+            # Import must NOT be triggered!
+            mock_trigger.assert_not_called()
+            # Must be resolved via reject_keep_in_client (blocklisted in Sonarr, kept in client)
+            mock_resolve.assert_called_once()
+            self.assertEqual(mock_resolve.call_args[1]["blocklist"], True)
+            self.assertEqual(mock_resolve.call_args[1]["remove_from_client"], False)
+            self.assertFalse(res)
+
+
 
 if __name__ == "__main__":
     unittest.main()
