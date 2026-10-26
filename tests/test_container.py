@@ -842,6 +842,13 @@ class ContainerSmokeTests(unittest.TestCase):
             self.assertEqual(len(mem_tok_page["items"]), 3)
             self.assertEqual(mem_tok_page["total"], 7)
             self.assertEqual(mem_tok_page["total_pages"], 3)
+            self.assertEqual(mem_tok_page["global_total"], 7)
+
+            tracker_with_db = MetricsTracker(db_manager=db)
+            db_hist_page = tracker_with_db.get_processed_history(limit=5, page=1)
+            self.assertIn("global_total", db_hist_page)
+            db_tok_page = tracker_with_db.get_token_history(limit=5, page=1)
+            self.assertIn("global_total", db_tok_page)
 
             db.close()
 
@@ -854,6 +861,10 @@ class ContainerSmokeTests(unittest.TestCase):
         self.assertIn("tokens-new-items-pill", RENDERED_DASHBOARD_HTML)
         self.assertIn("fetchStatsOnly", RENDERED_DASHBOARD_HTML)
         self.assertIn("hasHistoryChanged", RENDERED_DASHBOARD_HTML)
+        self.assertIn("loadNewProcessedItems", RENDERED_DASHBOARD_HTML)
+        self.assertIn("loadNewTokenItems", RENDERED_DASHBOARD_HTML)
+        self.assertIn("lastKnownGlobalHistoryTotal", RENDERED_DASHBOARD_HTML)
+        self.assertIn("lastKnownGlobalTokensTotal", RENDERED_DASHBOARD_HTML)
         self.assertIn("aimportarr_stats_interval", RENDERED_DASHBOARD_HTML)
         self.assertIn("Stats update:", RENDERED_DASHBOARD_HTML)
 

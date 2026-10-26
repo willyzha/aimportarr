@@ -1906,7 +1906,7 @@ DASHBOARD_HTML = """<!DOCTYPE html>
       </div>
 
       <!-- Floating New Items Indicator -->
-      <div id="history-new-items-pill" class="new-items-pill" style="display: none;" onclick="fetchHistoryData(true)" title="Click to load latest processed items">
+      <div id="history-new-items-pill" class="new-items-pill" style="display: none;" onclick="loadNewProcessedItems()" title="Click to view new processed items">
         <span>↑</span> <span id="history-new-items-text">New processed items available</span> &bull; <strong>Click to view</strong>
       </div>
 
@@ -1986,7 +1986,7 @@ DASHBOARD_HTML = """<!DOCTYPE html>
       </div>
 
       <!-- Floating New Items Indicator -->
-      <div id="tokens-new-items-pill" class="new-items-pill" style="display: none;" onclick="fetchTokensData(true)" title="Click to load latest AI calls">
+      <div id="tokens-new-items-pill" class="new-items-pill" style="display: none;" onclick="loadNewTokenItems()" title="Click to view latest AI calls">
         <span>↑</span> <span id="tokens-new-items-text">New AI calls recorded</span> &bull; <strong>Click to view</strong>
       </div>
 
@@ -2608,6 +2608,8 @@ DASHBOARD_HTML = """<!DOCTYPE html>
 
     let lastKnownHistoryTotal = null;
     let lastKnownTokensTotal = null;
+    let lastKnownGlobalHistoryTotal = null;
+    let lastKnownGlobalTokensTotal = null;
 
     let currentFilter = 'all';
     let historySearchDebounce = null;
@@ -2768,6 +2770,50 @@ DASHBOARD_HTML = """<!DOCTYPE html>
       }, 250);
     }
 
+    function loadNewProcessedItems() {
+      const pill = document.getElementById('history-new-items-pill');
+      if (pill) pill.style.display = 'none';
+
+      // Reset to page 1
+      historyCurrentPage = 1;
+
+      // Reset filter to 'all' so new items (regardless of status/category) are visible
+      currentFilter = 'all';
+      document.querySelectorAll('.filter-pill').forEach(el => {
+        el.classList.toggle('active', el.dataset.filter === 'all');
+      });
+
+      // Clear search box so newly arrived items are not hidden
+      const sBox = document.getElementById('history-search');
+      if (sBox) sBox.value = '';
+
+      fetchHistoryData(true);
+
+      const tableWrapper = document.querySelector('.history-table-wrapper');
+      if (tableWrapper) {
+        tableWrapper.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+      }
+    }
+
+    function loadNewTokenItems() {
+      const pill = document.getElementById('tokens-new-items-pill');
+      if (pill) pill.style.display = 'none';
+
+      // Reset to page 1
+      tokensCurrentPage = 1;
+
+      // Clear search box so newly arrived calls are not hidden
+      const sBox = document.getElementById('tokens-search');
+      if (sBox) sBox.value = '';
+
+      fetchTokensData(true);
+
+      const tableWrapper = document.querySelector('.token-table-wrapper');
+      if (tableWrapper) {
+        tableWrapper.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+      }
+    }
+
     function updateHistoryPaginationUI() {
       const start = historyTotal === 0 ? 0 : (historyCurrentPage - 1) * historyPageSize + 1;
       const end = Math.min(historyCurrentPage * historyPageSize, historyTotal);
@@ -2853,8 +2899,19 @@ DASHBOARD_HTML = """<!DOCTYPE html>
         rawHistory = newItems;
         lastKnownHistoryTotal = historyTotal;
 
-        const pill = document.getElementById('history-new-items-pill');
-        if (pill) pill.style.display = 'none';
+        const isViewingLatestHistory = (currentFilter === 'all' && historyCurrentPage === 1 && !q);
+        if (typeof data.global_total === 'number') {
+          if (isViewingLatestHistory || lastKnownGlobalHistoryTotal === null) {
+            lastKnownGlobalHistoryTotal = data.global_total;
+          }
+        } else if (isViewingLatestHistory && (lastKnownGlobalHistoryTotal === null || historyTotal >= (lastKnownGlobalHistoryTotal || 0))) {
+          lastKnownGlobalHistoryTotal = historyTotal;
+        }
+
+        if (isViewingLatestHistory) {
+          const pill = document.getElementById('history-new-items-pill');
+          if (pill) pill.style.display = 'none';
+        }
 
         const badgeCount = document.getElementById('badge-history-count');
         if (badgeCount) badgeCount.innerText = formatNumber(historyTotal);
@@ -2899,8 +2956,19 @@ DASHBOARD_HTML = """<!DOCTYPE html>
         rawTokens = newTokens;
         lastKnownTokensTotal = tokensTotal;
 
-        const pill = document.getElementById('tokens-new-items-pill');
-        if (pill) pill.style.display = 'none';
+        const isViewingLatestTokens = (tokensCurrentPage === 1 && !q);
+        if (typeof data.global_total === 'number') {
+          if (isViewingLatestTokens || lastKnownGlobalTokensTotal === null) {
+            lastKnownGlobalTokensTotal = data.global_total;
+          }
+        } else if (isViewingLatestTokens && (lastKnownGlobalTokensTotal === null || tokensTotal >= (lastKnownGlobalTokensTotal || 0))) {
+          lastKnownGlobalTokensTotal = tokensTotal;
+        }
+
+        if (isViewingLatestTokens) {
+          const pill = document.getElementById('tokens-new-items-pill');
+          if (pill) pill.style.display = 'none';
+        }
 
         const badgeCount = document.getElementById('badge-token-count');
         if (badgeCount) badgeCount.innerText = formatNumber(tokensTotal);
@@ -3587,32 +3655,49 @@ DASHBOARD_HTML = """<!DOCTYPE html>
         const summary = await res.json();
         updateStatsUI(summary);
 
+        const globalHistory = typeof summary.total_items_processed === 'number' ? summary.total_items_processed : null;
+        const globalTokens = typeof summary.total_ai_calls === 'number' ? summary.total_ai_calls : null;
+
         // Check if new processed history items are available
-        if (lastKnownHistoryTotal !== null && summary.total_items_processed > lastKnownHistoryTotal) {
-          const diff = summary.total_items_processed - lastKnownHistoryTotal;
-          const pill = document.getElementById('history-new-items-pill');
-          const txt = document.getElementById('history-new-items-text');
-          if (pill && txt) {
-            txt.innerText = `${diff} new processed item${diff > 1 ? 's' : ''} available`;
-            pill.style.display = 'inline-flex';
+        if (lastKnownGlobalHistoryTotal === null && globalHistory !== null) {
+          lastKnownGlobalHistoryTotal = globalHistory;
+        } else if (globalHistory !== null && lastKnownGlobalHistoryTotal !== null) {
+          if (globalHistory > lastKnownGlobalHistoryTotal) {
+            const diff = globalHistory - lastKnownGlobalHistoryTotal;
+            const pill = document.getElementById('history-new-items-pill');
+            const txt = document.getElementById('history-new-items-text');
+            if (pill && txt) {
+              txt.innerText = `${diff} new processed item${diff > 1 ? 's' : ''} available`;
+              pill.style.display = 'inline-flex';
+            }
+          } else if (globalHistory <= lastKnownGlobalHistoryTotal) {
+            const pill = document.getElementById('history-new-items-pill');
+            if (pill) pill.style.display = 'none';
+            if (globalHistory < lastKnownGlobalHistoryTotal) {
+              lastKnownGlobalHistoryTotal = globalHistory;
+            }
           }
-        } else if (lastKnownHistoryTotal !== null && summary.total_items_processed <= lastKnownHistoryTotal) {
-          const pill = document.getElementById('history-new-items-pill');
-          if (pill) pill.style.display = 'none';
         }
 
         // Check if new AI calls are recorded
-        if (lastKnownTokensTotal !== null && summary.total_ai_calls > lastKnownTokensTotal) {
-          const diff = summary.total_ai_calls - lastKnownTokensTotal;
-          const pill = document.getElementById('tokens-new-items-pill');
-          const txt = document.getElementById('tokens-new-items-text');
-          if (pill && txt) {
-            txt.innerText = `${diff} new AI call${diff > 1 ? 's' : ''} recorded`;
-            pill.style.display = 'inline-flex';
+        if (lastKnownGlobalTokensTotal === null && globalTokens !== null) {
+          lastKnownGlobalTokensTotal = globalTokens;
+        } else if (globalTokens !== null && lastKnownGlobalTokensTotal !== null) {
+          if (globalTokens > lastKnownGlobalTokensTotal) {
+            const diff = globalTokens - lastKnownGlobalTokensTotal;
+            const pill = document.getElementById('tokens-new-items-pill');
+            const txt = document.getElementById('tokens-new-items-text');
+            if (pill && txt) {
+              txt.innerText = `${diff} new AI call${diff > 1 ? 's' : ''} recorded`;
+              pill.style.display = 'inline-flex';
+            }
+          } else if (globalTokens <= lastKnownGlobalTokensTotal) {
+            const pill = document.getElementById('tokens-new-items-pill');
+            if (pill) pill.style.display = 'none';
+            if (globalTokens < lastKnownGlobalTokensTotal) {
+              lastKnownGlobalTokensTotal = globalTokens;
+            }
           }
-        } else if (lastKnownTokensTotal !== null && summary.total_ai_calls <= lastKnownTokensTotal) {
-          const pill = document.getElementById('tokens-new-items-pill');
-          if (pill) pill.style.display = 'none';
         }
 
         document.getElementById('header-status').innerText = 'Online';
@@ -3636,6 +3721,12 @@ DASHBOARD_HTML = """<!DOCTYPE html>
         if (sumRes.ok) {
           const summary = await sumRes.json();
           updateStatsUI(summary);
+          if (typeof summary.total_items_processed === 'number') {
+            lastKnownGlobalHistoryTotal = summary.total_items_processed;
+          }
+          if (typeof summary.total_ai_calls === 'number') {
+            lastKnownGlobalTokensTotal = summary.total_ai_calls;
+          }
         }
 
         document.getElementById('header-status').innerText = 'Online';
@@ -3849,6 +3940,8 @@ DASHBOARD_HTML = """<!DOCTYPE html>
           rawTokens = [];
           lastKnownHistoryTotal = null;
           lastKnownTokensTotal = null;
+          lastKnownGlobalHistoryTotal = null;
+          lastKnownGlobalTokensTotal = null;
           if (typeof fetchHistoryData === 'function') fetchHistoryData(true);
           if (typeof fetchTokensData === 'function') fetchTokensData(true);
           if (typeof fetchData === 'function') fetchData(true);

@@ -537,12 +537,15 @@ class MetricsTracker:
         """Return the most recent processed items with optional pagination, filter, and search."""
         with self._lock:
             if self.db:
-                return self.db.get_processed_history(
+                result = self.db.get_processed_history(
                     limit=limit,
                     page=page,
                     search=search,
                     filter_status=filter_status,
                 )
+                if isinstance(result, dict):
+                    result["global_total"] = self.total_items_processed
+                return result
 
             # In-memory fallback
             items = list(self.processed_history)
@@ -578,6 +581,7 @@ class MetricsTracker:
             return {
                 "items": items[offset : offset + limit],
                 "total": total,
+                "global_total": self.total_items_processed,
                 "page": page,
                 "limit": limit,
                 "total_pages": total_pages,
@@ -592,11 +596,14 @@ class MetricsTracker:
         """Return the most recent token transactions with optional pagination and search."""
         with self._lock:
             if self.db:
-                return self.db.get_token_history(
+                result = self.db.get_token_history(
                     limit=limit,
                     page=page,
                     search=search,
                 )
+                if isinstance(result, dict):
+                    result["global_total"] = self.total_ai_calls
+                return result
 
             items = list(self.token_history)
             if search:
@@ -620,6 +627,7 @@ class MetricsTracker:
             return {
                 "items": items[offset : offset + limit],
                 "total": total,
+                "global_total": self.total_ai_calls,
                 "page": page,
                 "limit": limit,
                 "total_pages": total_pages,
