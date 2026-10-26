@@ -323,6 +323,24 @@ class RadarrClient:
             logger.error(f"  Failed to execute queue action ({action_desc}) for '{title}': {e}")
             return False
 
+    async def dismiss_queue_warning(
+        self,
+        queue_id: int,
+        download_id: Optional[str] = None,
+        dry_run: bool = False,
+        title: str = "",
+    ) -> bool:
+        """Dismiss a stuck queue warning while keeping the download in the client and without blocklisting."""
+        return await self.resolve_queue_item(
+            queue_id=queue_id,
+            download_id=download_id,
+            remove_from_client=False,
+            blocklist=False,
+            skip_redownload=True,
+            dry_run=dry_run,
+            title=title,
+        )
+
     async def delete_and_blocklist(
         self,
         queue_id: int,
@@ -789,11 +807,11 @@ class RadarrClient:
                         app="Radarr",
                         title=title,
                         category="already_imported",
-                        status="dry_run" if is_dry_run else "dismissed",
+                        status="dry_run" if is_dry_run else "imported",
                         confidence=1.0,
                         model="Radarr (Quality Rule)",
                         reasoning=f"Movie file already imported ({reason_str})",
-                        details="Dismissed queue warning",
+                        details="Imported (movie file already imported)",
                         item_keys=item_keys,
                     )
                     await self.dismiss_queue_warning(
@@ -802,7 +820,7 @@ class RadarrClient:
                         dry_run=is_dry_run,
                         title=title,
                     )
-                    return False
+                    return True
 
                 metrics.record_processed_item(
                     app="Radarr",

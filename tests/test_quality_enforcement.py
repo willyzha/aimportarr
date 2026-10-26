@@ -368,6 +368,36 @@ class QualityEnforcementTests(unittest.IsolatedAsyncioTestCase):
             self.assertTrue(imported)
             mock_trigger.assert_called_once()
 
+    async def test_radarr_already_imported_fast_path_records_imported(self):
+        """When Radarr has already imported the movie file and leftover manual items are already imported, records status='imported'."""
+        manual_items = [{
+            "path": "/downloads/Movie.2026.mkv",
+            "name": "Movie.2026.mkv",
+            "movie": {"id": 10, "title": "Movie"},
+            "rejections": [{"reason": "Movie file already imported at 10/26/2026 12:00:00"}],
+        }]
+        queue_item = {
+            "id": 555,
+            "title": "Movie.2026.1080p",
+            "downloadId": "DL_RADARR_AI",
+            "movie": {"id": 10, "title": "Movie"},
+            "outputPath": "/downloads/Movie.2026.1080p",
+            "statusMessages": [{"messages": ["Movie file already imported"]}],
+        }
+
+        with patch.object(self.radarr, "get_manual_import_items", new_callable=AsyncMock, return_value=manual_items), \
+             patch.object(self.radarr, "resolve_queue_item", new_callable=AsyncMock) as mock_resolve:
+            mock_resolve.return_value = True
+            res = await self.radarr.process_queue_item(item=queue_item, ai_provider=self.mock_ai)
+
+            self.assertTrue(res)
+            mock_resolve.assert_called_once()
+            self.assertFalse(mock_resolve.call_args.kwargs["remove_from_client"])
+            self.assertFalse(mock_resolve.call_args.kwargs["blocklist"])
+            history = metrics.get_processed_history()
+            self.assertEqual(history[0]["status"], "imported")
+            self.assertEqual(history[0]["details"], "Imported (movie file already imported)")
+
     async def test_sonarr_unmapped_episode_triggers_ai_parsing(self):
         """When curr_episodes is empty (unmapped episode) and no quality rejections, Stage 2 AI resolves it."""
         manual_items = [{
@@ -761,15 +791,20 @@ class QualityEnforcementTests(unittest.IsolatedAsyncioTestCase):
              patch.object(self.sonarr, "dismiss_queue_warning", new_callable=AsyncMock) as mock_dismiss, \
              patch.object(self.sonarr, "resolve_queue_item", new_callable=AsyncMock) as mock_resolve:
 
-            await self.sonarr.process_queue_item(item=queue_item, ai_provider=self.mock_ai)
+            res = await self.sonarr.process_queue_item(item=queue_item, ai_provider=self.mock_ai)
             mock_dismiss.assert_called_once()
             mock_resolve.assert_not_called()
+            self.assertTrue(res)
+            history = metrics.get_processed_history()
+            self.assertEqual(history[0]["status"], "imported")
+            self.assertIn("Completed season", history[0]["details"])
 
     async def test_season_pack_already_imported_and_quality_rejected_fast_path_dismisses(self):
         """
         When Sonarr automatically imports needed episodes from a season pack ('Episode file already imported at ...')
         and leaves the remaining files rejected due to higher Custom Format score on disk, Fast-Path A must
-        dismiss the leftover queue warning with 0 AI calls (removeFromClient=False, blocklist=False, skipRedownload=True).
+        dismiss the leftover queue warning with 0 AI calls (removeFromClient=False, blocklist=False, skipRedownload=True)
+        and record status='imported' with precise episode counts.
         """
         manual_items = [
             {
@@ -821,7 +856,7 @@ class QualityEnforcementTests(unittest.IsolatedAsyncioTestCase):
              patch.object(self.sonarr, "get_episode_files", new_callable=AsyncMock, return_value=[]), \
              patch.object(self.sonarr, "resolve_queue_item", new_callable=AsyncMock) as mock_resolve:
             mock_resolve.return_value = True
-            await self.sonarr.process_queue_item(item=queue_item, ai_provider=self.mock_ai)
+            res = await self.sonarr.process_queue_item(item=queue_item, ai_provider=self.mock_ai)
 
             # 0 AI calls!
             self.mock_ai.evaluate_import_decision.assert_not_called()
@@ -830,6 +865,50 @@ class QualityEnforcementTests(unittest.IsolatedAsyncioTestCase):
             self.assertFalse(mock_resolve.call_args.kwargs["remove_from_client"])
             self.assertFalse(mock_resolve.call_args.kwargs["blocklist"])
             self.assertTrue(mock_resolve.call_args.kwargs["skip_redownload"])
+            self.assertTrue(res)
+            history = metrics.get_processed_history()
+            self.assertEqual(history[0]["status"], "imported")
+            self.assertIn("1 episode(s) imported", history[0]["details"])
+            self.assertIn("1 existing file(s) kept on disk", history[0]["details"])
+
+    async def test_season_pack_missing_episodes_unimported_dismisses_as_dismissed(self):
+        """When a season pack has missing episodes, but 0 were imported and season is not satisfied, it records status as dismissed."""
+        manual_items = [
+            {
+                "path": "/data/downloads/IncompletePack/S01E01.mkv",
+                "name": "S01E01.mkv",
+                "quality": {"quality": {"name": "WEBDL-1080p"}},
+                "episodes": [{"id": 301, "seasonNumber": 1, "episodeNumber": 1}],
+                "series": {"id": 88, "title": "Incomplete"},
+                "rejections": [{"reason": "Existing file on disk is of equal or higher preference"}],
+            },
+        ]
+        queue_item = {
+            "id": 9902,
+            "downloadId": "DL_INCOMPLETE",
+            "title": "Incomplete.S01.720p",
+            "statusMessages": [{"messages": ["One or more episodes are missing from this release"]}],
+            "series": {"id": 88, "title": "Incomplete"},
+            "outputPath": "/data/downloads/IncompletePack",
+        }
+        # Ep 2 is missing on disk, so is_satisfied_season_pack is False
+        all_episodes = [
+            {"id": 301, "seasonNumber": 1, "episodeNumber": 1, "hasFile": True, "monitored": True},
+            {"id": 302, "seasonNumber": 1, "episodeNumber": 2, "hasFile": False, "monitored": True},
+        ]
+
+        with patch.object(self.sonarr, "get_manual_import_items", new_callable=AsyncMock, return_value=manual_items), \
+             patch.object(self.sonarr, "get_series_episodes", new_callable=AsyncMock, return_value=all_episodes), \
+             patch.object(self.sonarr, "get_episode_files", new_callable=AsyncMock, return_value=[]), \
+             patch.object(self.sonarr, "resolve_queue_item", new_callable=AsyncMock) as mock_resolve:
+            mock_resolve.return_value = True
+            res = await self.sonarr.process_queue_item(item=queue_item, ai_provider=self.mock_ai)
+
+            self.assertFalse(res)
+            mock_resolve.assert_called_once()
+            history = metrics.get_processed_history()
+            self.assertEqual(history[0]["status"], "dismissed")
+            self.assertEqual(history[0]["details"], "Dismissed season pack warning")
 
     async def test_season_pack_mix_already_imported_and_clean_file_fast_path_b(self):
         """

@@ -112,6 +112,8 @@ def classify_issue(
     if any(phrase in all_text for phrase in [
         "one or more episodes expected in this release were not imported",
         "missing from the release",
+        "missing from this release",
+        "missing from release",
         "episodes expected in this release were not imported",
         "partially imported"
     ]):

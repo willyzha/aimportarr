@@ -746,11 +746,11 @@ class SonarrClient:
                         app="Sonarr",
                         title=title,
                         category="season_pack",
-                        status="dry_run" if is_dry_run else "dismissed",
+                        status="dry_run" if is_dry_run else "imported",
                         confidence=1.0,
                         model="Sonarr (Season Pack)",
                         reasoning="All needed episodes accounted for; queue warning dismissed while keeping files in client.",
-                        details="Dismissed season pack warning",
+                        details="Completed season (all needed episodes accounted for)",
                         item_keys=item_keys,
                     )
                     return await self.dismiss_queue_warning(
@@ -940,15 +940,27 @@ class SonarrClient:
                     or already_imported_count > 0
                     or is_satisfied_season_pack
                 ):
+                    has_imported = bool(already_imported_count > 0 or is_satisfied_season_pack)
+                    status_label = "dry_run" if is_dry_run else ("imported" if has_imported else "dismissed")
+                    if already_imported_count > 0:
+                        details_str = f"Imported ({already_imported_count} episode(s) imported, {quality_rejected_count} existing file(s) kept on disk)"
+                        reason_msg = f"Season pack delivered {already_imported_count} missing episode(s); remaining {quality_rejected_count} file(s) already on disk at equal/higher quality ({reason_str})"
+                    elif is_satisfied_season_pack:
+                        details_str = f"Completed season ({len(manual_items)} episode(s) satisfied on disk)"
+                        reason_msg = f"Season pack satisfied all monitored episodes on disk; remaining file(s) kept on disk ({reason_str})"
+                    else:
+                        details_str = "Dismissed season pack warning"
+                        reason_msg = f"Remaining season pack files already on disk at equal/higher quality ({reason_str})"
+
                     metrics.record_processed_item(
                         app="Sonarr",
                         title=title,
                         category="season_pack" if len(manual_items) > 1 else "already_imported",
-                        status="dry_run" if is_dry_run else "dismissed",
+                        status=status_label,
                         confidence=1.0,
                         model="Sonarr (Quality Rule)",
-                        reasoning=f"Remaining season pack files already on disk at equal/higher quality ({reason_str})",
-                        details="Dismissed season pack warning",
+                        reasoning=reason_msg,
+                        details=details_str,
                         item_keys=item_keys,
                     )
                     await self.dismiss_queue_warning(
@@ -957,7 +969,7 @@ class SonarrClient:
                         dry_run=is_dry_run,
                         title=title,
                     )
-                    return False
+                    return True if has_imported else False
 
                 metrics.record_processed_item(
                     app="Sonarr",
@@ -1330,15 +1342,22 @@ class SonarrClient:
 
             # Handle Stage 2 'dismiss_pack' (already satisfied season pack)
             if stage2.decision == "dismiss_pack":
+                has_imported = bool(already_imported_count > 0)
+                status_label = "dry_run" if is_dry_run else ("imported" if has_imported else "dismissed")
+                details_str = (
+                    f"Imported ({already_imported_count} episode(s) imported, remaining satisfied on disk)"
+                    if already_imported_count > 0
+                    else "Dismissed season pack warning (kept in client)"
+                )
                 metrics.record_processed_item(
                     app="Sonarr",
                     title=title,
                     category="season_pack",
-                    status="dry_run" if is_dry_run else "dismissed",
+                    status=status_label,
                     confidence=stage2.confidence,
                     model=model_label,
                     reasoning=stage2.reasoning,
-                    details="Dismissed season pack warning (kept in client)",
+                    details=details_str,
                     item_keys=item_keys,
                 )
                 await self.dismiss_queue_warning(
@@ -1347,7 +1366,7 @@ class SonarrClient:
                     dry_run=is_dry_run,
                     title=title,
                 )
-                return False
+                return True if has_imported else False
 
             # Default Stage 2 rejection: 'reject_keep_in_client' (quality downgrade or wrong media)
             cat_tag = stage2.category_tag or "dismissed"
