@@ -1588,6 +1588,87 @@ DASHBOARD_HTML = """<!DOCTYPE html>
         justify-content: center;
       }
     }
+
+    /* Modal: Clear History */
+    .modal-backdrop {
+      position: fixed;
+      top: 0;
+      left: 0;
+      width: 100vw;
+      height: 100vh;
+      background: rgba(0, 0, 0, 0.75);
+      backdrop-filter: blur(4px);
+      z-index: 9999;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      padding: 1rem;
+    }
+    .modal-box {
+      background: var(--bg-card);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      width: 100%;
+      max-width: 480px;
+      box-shadow: 0 20px 40px rgba(0, 0, 0, 0.5);
+      overflow: hidden;
+      display: flex;
+      flex-direction: column;
+    }
+    .modal-header {
+      padding: 1.15rem 1.4rem;
+      border-bottom: 1px solid var(--border);
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+    }
+    .modal-title {
+      font-size: 1rem;
+      font-weight: 600;
+      color: var(--text-main);
+      display: flex;
+      align-items: center;
+      gap: 0.5rem;
+    }
+    .modal-body {
+      padding: 1.25rem 1.4rem;
+      font-size: 0.85rem;
+      color: var(--text-muted);
+      line-height: 1.5;
+    }
+    .modal-footer {
+      padding: 1rem 1.4rem;
+      border-top: 1px solid var(--border);
+      background: rgba(0, 0, 0, 0.15);
+      display: flex;
+      align-items: center;
+      justify-content: flex-end;
+      gap: 0.75rem;
+    }
+    .modal-checkbox-group {
+      margin-top: 1rem;
+      display: flex;
+      flex-direction: column;
+      gap: 0.65rem;
+      background: var(--bg-base);
+      padding: 0.85rem 1rem;
+      border-radius: 8px;
+      border: 1px solid var(--border-subtle);
+    }
+    .modal-checkbox-label {
+      display: flex;
+      align-items: center;
+      gap: 0.6rem;
+      color: var(--text-main);
+      font-size: 0.825rem;
+      cursor: pointer;
+    }
+    .modal-checkbox-label input[type="checkbox"] {
+      accent-color: var(--danger);
+      width: 16px;
+      height: 16px;
+      cursor: pointer;
+    }
   </style>
 </head>
 <body>
@@ -1814,9 +1895,14 @@ DASHBOARD_HTML = """<!DOCTYPE html>
           </div>
         </div>
 
-        <button class="btn btn-warning" id="btn-retry-all" onclick="retryAllRejected()" title="Re-evaluate all items still sitting in the queue on the next scan">
-          <span>🔄</span> Retry All In Queue
-        </button>
+        <div style="display: flex; gap: 0.5rem; align-items: center; flex-wrap: wrap;">
+          <button class="btn btn-warning" id="btn-retry-all" onclick="retryAllRejected()" title="Re-evaluate all items still sitting in the queue on the next scan">
+            <span>🔄</span> Retry All In Queue
+          </button>
+          <button class="btn btn-danger" id="btn-clear-history" onclick="openClearHistoryModal()" title="Clear processed history &amp; database">
+            <span>🗑️</span> Clear History
+          </button>
+        </div>
       </div>
 
       <!-- Floating New Items Indicator -->
@@ -1890,6 +1976,12 @@ DASHBOARD_HTML = """<!DOCTYPE html>
             <span class="search-icon">🔍</span>
             <input type="text" id="tokens-search" placeholder="Filter by operation, model, or release..." oninput="filterTokens()">
           </div>
+        </div>
+
+        <div style="display: flex; gap: 0.5rem; align-items: center; flex-wrap: wrap;">
+          <button class="btn btn-danger" id="btn-clear-tokens" onclick="openClearHistoryModal()" title="Clear database history &amp; tokens">
+            <span>🗑️</span> Clear History
+          </button>
         </div>
       </div>
 
@@ -2444,6 +2536,42 @@ DASHBOARD_HTML = """<!DOCTYPE html>
   <footer>
     AImportarr <span class="version-tag" style="margin: 0 0.25rem;">v{{VERSION}}</span> &bull; AI-Powered *arr Queue Companion
   </footer>
+
+  <!-- Modal: Clear Database History -->
+  <div id="modal-clear-history" class="modal-backdrop" style="display: none;" onclick="if(event.target===this)closeClearHistoryModal()">
+    <div class="modal-box">
+      <div class="modal-header">
+        <div class="modal-title">
+          <span>🗑️</span> Clear Database &amp; History
+        </div>
+        <button type="button" class="btn btn-sm btn-secondary" onclick="closeClearHistoryModal()" style="padding: 0.2rem 0.5rem; border-radius: 4px;">✕</button>
+      </div>
+      <div class="modal-body">
+        <p>This action will purge historical records from the SQLite database and in-memory caches. Clearing processed items allows any stuck or previously processed items in Sonarr / Radarr queues to be re-evaluated as brand new unattempted items on the next scan.</p>
+        <div class="modal-checkbox-group">
+          <label class="modal-checkbox-label">
+            <input type="checkbox" id="clear-opt-items" checked>
+            <span><strong>Processed Item History</strong> (releases, decisions, deduplication keys)</span>
+          </label>
+          <label class="modal-checkbox-label">
+            <input type="checkbox" id="clear-opt-tokens" checked>
+            <span><strong>Token Usage History</strong> (AI prompt &amp; response debug logs)</span>
+          </label>
+          <label class="modal-checkbox-label">
+            <input type="checkbox" id="clear-opt-counters">
+            <span><strong>Reset Lifetime Counters</strong> (reset dashboard stat cards to 0)</span>
+          </label>
+        </div>
+        <p style="margin-top: 0.75rem; font-size: 0.775rem; color: #ef4444;">
+          ⚠️ <em>Media files in your library and download client will <strong>not</strong> be touched.</em>
+        </p>
+      </div>
+      <div class="modal-footer">
+        <button type="button" class="btn btn-secondary btn-sm" onclick="closeClearHistoryModal()">Cancel</button>
+        <button type="button" class="btn btn-danger btn-sm" id="btn-confirm-clear" onclick="submitClearHistory()">Clear Selected History</button>
+      </div>
+    </div>
+  </div>
 
   <!-- Floating Save Bar (pops up from bottom when any settings are modified) -->
   <div id="settings-save-bar" class="settings-save-bar">
@@ -3667,6 +3795,73 @@ DASHBOARD_HTML = """<!DOCTYPE html>
       }
     }
 
+    function openClearHistoryModal() {
+      const modal = document.getElementById('modal-clear-history');
+      if (modal) modal.style.display = 'flex';
+    }
+
+    function closeClearHistoryModal() {
+      const modal = document.getElementById('modal-clear-history');
+      if (modal) modal.style.display = 'none';
+    }
+
+    async function submitClearHistory() {
+      const clearItems = document.getElementById('clear-opt-items')?.checked ?? true;
+      const clearTokens = document.getElementById('clear-opt-tokens')?.checked ?? true;
+      const resetCounters = document.getElementById('clear-opt-counters')?.checked ?? false;
+
+      if (!clearItems && !clearTokens && !resetCounters) {
+        showToast('Please select at least one item to clear.', 'warning');
+        return;
+      }
+
+      const btn = document.getElementById('btn-confirm-clear');
+      if (btn) {
+        btn.disabled = true;
+        btn.innerText = 'Clearing...';
+      }
+
+      try {
+        const res = await fetch('/api/history/clear', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            items: clearItems,
+            tokens: clearTokens,
+            counters: resetCounters
+          })
+        });
+        const data = await res.json();
+        if (res.ok && data.status === 'ok') {
+          showToast(data.message || 'Database history cleared successfully!', 'success');
+          closeClearHistoryModal();
+          historyCurrentPage = 1;
+          tokensCurrentPage = 1;
+          rawHistory = [];
+          rawTokens = [];
+          lastKnownHistoryTotal = null;
+          lastKnownTokensTotal = null;
+          if (typeof fetchHistoryData === 'function') fetchHistoryData(true);
+          if (typeof fetchTokensData === 'function') fetchTokensData(true);
+          if (typeof fetchData === 'function') fetchData(true);
+        } else {
+          showToast(data.message || 'Failed to clear database history', 'danger');
+        }
+      } catch (e) {
+        console.error(e);
+        showToast('Network error clearing history: ' + e.message, 'danger');
+      } finally {
+        if (btn) {
+          btn.disabled = false;
+          btn.innerText = 'Clear Selected History';
+        }
+      }
+    }
+
+    document.addEventListener('keydown', (e) => {
+      if (e.key === 'Escape') closeClearHistoryModal();
+    });
+
     let settingsBaselineSnapshot = null;
 
     function collectSettingsPayload() {
@@ -4850,6 +5045,42 @@ class MetricsHTTPHandler(BaseHTTPRequestHandler):
                 return
 
             self.send_error(HTTPStatus.BAD_REQUEST, "Must specify 'id' or 'all: true'")
+            return
+
+        # REST API: Clear History & Metrics
+        if path == "/api/history/clear":
+            try:
+                length = int(self.headers.get("Content-Length", 0))
+                body = self.rfile.read(length).decode("utf-8") if length > 0 else "{}"
+                data = json.loads(body) if body.strip() else {}
+            except Exception as e:
+                logger.warning(f"Error parsing POST /api/history/clear payload: {e}")
+                data = {}
+
+            clear_items = bool(data.get("items", True))
+            clear_tokens = bool(data.get("tokens", True))
+            reset_counters = bool(data.get("counters", False))
+
+            result = self.metrics.clear_history(
+                clear_items=clear_items,
+                clear_tokens=clear_tokens,
+                reset_counters=reset_counters,
+            )
+
+            msg_parts = []
+            if clear_items:
+                msg_parts.append(f"{result.get('deleted_items', 0)} item(s)")
+            if clear_tokens:
+                msg_parts.append(f"{result.get('deleted_tokens', 0)} token call(s)")
+            if reset_counters:
+                msg_parts.append("reset counters")
+            summary_msg = f"Cleared {', '.join(msg_parts)}." if msg_parts else "History cleared."
+
+            self._send_json({
+                "status": "ok",
+                "message": summary_msg,
+                "result": result,
+            })
             return
 
         # Ollama Model Management: Pull

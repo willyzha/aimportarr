@@ -1,8 +1,62 @@
 import unittest
 import shutil
 import subprocess
+import sys
 import tempfile
 from pathlib import Path
+from unittest.mock import MagicMock
+
+try:
+    import pydantic
+except ImportError:
+    import types
+    pyd = types.ModuleType("pydantic")
+    class BaseModel:
+        def __init__(self, **kwargs):
+            for k, v in kwargs.items():
+                setattr(self, k, v)
+        def dict(self, *args, **kwargs):
+            return self.__dict__
+        def model_dump(self, *args, **kwargs):
+            return self.__dict__
+    def Field(*args, **kwargs):
+        if "default_factory" in kwargs:
+            return kwargs["default_factory"]()
+        if "default" in kwargs:
+            return kwargs["default"]
+        return args[0] if args else None
+    pyd.BaseModel = BaseModel
+    pyd.Field = Field
+    sys.modules["pydantic"] = pyd
+
+try:
+    import httpx
+except ImportError:
+    class MockHTTPStatusError(Exception):
+        def __init__(self, message="", response=None):
+            super().__init__(message)
+            self.response = response
+
+    class MockRequestError(Exception):
+        pass
+
+    class MockAsyncClient:
+        def __init__(self, *args, **kwargs):
+            pass
+        async def __aenter__(self):
+            return self
+        async def __aexit__(self, *args):
+            pass
+        async def post(self, url, json=None, **kwargs):
+            pass
+        async def get(self, url, **kwargs):
+            pass
+
+    mock_httpx = MagicMock()
+    mock_httpx.HTTPStatusError = MockHTTPStatusError
+    mock_httpx.RequestError = MockRequestError
+    mock_httpx.AsyncClient = MockAsyncClient
+    sys.modules["httpx"] = mock_httpx
 
 class ContainerSmokeTests(unittest.TestCase):
     """
@@ -800,6 +854,134 @@ class ContainerSmokeTests(unittest.TestCase):
         self.assertIn("toggleReasoning", RENDERED_DASHBOARD_HTML)
         self.assertIn("openTokenIds", RENDERED_DASHBOARD_HTML)
         self.assertIn("toggleTokenDetails", RENDERED_DASHBOARD_HTML)
+
+    def test_clear_database_history_and_api(self):
+        """Verify DatabaseManager.clear_history, MetricsTracker.clear_history, and POST /api/history/clear."""
+        import json
+        import urllib.request
+        from src.database import DatabaseManager
+        from src.metrics import MetricsTracker
+        from src.config import AppConfig
+        from src.web import WebServerRunner, RENDERED_DASHBOARD_HTML
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db_path = f"{tmpdir}/test_clear.db"
+            db = DatabaseManager(db_path=db_path, retention_days=30)
+            metrics_tracker = MetricsTracker(db_manager=db)
+
+            # Insert sample items
+            for i in range(5):
+                db.record_processed_item(
+                    app="sonarr",
+                    title=f"Sample.Show.S01E0{i}",
+                    category="id_match",
+                    status="imported" if i % 2 == 0 else "rejected",
+                    confidence=0.95,
+                    model="test-ai",
+                    reasoning="Matched",
+                    details="Imported cleanly",
+                    item_keys=[f"key_{i}", f"path_{i}"]
+                )
+                db.record_token_usage(
+                    operation="evaluate_import_decision",
+                    model="test-ai",
+                    prompt_tokens=100,
+                    completion_tokens=50,
+                    total_tokens=150,
+                    duration_ms=250,
+                    item_title=f"Sample.Show.S01E0{i}",
+                )
+
+            # Check counts
+            hist_before = db.get_processed_history(page=1)
+            tok_before = db.get_token_history(page=1)
+            self.assertEqual(hist_before["total"], 5)
+            self.assertEqual(tok_before["total"], 5)
+            self.assertTrue(db.is_item_attempted(["key_0"]))
+
+            # 1. Test partial clear (tokens only)
+            res1 = db.clear_history(clear_items=False, clear_tokens=True)
+            self.assertEqual(res1["deleted_tokens"], 5)
+            self.assertEqual(res1["deleted_items"], 0)
+            self.assertEqual(db.get_token_history(page=1)["total"], 0)
+            self.assertEqual(db.get_processed_history(page=1)["total"], 5)
+            self.assertTrue(db.is_item_attempted(["key_0"]))
+
+            # 2. Test items clear
+            res2 = db.clear_history(clear_items=True, clear_tokens=False)
+            self.assertEqual(res2["deleted_items"], 5)
+            self.assertGreaterEqual(res2["deleted_keys"], 10)
+            self.assertEqual(db.get_processed_history(page=1)["total"], 0)
+            # Item is no longer marked attempted
+            self.assertFalse(db.is_item_attempted(["key_0"]))
+
+            # 3. Test Web API POST /api/history/clear
+            # Repopulate
+            db.record_processed_item(
+                app="radarr",
+                title="Sample.Movie.2024",
+                category="id_match",
+                status="rejected",
+                confidence=0.9,
+                model="test-ai",
+                reasoning="Rejected",
+                details="Downgrade",
+                item_keys=["movie_key_1"]
+            )
+            db.record_token_usage(
+                operation="evaluate_import_decision",
+                model="test-ai",
+                prompt_tokens=80,
+                completion_tokens=20,
+                total_tokens=100,
+                duration_ms=150,
+                item_title="Sample.Movie.2024",
+            )
+            metrics_tracker._load_from_db()
+            self.assertEqual(len(metrics_tracker.processed_history), 1)
+
+            cfg = AppConfig()
+            cfg.web.port = 19199
+            server = WebServerRunner(
+                host="127.0.0.1",
+                port=cfg.web.port,
+                metrics_instance=metrics_tracker,
+                config_instance=cfg,
+            )
+            server.start()
+            try:
+                # Issue POST /api/history/clear
+                req = urllib.request.Request(
+                    f"http://127.0.0.1:{cfg.web.port}/api/history/clear",
+                    data=json.dumps({"items": True, "tokens": True, "counters": True}).encode("utf-8"),
+                    headers={"Content-Type": "application/json"},
+                    method="POST"
+                )
+                with urllib.request.urlopen(req) as resp:
+                    data = json.loads(resp.read().decode("utf-8"))
+                    self.assertEqual(data["status"], "ok")
+                    self.assertIn("Cleared", data["message"])
+                    self.assertEqual(data["result"]["deleted_items"], 1)
+                    self.assertEqual(data["result"]["deleted_tokens"], 1)
+
+                # Verify database & metrics are completely empty
+                self.assertEqual(db.get_processed_history(page=1)["total"], 0)
+                self.assertEqual(db.get_token_history(page=1)["total"], 0)
+                self.assertEqual(len(metrics_tracker.processed_history), 0)
+                self.assertEqual(metrics_tracker.total_items_processed, 0)
+                self.assertEqual(metrics_tracker.total_tokens, 0)
+            finally:
+                server.stop()
+                db.close()
+
+        # 4. Verify UI markup
+        self.assertIn("btn-clear-history", RENDERED_DASHBOARD_HTML)
+        self.assertIn("btn-clear-tokens", RENDERED_DASHBOARD_HTML)
+        self.assertIn("modal-clear-history", RENDERED_DASHBOARD_HTML)
+        self.assertIn("openClearHistoryModal", RENDERED_DASHBOARD_HTML)
+        self.assertIn("closeClearHistoryModal", RENDERED_DASHBOARD_HTML)
+        self.assertIn("submitClearHistory", RENDERED_DASHBOARD_HTML)
+        self.assertIn("/api/history/clear", RENDERED_DASHBOARD_HTML)
 
 if __name__ == "__main__":
     unittest.main()

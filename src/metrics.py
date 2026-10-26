@@ -136,6 +136,50 @@ class MetricsTracker:
             return purged
         return 0
 
+    def clear_history(
+        self,
+        clear_items: bool = True,
+        clear_tokens: bool = True,
+        reset_counters: bool = False,
+    ) -> Dict[str, int]:
+        """Clear processed history and/or token usage in SQLite and in-memory caches."""
+        with self._lock:
+            result = {"deleted_items": 0, "deleted_keys": 0, "deleted_tokens": 0, "reset_metadata": 0}
+            if self.db:
+                result = self.db.clear_history(
+                    clear_items=clear_items,
+                    clear_tokens=clear_tokens,
+                    reset_counters=reset_counters,
+                )
+
+            if clear_items:
+                self.processed_history.clear()
+                if reset_counters:
+                    self.total_items_processed = 0
+                    self.total_imported = 0
+                    self.total_dry_run = 0
+                    self.total_rejected = 0
+                    self.total_dismissed = 0
+                    self.total_archives_extracted = 0
+                    self.items_by_category.clear()
+                    self.items_by_status.clear()
+
+            if clear_tokens:
+                self.token_history.clear()
+                if reset_counters:
+                    self.total_ai_calls = 0
+                    self.total_prompt_tokens = 0
+                    self.total_thinking_tokens = 0
+                    self.total_completion_tokens = 0
+                    self.total_tokens = 0
+                    self.tokens_by_model.clear()
+                    self.tokens_by_operation.clear()
+
+            if not reset_counters and self.db:
+                self._load_from_db()
+
+            return result
+
     def get_latest_item_record(self, item_keys: List[str]) -> Optional[Dict[str, Any]]:
         """Fetch the most recent processed item record for the given item keys."""
         with self._lock:

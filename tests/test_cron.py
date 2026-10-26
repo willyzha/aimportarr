@@ -29,7 +29,31 @@ except ImportError:
 try:
     import httpx
 except ImportError:
-    sys.modules["httpx"] = MagicMock()
+    class MockHTTPStatusError(Exception):
+        def __init__(self, message="", response=None):
+            super().__init__(message)
+            self.response = response
+
+    class MockRequestError(Exception):
+        pass
+
+    class MockAsyncClient:
+        def __init__(self, *args, **kwargs):
+            pass
+        async def __aenter__(self):
+            return self
+        async def __aexit__(self, *args):
+            pass
+        async def post(self, url, json=None, **kwargs):
+            pass
+        async def get(self, url, **kwargs):
+            pass
+
+    mock_httpx = MagicMock()
+    mock_httpx.HTTPStatusError = MockHTTPStatusError
+    mock_httpx.RequestError = MockRequestError
+    mock_httpx.AsyncClient = MockAsyncClient
+    sys.modules["httpx"] = mock_httpx
 
 from src.cron import (
     is_valid_cron,

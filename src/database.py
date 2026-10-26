@@ -185,6 +185,54 @@ class DatabaseManager:
                 )
             return total_purged
 
+    def clear_history(
+        self,
+        clear_items: bool = True,
+        clear_tokens: bool = True,
+        reset_counters: bool = False,
+    ) -> Dict[str, int]:
+        """
+        Clear processed item history and/or token usage history.
+        Optionally resets lifetime counters in app_metadata.
+        Runs VACUUM to reclaim disk space.
+        Returns counts of cleared records.
+        """
+        deleted_items = 0
+        deleted_keys = 0
+        deleted_tokens = 0
+        reset_metadata = 0
+
+        with self._lock:
+            conn = self._get_connection()
+            with conn:
+                if clear_items:
+                    c_keys = conn.execute("DELETE FROM processed_item_keys;")
+                    deleted_keys = c_keys.rowcount
+                    c_items = conn.execute("DELETE FROM processed_items;")
+                    deleted_items = c_items.rowcount
+                if clear_tokens:
+                    c_tokens = conn.execute("DELETE FROM token_usage;")
+                    deleted_tokens = c_tokens.rowcount
+                if reset_counters:
+                    c_meta = conn.execute("DELETE FROM app_metadata;")
+                    reset_metadata = c_meta.rowcount
+
+            try:
+                conn.execute("VACUUM;")
+            except Exception as e:
+                logger.warning(f"Could not VACUUM database after clear_history: {e}")
+
+        logger.info(
+            f"Cleared database history: {deleted_items} items, {deleted_keys} keys, "
+            f"{deleted_tokens} tokens, reset {reset_metadata} counters"
+        )
+        return {
+            "deleted_items": deleted_items,
+            "deleted_keys": deleted_keys,
+            "deleted_tokens": deleted_tokens,
+            "reset_metadata": reset_metadata,
+        }
+
     def get_latest_item_record(self, item_keys: List[str]) -> Optional[Dict[str, Any]]:
         """
         Fetch the most recent processed_items record for the given item keys.
