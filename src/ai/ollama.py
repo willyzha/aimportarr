@@ -29,7 +29,7 @@ from .base import (
 logger = logging.getLogger("aimportarr.ai.ollama")
 
 
-def extract_ollama_error_details(e: Exception) -> Tuple[str, str]:
+def extract_ollama_error_details(e: Exception, timeout_seconds: Optional[float] = None) -> Tuple[str, str]:
     """Extract structured (error_code, detailed_reason) from an Ollama exception."""
     if hasattr(e, "response") and getattr(e.response, "status_code", None) is not None:
         status = e.response.status_code
@@ -44,7 +44,8 @@ def extract_ollama_error_details(e: Exception) -> Tuple[str, str]:
         return f"HTTP {status}", f"Ollama returned HTTP {status}: {err_body or str(e)}"
     err_name = type(e).__name__.lower()
     if "timeout" in err_name:
-        return "TIMEOUT", f"Ollama API request timed out after 60s: {e}"
+        dur_str = f" after {int(timeout_seconds) if timeout_seconds.is_integer() else timeout_seconds}s" if timeout_seconds else ""
+        return "TIMEOUT", f"Ollama API request timed out{dur_str}: {e}"
     elif "connect" in err_name:
         return "CONNECT_ERROR", f"Cannot connect to Ollama server (connection refused): {e}"
     elif "request" in err_name:
@@ -105,7 +106,7 @@ class OllamaProvider(BaseAIProvider):
                 data = resp.json()
         except Exception as e:
             duration_ms = int((time.time() - start_time) * 1000)
-            err_code, err_msg = extract_ollama_error_details(e)
+            err_code, err_msg = extract_ollama_error_details(e, timeout_seconds=self.timeout)
             p_tok = max(1, math.ceil(len(full_prompt) / 3.8))
             metrics.record_token_usage(
                 operation=operation,

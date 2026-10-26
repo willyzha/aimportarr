@@ -701,6 +701,13 @@ class ContainerSmokeTests(unittest.TestCase):
         self.assertEqual(code_ol, "HTTP 500")
         self.assertIn("context length exceeded", desc_ol)
 
+        # Mock Ollama timeout with dynamic timeout value
+        class MockTimeoutException(Exception):
+            pass
+        code_to, desc_to = extract_ollama_error_details(MockTimeoutException("read timeout"), timeout_seconds=90.0)
+        self.assertEqual(code_to, "TIMEOUT")
+        self.assertIn("after 90s", desc_to)
+
         # 2. Test token recording with prompt_tokens=0 on error -> estimates non-zero input tokens
         with tempfile.TemporaryDirectory() as tmpdir:
             db_path = f"{tmpdir}/test_tokens.db"
