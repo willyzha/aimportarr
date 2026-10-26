@@ -2520,6 +2520,14 @@ DASHBOARD_HTML = """<!DOCTYPE html>
             <input type="number" min="0" id="cfg-db-retention" class="form-input" value="30">
           </div>
 
+          <div class="form-group" style="display: flex; align-items: center; justify-content: space-between; padding-top: 0.5rem; border-top: 1px solid var(--border-subtle); margin-bottom: 1rem;">
+            <div>
+              <div class="form-label" style="margin-bottom: 0;">Database Maintenance</div>
+              <div class="form-hint">Purge historical records and reset queue deduplication state</div>
+            </div>
+            <button type="button" class="btn btn-danger btn-sm" onclick="openClearHistoryModal()">🗑️ Clear Database History</button>
+          </div>
+
           <div class="form-group">
             <div style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 0.4rem;">
               <label class="form-label" style="margin-bottom: 0;">Path Mappings (Remote *arr &rarr; Local Container)</label>
