@@ -452,6 +452,22 @@ class DatabaseManager:
                     logger.info(f"Marked {count} retryable item(s) for retry on next queue scan cycle.")
                 return count
 
+    def cancel_item_retry(self, item_id: int) -> bool:
+        """
+        Unmark retry_requested for a specific processed item.
+        """
+        with self._lock:
+            conn = self._get_connection()
+            with conn:
+                cursor = conn.execute(
+                    "UPDATE processed_items SET retry_requested = 0 WHERE id = ?",
+                    (item_id,)
+                )
+                success = cursor.rowcount > 0
+                if success:
+                    logger.info(f"Cancelled retry for processed item #{item_id}.")
+                return success
+
     def record_token_usage(
         self,
         operation: str,

@@ -401,7 +401,18 @@ class ContainerSmokeTests(unittest.TestCase):
                 rejected_id = test_tracker.get_processed_history()[0]["id"]
                 self.assertFalse(test_tracker.mark_item_for_retry(rejected_id))
 
-                # 7. REST API: POST /api/retry for all items
+                # 7. REST API: POST /api/retry cancel and all items
+                req_cancel = urllib.request.Request(
+                    f"http://127.0.0.1:{port}/api/retry",
+                    data=json.dumps({"id": skipped_id, "cancel": True}).encode("utf-8"),
+                    headers={"Content-Type": "application/json"}
+                )
+                with urllib.request.urlopen(req_cancel, timeout=3.0) as resp:
+                    self.assertEqual(resp.status, 200)
+                    res_cancel = json.loads(resp.read().decode("utf-8"))
+                    self.assertEqual(res_cancel["status"], "ok")
+                    self.assertTrue(res_cancel["success"])
+
                 post_data = json.dumps({"all": True}).encode("utf-8")
                 req = urllib.request.Request(
                     f"http://127.0.0.1:{port}/api/retry",
@@ -492,6 +503,15 @@ class ContainerSmokeTests(unittest.TestCase):
             self.assertTrue(db.is_item_attempted_within_days(["dl:abc123"], days=7))
 
             # Mark for retry
+            ok = db.mark_item_for_retry(item_id)
+            self.assertTrue(ok)
+
+            # Cancel retry
+            cancel_ok = db.cancel_item_retry(item_id)
+            self.assertTrue(cancel_ok)
+            self.assertTrue(db.is_item_attempted(item_keys))
+
+            # Mark again
             ok = db.mark_item_for_retry(item_id)
             self.assertTrue(ok)
 

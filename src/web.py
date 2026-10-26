@@ -215,17 +215,89 @@ DASHBOARD_HTML = """<!DOCTYPE html>
       border-radius: 4px;
     }
 
+    /* Fixed Action Column & Stable Button Sizing */
+    .col-action {
+      width: 108px !important;
+      min-width: 108px !important;
+      max-width: 108px !important;
+      text-align: center !important;
+      box-sizing: border-box !important;
+      white-space: nowrap !important;
+    }
+
+    .action-btn-slot {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      width: 92px;
+      height: 26px;
+      box-sizing: border-box;
+      vertical-align: middle;
+    }
+
+    .btn-retry,
+    .badge-pending-retry {
+      width: 92px !important;
+      height: 26px !important;
+      box-sizing: border-box !important;
+      display: inline-flex !important;
+      align-items: center !important;
+      justify-content: center !important;
+      padding: 0 0.4rem !important;
+      font-size: 0.72rem !important;
+      font-weight: 600 !important;
+      line-height: 1 !important;
+      white-space: nowrap !important;
+      border-radius: 4px !important;
+      margin: 0 !important;
+      user-select: none;
+      transition: background-color 0.15s ease, border-color 0.15s ease, color 0.15s ease;
+    }
+
     .btn-retry {
       background-color: rgba(245, 158, 11, 0.12);
       border: 1px solid rgba(245, 158, 11, 0.35);
       color: #fbbf24;
-      font-weight: 600;
+      cursor: pointer;
     }
 
     .btn-retry:hover {
       background-color: rgba(245, 158, 11, 0.25);
       border-color: #f59e0b;
       color: #fff;
+    }
+
+    .btn-retry:active {
+      transform: scale(0.98);
+    }
+
+    .badge-pending-retry {
+      background-color: rgba(245, 158, 11, 0.16);
+      border: 1px solid rgba(245, 158, 11, 0.45);
+      color: #fbbf24;
+      cursor: pointer;
+    }
+
+    .badge-pending-retry:hover {
+      background-color: rgba(239, 68, 68, 0.2);
+      border-color: #ef4444;
+      color: #fca5a5;
+    }
+
+    .badge-pending-retry .cancel-hint {
+      display: none;
+    }
+
+    .badge-pending-retry .queued-text {
+      display: inline;
+    }
+
+    .badge-pending-retry:hover .cancel-hint {
+      display: inline;
+    }
+
+    .badge-pending-retry:hover .queued-text {
+      display: none;
     }
 
     .btn-warning {
@@ -1921,7 +1993,7 @@ DASHBOARD_HTML = """<!DOCTYPE html>
               <th style="width: 120px;">Category</th>
               <th style="width: 90px;">Status</th>
               <th style="width: 140px;">AI Model & Conf.</th>
-              <th style="width: 90px; text-align: center;">Action</th>
+              <th class="col-action" style="width: 108px; min-width: 108px; max-width: 108px; text-align: center;">Action</th>
               <th style="width: 30px;"></th>
             </tr>
           </thead>
@@ -3019,6 +3091,48 @@ DASHBOARD_HTML = """<!DOCTYPE html>
       if (cardChevron) cardChevron.innerText = willOpen ? '▴' : '▾';
     }
 
+    function renderActionCell(item, isCard = false) {
+      const normStatus = normalizeStatus(item.status);
+      if (!['skipped', 'failed', 'dry_run', 'imported', 'dismissed'].includes(normStatus)) {
+        return isCard ? '' : '<span style="color: var(--text-dim); font-size: 0.75rem;">--</span>';
+      }
+
+      if (item.retry_requested) {
+        if (isCard) {
+          return `
+            <button class="badge-pending-retry" style="width: 100%; height: 28px; justify-content: center;" onclick="event.stopPropagation(); cancelRetry(${item.id})" title="Queued for retry. Click to cancel.">
+              <span class="queued-text">⏳ Queued</span>
+              <span class="cancel-hint">✖ Cancel</span>
+            </button>
+          `;
+        }
+        return `
+          <div class="action-btn-slot">
+            <span class="badge-pending-retry" onclick="event.stopPropagation(); cancelRetry(${item.id})" title="Queued for retry. Click to cancel.">
+              <span class="queued-text">⏳ Queued</span>
+              <span class="cancel-hint">✖ Cancel</span>
+            </span>
+          </div>
+        `;
+      }
+
+      if (isCard) {
+        return `
+          <button class="btn btn-sm btn-retry" style="width: 100%; height: 28px; justify-content: center;" onclick="event.stopPropagation(); retryItem(${item.id})" title="Allow this release to be re-evaluated on next scan">
+            🔄 Retry
+          </button>
+        `;
+      }
+
+      return `
+        <div class="action-btn-slot">
+          <button class="btn btn-sm btn-retry" onclick="event.stopPropagation(); retryItem(${item.id})" title="Allow this release to be re-evaluated on next scan">
+            🔄 Retry
+          </button>
+        </div>
+      `;
+    }
+
     function renderHistoryTable(items) {
       const tbody = document.getElementById('history-table-body');
       const cardsContainer = document.getElementById('history-cards-container');
@@ -3055,16 +3169,6 @@ DASHBOARD_HTML = """<!DOCTYPE html>
           const statusTooltip = getStatusTooltip(normStatus);
           const isOpen = openReasoningIds.has(Number(item.id));
 
-          // Offer Retry for items that have not been permanently deleted from client (malware/rejected)
-          let actionCell = '<span style="color: var(--text-dim); font-size: 0.75rem;">--</span>';
-          if (['skipped', 'failed', 'dry_run', 'imported', 'dismissed'].includes(normStatus)) {
-            if (item.retry_requested) {
-              actionCell = '<span class="badge" style="background: rgba(245, 158, 11, 0.15); color: #f59e0b; border: 1px solid rgba(245, 158, 11, 0.3); font-size: 0.65rem;">Pending Retry</span>';
-            } else {
-              actionCell = `<button class="btn btn-sm btn-retry" onclick="event.stopPropagation(); retryItem(${item.id})" title="Allow this release to be re-evaluated on next scan">🔄 Retry</button>`;
-            }
-          }
-
           return `
             <tr class="clickable-row" onclick="toggleReasoning(${item.id})">
               <td>${formatDateTimeCell(item.timestamp)}</td>
@@ -3079,7 +3183,7 @@ DASHBOARD_HTML = """<!DOCTYPE html>
                 <div style="font-weight: 600;">${confText}</div>
                 <div style="font-size: 0.7rem; color: var(--text-dim);">${escapeHtml(modelText)}</div>
               </td>
-              <td style="text-align: center;" onclick="event.stopPropagation()">${actionCell}</td>
+              <td id="action-cell-${item.id}" class="col-action" onclick="event.stopPropagation()">${renderActionCell(item, false)}</td>
               <td id="chevron-${item.id}" class="reasoning-chevron" style="color: var(--text-dim); font-size: 0.8rem;">${isOpen ? '▴' : '▾'}</td>
             </tr>
             <tr id="reasoning-${item.id}" class="reasoning-row ${isOpen ? 'open' : ''}" onclick="event.stopPropagation()">
@@ -3112,15 +3216,6 @@ DASHBOARD_HTML = """<!DOCTYPE html>
           const statusTooltip = getStatusTooltip(normStatus);
           const isOpen = openReasoningIds.has(Number(item.id));
 
-          let actionBtn = '';
-          if (['skipped', 'failed', 'dry_run', 'imported', 'dismissed'].includes(normStatus)) {
-            if (item.retry_requested) {
-              actionBtn = '<span class="badge" style="background: rgba(245, 158, 11, 0.15); color: #f59e0b; border: 1px solid rgba(245, 158, 11, 0.3); font-size: 0.72rem; padding: 0.25rem 0.55rem; width: 100%; justify-content: center;">Pending Retry</span>';
-            } else {
-              actionBtn = `<button class="btn btn-sm btn-retry" style="width: 100%; justify-content: center;" onclick="event.stopPropagation(); retryItem(${item.id})" title="Allow this release to be re-evaluated on next scan">🔄 Retry on Next Scan</button>`;
-            }
-          }
-
           return `
             <div class="history-mobile-card clickable-row" onclick="toggleReasoning(${item.id})">
               <div style="display: flex; justify-content: space-between; align-items: flex-start; gap: 0.5rem;">
@@ -3151,11 +3246,9 @@ DASHBOARD_HTML = """<!DOCTYPE html>
                 </div>
               </div>
 
-              ${actionBtn ? `
-                <div style="margin-top: 0.1rem;" onclick="event.stopPropagation()">
-                  ${actionBtn}
-                </div>
-              ` : ''}
+              <div id="action-card-${item.id}" style="margin-top: 0.1rem;" onclick="event.stopPropagation()">
+                ${renderActionCell(item, true)}
+              </div>
 
               <div style="display: flex; justify-content: space-between; align-items: center; font-size: 0.72rem; color: var(--accent); padding-top: 0.3rem; border-top: 1px solid var(--border-subtle);">
                 <span>AI Reasoning &amp; Details</span>
@@ -3846,7 +3939,23 @@ DASHBOARD_HTML = """<!DOCTYPE html>
       }
     }
 
+    function updateActionCellState(id, retryRequested) {
+      const it = rawHistory.find(x => x.id === id);
+      if (it) {
+        it.retry_requested = retryRequested ? 1 : 0;
+      }
+      const cell = document.getElementById(`action-cell-${id}`);
+      if (cell && it) {
+        cell.innerHTML = renderActionCell(it, false);
+      }
+      const cardSlot = document.getElementById(`action-card-${id}`);
+      if (cardSlot && it) {
+        cardSlot.innerHTML = renderActionCell(it, true);
+      }
+    }
+
     async function retryItem(id) {
+      updateActionCellState(id, 1);
       try {
         const res = await fetch('/api/retry', {
           method: 'POST',
@@ -3856,18 +3965,36 @@ DASHBOARD_HTML = """<!DOCTYPE html>
         const data = await res.json();
         if (res.ok && data.status === 'ok') {
           showToast(`Release #${id} queued for immediate retry!`, 'success');
-          const it = rawHistory.find(x => x.id === id);
-          if (it) {
-            it.retry_requested = 1;
-            renderHistoryTable(rawHistory);
-          }
-          setTimeout(() => fetchHistoryData(true), 1200);
         } else {
+          updateActionCellState(id, 0);
           showToast(data.message || `Failed to retry item #${id}`, 'danger');
         }
       } catch (e) {
         console.error(e);
+        updateActionCellState(id, 0);
         showToast('Network error retrying item', 'danger');
+      }
+    }
+
+    async function cancelRetry(id) {
+      updateActionCellState(id, 0);
+      try {
+        const res = await fetch('/api/retry', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ id: id, cancel: true })
+        });
+        const data = await res.json();
+        if (res.ok && data.status === 'ok') {
+          showToast(`Cancelled retry for release #${id}`, 'info');
+        } else {
+          updateActionCellState(id, 1);
+          showToast(data.message || `Failed to cancel retry for item #${id}`, 'danger');
+        }
+      } catch (e) {
+        console.error(e);
+        updateActionCellState(id, 1);
+        showToast('Network error cancelling retry', 'danger');
       }
     }
 
@@ -5128,6 +5255,17 @@ class MetricsHTTPHandler(BaseHTTPRequestHandler):
                 except ValueError:
                     self.send_error(HTTPStatus.BAD_REQUEST, "Invalid item ID")
                     return
+
+                if data.get("cancel"):
+                    success = self.metrics.cancel_item_retry(item_id)
+                    self._send_json({
+                        "status": "ok",
+                        "message": f"Cancelled retry for item #{item_id}.",
+                        "id": item_id,
+                        "success": success
+                    })
+                    return
+
                 success = self.metrics.mark_item_for_retry(item_id, allow_all=True)
                 if success:
                     if self.on_trigger_scan:

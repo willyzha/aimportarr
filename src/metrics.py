@@ -232,6 +232,20 @@ class MetricsTracker:
                 return self.db.mark_item_for_retry(item_id, allow_all=allow_all)
             return matched_in_mem
 
+    def cancel_item_retry(self, item_id: int) -> bool:
+        """Unmark retry_requested for a specific item in-memory and in SQLite."""
+        with self._lock:
+            matched_in_mem = False
+            for item in self.processed_history:
+                if item.get("id") == item_id:
+                    item["retry_requested"] = 0
+                    matched_in_mem = True
+                    break
+
+            if self.db:
+                return self.db.cancel_item_retry(item_id)
+            return matched_in_mem
+
     def mark_all_rejected_for_retry(self) -> int:
         """Flag all retryable items (skipped, failed, or dry_run) still in the queue for retry."""
         with self._lock:
