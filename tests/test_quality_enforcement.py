@@ -1768,6 +1768,136 @@ class QualityEnforcementTests(unittest.IsolatedAsyncioTestCase):
             self.assertTrue(res)
             mock_trigger.assert_called_once()
 
+    async def test_stage2_candidate_files_include_file_size_metadata(self):
+        """Verify that candidate file size metadata is passed into manual_import_files for Stage 2 AI in Sonarr and Radarr."""
+        manual_items_sonarr = [{
+            "path": "/downloads/Show.S01E01.mkv",
+            "name": "Show.S01E01.mkv",
+            "size": 1500000000,
+            "rejections": [],
+            "episodes": [],
+            "quality": {"quality": {"id": 1, "name": "WEBDL-1080p"}},
+        }]
+
+        queue_item_sonarr = {
+            "id": 991,
+            "title": "Show.S01E01",
+            "status": "warning",
+            "trackedDownloadStatus": "warning",
+            "statusMessages": [{"messages": ["Unable to parse episode"]}],
+            "outputPath": "/downloads/Show.S01E01",
+            "series": {"id": 10, "title": "Show", "alternateTitles": []},
+        }
+
+        stage2_res = Stage2DecisionResult(
+            decision="reject_keep_in_client",
+            confidence=0.9,
+            reasoning="Sample evaluation.",
+            category_tag="sample",
+        )
+
+        with patch.object(self.sonarr, "get_manual_import_items", new_callable=AsyncMock, return_value=manual_items_sonarr), \
+             patch.object(self.sonarr, "get_series_episodes", new_callable=AsyncMock, return_value=[]), \
+             patch.object(self.sonarr, "get_episode_files", new_callable=AsyncMock, return_value=[]), \
+             patch.object(self.sonarr, "resolve_queue_item", new_callable=AsyncMock, return_value=True):
+
+            self.mock_ai.evaluate_import_decision = AsyncMock(return_value=stage2_res)
+            await self.sonarr.process_queue_item(item=queue_item_sonarr, ai_provider=self.mock_ai)
+
+            call_kwargs = self.mock_ai.evaluate_import_decision.call_args[1]
+            manual_files = call_kwargs["manual_import_files"]
+            self.assertEqual(len(manual_files), 1)
+            self.assertEqual(manual_files[0]["size"], 1500000000)
+
+        # Now test Radarr candidate file size inclusion
+        manual_items_radarr = [{
+            "path": "/downloads/Movie.2024.mkv",
+            "name": "Movie.2024.mkv",
+            "size": 4500000000,
+            "rejections": [{"reason": "Sample rejection"}],
+            "movie": {"id": 20, "title": "Movie"},
+            "quality": {"quality": {"id": 1, "name": "WEBDL-1080p"}},
+        }]
+
+        queue_item_radarr = {
+            "id": 992,
+            "title": "Movie.2024",
+            "status": "warning",
+            "trackedDownloadStatus": "warning",
+            "statusMessages": [{"messages": ["Unknown Movie"]}],
+            "outputPath": "/downloads/Movie.2024",
+        }
+
+        with patch.object(self.radarr, "get_manual_import_items", new_callable=AsyncMock, return_value=manual_items_radarr), \
+             patch.object(self.radarr, "get_all_movies", new_callable=AsyncMock, return_value=[]), \
+             patch.object(self.radarr, "resolve_queue_item", new_callable=AsyncMock, return_value=True):
+
+            self.mock_ai.evaluate_import_decision = AsyncMock(return_value=stage2_res)
+            await self.radarr.process_queue_item(item=queue_item_radarr, ai_provider=self.mock_ai)
+
+            call_kwargs_radarr = self.mock_ai.evaluate_import_decision.call_args[1]
+            manual_files_radarr = call_kwargs_radarr["manual_import_files"]
+            self.assertEqual(len(manual_files_radarr), 1)
+            self.assertEqual(manual_files_radarr[0]["size"], 4500000000)
+
+    async def test_sonarr_ai_flexible_cross_library_remapping(self):
+        """When *arr grabbed an item under Series A, but AI identifies it as Series B from library_candidates, import into Series B."""
+        series_a = {"id": 100, "title": "Wrong Grab Series", "year": 2026, "alternateTitles": []}
+        series_b = {"id": 200, "title": "Target Monitored Series", "year": 2026, "alternateTitles": []}
+
+        queue_item = {
+            "id": 777,
+            "title": "Target.Monitored.Series.S01E03.1080p",
+            "status": "warning",
+            "trackedDownloadStatus": "warning",
+            "statusMessages": [{"messages": ["Episode was not found"]}],
+            "outputPath": "/downloads/Target.Monitored.Series.S01E03.1080p",
+            "series": series_a,
+        }
+
+        manual_items = [{
+            "path": "/downloads/Target.Monitored.Series.S01E03.1080p/ep3.mkv",
+            "name": "ep3.mkv",
+            "size": 1200000000,
+            "rejections": [],
+            "episodes": [],
+            "quality": {"quality": {"id": 3, "name": "WEBDL-1080p"}},
+        }]
+
+        stage2_decision = Stage2DecisionResult(
+            decision="import",
+            confidence=0.96,
+            reasoning="Item was mis-grabbed under Series A, but release title clearly matches Series B.",
+            matched_media_id=200,  # Remapped to Series B
+            files_to_import=[
+                ApprovedFileItem(
+                    path="/downloads/Target.Monitored.Series.S01E03.1080p/ep3.mkv",
+                    season_number=1,
+                    episode_numbers=[3]
+                )
+            ],
+            category_tag="ai_imported",
+            model_name="Gemini",
+        )
+
+        episodes_b = [{"id": 20003, "seasonNumber": 1, "episodeNumber": 3, "title": "Episode 3", "hasFile": False}]
+
+        with patch.object(self.sonarr, "get_manual_import_items", new_callable=AsyncMock, return_value=manual_items), \
+             patch.object(self.sonarr, "get_series_episodes", new_callable=AsyncMock, return_value=episodes_b), \
+             patch.object(self.sonarr, "get_episode_files", new_callable=AsyncMock, return_value=[]), \
+             patch.object(self.sonarr, "get_all_series", new_callable=AsyncMock, return_value=[series_a, series_b]), \
+             patch.object(self.sonarr, "trigger_manual_import", new_callable=AsyncMock, return_value=True) as mock_trigger:
+
+            self.mock_ai.evaluate_import_decision = AsyncMock(return_value=stage2_decision)
+
+            res = await self.sonarr.process_queue_item(item=queue_item, ai_provider=self.mock_ai)
+            self.assertTrue(res)
+            mock_trigger.assert_called_once()
+            imported_payload = mock_trigger.call_args[0][0]
+            self.assertEqual(len(imported_payload), 1)
+            self.assertEqual(imported_payload[0]["seriesId"], 200)
+            self.assertEqual(imported_payload[0]["episodeIds"], [20003])
+
 
 
 

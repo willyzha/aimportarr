@@ -910,6 +910,7 @@ class RadarrClient:
                     {
                         "path": m.get("path"),
                         "name": m.get("name") or Path(m.get("path", "")).name,
+                        "size": m.get("size"),
                         "quality": (m.get("quality") or {}).get("quality", {}).get("name"),
                         "customFormatScore": m.get("customFormatScore"),
                         "languages": [l.get("name") for l in m.get("languages", []) if isinstance(l, dict)],
@@ -1246,7 +1247,14 @@ class RadarrClient:
         clean_title = (movie.get("cleanTitle") or "").lower()
         title_lower = title.lower()
 
-        if only_quality_rejections and (movie_title in title_lower or clean_title in title_lower):
+        import re
+        is_clean_title = is_plausible_title_match(title, movie_title, [clean_title] if clean_title else None)
+        sequel_tokens = {"part", "chapter", "sequel", "ii", "iii", "iv", "v", "two", "three", "four", "five", "2", "3", "4", "5"}
+        rel_lower_tokens = set(re.findall(r"[a-z0-9]+", title_lower))
+        movie_lower_tokens = set(re.findall(r"[a-z0-9]+", movie_title))
+        has_extra_sequel = bool((rel_lower_tokens & sequel_tokens) - (movie_lower_tokens & sequel_tokens))
+
+        if only_quality_rejections and is_clean_title and not has_extra_sequel:
             return "tier1_eligible"
 
         return "tier2_candidate"

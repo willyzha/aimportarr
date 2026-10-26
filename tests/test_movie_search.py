@@ -136,6 +136,33 @@ class MissingMovieSearchTests(unittest.IsolatedAsyncioTestCase):
         status = self.client.classify_movie_release(rel_ai, movie)
         self.assertEqual(status, "tier2_candidate")
 
+        # False-positive prevention: short title "Up" must NOT match "Super Mario" as Tier 1
+        movie_up = {"id": 2, "title": "Up", "cleanTitle": "up"}
+        rel_super_mario = {
+            "title": "Super.Mario.Bros.2023.1080p",
+            "size": 2 * 1024 * 1024 * 1024,
+            "approved": False,
+            "rejections": ["Existing file on disk has equal or higher quality"],
+        }
+        status = self.client.classify_movie_release(rel_super_mario, movie_up)
+        self.assertEqual(status, "tier2_candidate")
+
+        # False-positive prevention: sequel "Dune Part Two" must NOT match "Dune (2021)" as Tier 1
+        movie_dune = {"id": 3, "title": "Dune", "cleanTitle": "dune"}
+        rel_dune_two = {
+            "title": "Dune.Part.Two.2024.1080p.WEB-DL",
+            "size": 3 * 1024 * 1024 * 1024,
+            "approved": False,
+            "rejections": ["Existing file on disk has equal or higher quality"],
+        }
+        status = self.client.classify_movie_release(rel_dune_two, movie_dune)
+        self.assertEqual(status, "tier2_candidate")
+
+        # Matching sequel title "Dune: Part Two" with "Dune Part Two" DOES match as Tier 1
+        movie_dune_two = {"id": 4, "title": "Dune: Part Two", "cleanTitle": "duneparttwo"}
+        status = self.client.classify_movie_release(rel_dune_two, movie_dune_two)
+        self.assertEqual(status, "tier1_eligible")
+
     async def test_run_missing_movie_search_tier1_match(self):
         """Tier 1: clean title/year match automatically grabbed with 0 AI tokens."""
         now = datetime.now(timezone.utc)

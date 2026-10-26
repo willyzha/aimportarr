@@ -1091,6 +1091,7 @@ class SonarrClient:
                     {
                         "path": m.get("path"),
                         "name": m.get("name") or Path(m.get("path", "")).name,
+                        "size": m.get("size"),
                         "quality": (m.get("quality") or {}).get("quality", {}).get("name"),
                         "customFormatScore": m.get("customFormatScore"),
                         "languages": [l.get("name") for l in m.get("languages", []) if isinstance(l, dict)],
