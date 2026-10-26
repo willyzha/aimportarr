@@ -6,6 +6,7 @@ from .base import (
     Stage2DecisionResult,
     BackfillPackMatchResult,
     AIProviderError,
+    DailyQuotaExhaustedError,
 )
 from .gemini import GeminiProvider
 from .ollama import OllamaProvider
@@ -51,8 +52,13 @@ def get_ai_provider(config: AIConfig) -> BaseAIProvider:
                 model=config.ollama.model,
                 timeout=config.ollama.timeout_seconds,
             )
-            logger.info(f"AI Provider initialized: Gemini ({config.gemini.model}) with automatic fallback to Ollama ({config.ollama.model})")
-            return FallbackProvider(primary=primary, fallback=fallback)
+            daily_msg = " [daily quota exhaustion only]" if config.fallback_on_daily_quota_only else ""
+            logger.info(f"AI Provider initialized: Gemini ({config.gemini.model}) with automatic fallback to Ollama ({config.ollama.model}){daily_msg}")
+            return FallbackProvider(
+                primary=primary,
+                fallback=fallback,
+                fallback_on_daily_quota_only=config.fallback_on_daily_quota_only,
+            )
 
         return primary
 
@@ -86,6 +92,7 @@ __all__ = [
     "Stage2DecisionResult",
     "BackfillPackMatchResult",
     "AIProviderError",
+    "DailyQuotaExhaustedError",
     "GeminiProvider",
     "OllamaProvider",
     "FallbackProvider",

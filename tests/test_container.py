@@ -117,6 +117,7 @@ class ContainerSmokeTests(unittest.TestCase):
             self.assertEqual(config.web.port, 9890)
             self.assertEqual(config.database.retention_days, 30)
             self.assertEqual(config.database.path, "/config/aimportarr.db")
+            self.assertTrue(config.ai.fallback_on_daily_quota_only)
 
     def test_pydantic_model_definitions(self):
         """Verify all Pydantic models instantiate properly with default factories."""
@@ -135,6 +136,7 @@ class ContainerSmokeTests(unittest.TestCase):
         self.assertTrue(config.web.enabled)
         self.assertEqual(config.database.retention_days, 30)
         self.assertEqual(config.database.path, "/config/aimportarr.db")
+        self.assertTrue(config.ai.fallback_on_daily_quota_only)
         self.assertIsInstance(config.path_mappings, list)
 
         mapping = PathMapping(**{"from": "/remote/path", "to": "/local/path"})

@@ -4,8 +4,8 @@ import logging
 import math
 import re
 import time
-from datetime import datetime
-from typing import Dict, List, Optional, Any, Tuple
+from datetime import datetime, timezone, timedelta
+from typing import Dict, List, Optional, Any, Tuple, Union
 import httpx
 from ..metrics import metrics
 from .base import (
@@ -18,6 +18,7 @@ from .base import (
     BackfillBulkEpisodesMatchResult,
     AliasVerificationResult,
     AIProviderError,
+    DailyQuotaExhaustedError,
     compact_stage2_context,
     validate_stage1_payload,
     validate_stage2_payload,
@@ -28,6 +29,36 @@ from .base import (
 )
 
 logger = logging.getLogger("aimportarr.ai.gemini")
+
+
+def is_daily_quota_message(err_text: str) -> bool:
+    """Check if error string specifically indicates daily token/request exhaustion."""
+    low = str(err_text).lower()
+    return any(
+        k in low
+        for k in (
+            "per day",
+            "per_day",
+            "per-day",
+            "perday",
+            "requests per day",
+            "tokens per day",
+            "requestsperday",
+            "tokensperday",
+            "daily quota",
+            "daily limit",
+            "free tier limit reached for the day",
+        )
+    )
+
+
+def get_daily_reset_epoch() -> float:
+    """Calculate the epoch timestamp for the next Gemini daily quota reset (08:00 UTC / Midnight Pacific)."""
+    now_utc = datetime.now(timezone.utc)
+    target = now_utc.replace(hour=8, minute=0, second=0, microsecond=0)
+    if now_utc >= target:
+        target += timedelta(days=1)
+    return target.timestamp()
 
 
 def extract_gemini_error_details(e: Exception) -> Tuple[str, str]:
@@ -66,55 +97,141 @@ class GeminiProvider(BaseAIProvider):
         self._resolved_model: Optional[str] = None
         self._failed_models: set = set()
         self._rate_limited_models: Dict[str, float] = {}
+        self._daily_exhausted_models: Dict[str, float] = {}
+        self._project_daily_quota_exhausted: bool = False
+        self._project_daily_quota_reset_time: float = 0.0
         self._discovered_candidates: List[str] = []
         self._last_call_time: float = 0.0
-        self._min_call_interval: float = 2.0  # Pacing delay between calls to respect rate limits
+        self._min_call_interval: float = 1.0  # Pacing delay between calls to respect rate limits
 
     @property
     def name(self) -> str:
         active = self._resolved_model or self.model
         return f"Gemini ({active})"
 
-    async def get_candidate_models(self) -> List[str]:
-        """Fetch and score candidate models once or when refreshed."""
-        if self._discovered_candidates:
-            return self._discovered_candidates
+    def is_daily_quota_exhausted(self) -> bool:
+        """
+        Return True if we are certain that all Gemini tokens/requests for the day are used up.
+        True if project-level daily quota was hit or all candidate Gemini models
+        have exhausted their daily quota for today.
+        """
+        now = time.time()
+        if self._project_daily_quota_exhausted:
+            if not self._project_daily_quota_reset_time or now < self._project_daily_quota_reset_time:
+                return True
+            self._project_daily_quota_exhausted = False
+            self._project_daily_quota_reset_time = 0.0
 
-        url = f"https://generativelanguage.googleapis.com/v1beta/models?key={self.api_key}"
+        candidates = self._discovered_candidates or FALLBACK_GEMINI_MODELS
+        if not candidates:
+            return False
+
+        active_exhausted = [
+            m for m in candidates
+            if m in self._daily_exhausted_models and self._daily_exhausted_models[m] > now
+        ]
+        return len(active_exhausted) >= len(candidates)
+
+    @staticmethod
+    def _is_daily_quota_error(resp: httpx.Response) -> Tuple[bool, str]:
+        """
+        Determine whether an HTTP 429 response indicates daily quota exhaustion
+        vs a temporary per-minute rate limit (RPM/TPM).
+        """
         try:
-            async with httpx.AsyncClient(timeout=8.0) as client:
-                resp = await client.get(url)
-                resp.raise_for_status()
-                data = resp.json()
-        except Exception as e:
-            logger.warning(
-                "Failed to auto-discover Gemini models catalog: %s. Using default flash fallback list.",
-                e
-            )
-            return [
-                "gemini-3.6-flash",
-                "gemini-3.5-flash-lite",
-                "gemini-3.5-flash",
-                "gemini-3-flash-preview",
-                "gemini-flash-latest"
-            ]
+            err_json = resp.json()
+            error_obj = err_json.get("error", {})
+            msg = str(error_obj.get("message", ""))
+            details = error_obj.get("details", [])
+
+            for d in details:
+                if isinstance(d, dict):
+                    meta = d.get("metadata", {})
+                    quota_metric = str(meta.get("quota_metric", "")).lower()
+                    quota_limit = str(meta.get("quota_limit", "")).lower()
+                    if any(k in quota_metric or k in quota_limit for k in ("day", "daily")):
+                        return True, f"Daily quota metric reached: {meta.get('quota_metric') or meta.get('quota_limit')}"
+                    for viol in d.get("violations", []):
+                        desc = str(viol.get("description", "")).lower()
+                        metric = str(viol.get("quotaMetric", "") or viol.get("quota_metric", "")).lower()
+                        if any(k in desc or k in metric for k in ("per day", "per_day", "perday", "daily")):
+                            return True, f"Daily quota violation: {viol.get('quotaMetric') or viol.get('description')}"
+
+            if is_daily_quota_message(msg):
+                return True, f"Daily quota message: {msg}"
+        except Exception:
+            pass
+
+        if is_daily_quota_message(resp.text):
+            return True, "Daily quota exceeded"
+
+        return False, "Temporary per-minute rate limit (RPM/TPM)"
+
+    @staticmethod
+    def _parse_retry_after(resp: httpx.Response, default: int = 60) -> int:
+        retry_hdr = resp.headers.get("retry-after")
+        if retry_hdr:
+            try:
+                return max(5, min(300, int(retry_hdr)))
+            except ValueError:
+                pass
+        return default
+
+    async def get_candidate_models(self, raw_models: Optional[List[Union[str, dict]]] = None) -> List[str]:
+        """Fetch and score candidate models once or when refreshed, or filter a supplied list."""
+        if raw_models is not None:
+            models_data = []
+            for item in raw_models:
+                if isinstance(item, str):
+                    models_data.append({"name": item, "supportedGenerationMethods": ["generateContent"]})
+                elif isinstance(item, dict):
+                    models_data.append(item)
+            data = {"models": models_data}
+        else:
+            if self._discovered_candidates:
+                return self._discovered_candidates
+
+            url = f"https://generativelanguage.googleapis.com/v1beta/models?key={self.api_key}"
+            try:
+                async with httpx.AsyncClient(timeout=8.0) as client:
+                    resp = await client.get(url)
+                    resp.raise_for_status()
+                    data = resp.json()
+            except Exception as e:
+                logger.warning(
+                    "Failed to auto-discover Gemini models catalog: %s. Using default flash fallback list.",
+                    e
+                )
+                return [
+                    "gemini-3.6-flash",
+                    "gemini-3.5-flash",
+                    "gemini-2.5-flash",
+                    "gemini-3.5-flash-lite",
+                    "gemini-2.5-flash-lite",
+                    "gemini-flash-latest",
+                    "gemini-2.5-pro",
+                ]
 
         candidates = []
         for m in data.get("models", []):
             methods = m.get("supportedGenerationMethods", [])
             name = m.get("name", "").replace("models/", "")
+            if not name.startswith("gemini-"):
+                continue
             if "generateContent" not in methods:
                 continue
-            if any(x in name for x in ["image", "tts", "robotics", "clip", "banana", "transcribe", "argon", "computer-use"]):
+            if any(x in name for x in ["image", "tts", "robotics", "clip", "banana", "transcribe", "argon", "computer-use", "customtools"]):
                 continue
             candidates.append(name)
 
         def model_score(name: str):
-            tier = 3
+            tier = 4
             if "flash" in name and "flash-lite" not in name:
                 tier = 1
             elif "flash-lite" in name:
                 tier = 2
+            elif "pro" in name:
+                tier = 3
 
             v_match = re.search(r"gemini-(\d+(?:\.\d+)?)", name)
             version = float(v_match.group(1)) if v_match else 0.0
@@ -126,40 +243,58 @@ class GeminiProvider(BaseAIProvider):
         self._discovered_candidates = candidates
         return candidates
 
+    async def get_ordered_models_to_try(self, preferred: Optional[str] = None) -> List[str]:
+        """
+        Return list of candidate Gemini models ordered by preference and availability.
+        The user's preferred model (if specified) is placed first.
+        Models with expired rate-limits or daily quotas are refreshed.
+        Active rate-limited models are deprioritized after unconstrained models.
+        """
+        now = time.time()
+        self._rate_limited_models = {m: exp for m, exp in self._rate_limited_models.items() if exp > now}
+        self._daily_exhausted_models = {m: exp for m, exp in self._daily_exhausted_models.items() if exp > now}
+        if self._project_daily_quota_reset_time and now > self._project_daily_quota_reset_time:
+            self._project_daily_quota_exhausted = False
+            self._project_daily_quota_reset_time = 0.0
+
+        candidates = await self.get_candidate_models()
+        pref = preferred.strip() if preferred and preferred not in ("auto", "smallest", "") else None
+
+        ordered: List[str] = []
+        if pref:
+            ordered.append(pref)
+        for c in candidates:
+            if c not in ordered:
+                ordered.append(c)
+
+        active_models = [m for m in ordered if m not in self._failed_models]
+        daily_available = [m for m in active_models if m not in self._daily_exhausted_models]
+
+        if not daily_available:
+            return []
+
+        ready = [m for m in daily_available if m not in self._rate_limited_models]
+        cooling = sorted(
+            [m for m in daily_available if m in self._rate_limited_models],
+            key=lambda m: self._rate_limited_models[m]
+        )
+
+        return ready + cooling
+
     async def resolve_smallest_model(self, force_refresh: bool = False) -> str:
         """
         Select the best available model for text generation without wasting API calls on probe pings.
-        Filters out models that returned 404 (retired) or are currently on rate-limit cooldown (429/503).
+        Filters out models that returned 404 (retired), exhausted daily quota, or are currently on rate-limit cooldown.
         """
-        now = time.time()
-        expired = [m for m, exp in self._rate_limited_models.items() if exp <= now]
-        for m in expired:
-            del self._rate_limited_models[m]
-
-        if not force_refresh and self._resolved_model:
-            if self._resolved_model not in self._failed_models and self._resolved_model not in self._rate_limited_models:
-                return self._resolved_model
-
-        candidates = await self.get_candidate_models()
-        available = [
-            c for c in candidates
-            if c not in self._failed_models and c not in self._rate_limited_models
-        ]
-
-        if available:
-            chosen = available[0]
+        ordered = await self.get_ordered_models_to_try(preferred=self.model)
+        if ordered:
+            chosen = ordered[0]
             if chosen != self._resolved_model:
                 logger.info("Active Gemini model selected: '%s'", chosen)
             self._resolved_model = chosen
             return chosen
 
-        if self._rate_limited_models:
-            soonest = min(self._rate_limited_models.keys(), key=lambda k: self._rate_limited_models[k])
-            logger.warning("All Gemini candidate models are rate-limited. Trying soonest available '%s'...", soonest)
-            self._resolved_model = soonest
-            return soonest
-
-        fallback = "gemini-3.6-flash"
+        fallback = self.model if self.model not in ("auto", "smallest", "") else "gemini-3.6-flash"
         self._resolved_model = fallback
         return fallback
 
@@ -199,16 +334,19 @@ class GeminiProvider(BaseAIProvider):
             }
         }
 
-        max_attempts = 4
+        models_to_try = await self.get_ordered_models_to_try(preferred=self.model)
+        if not models_to_try:
+            if self.is_daily_quota_exhausted():
+                raise DailyQuotaExhaustedError("All Gemini models have exhausted their daily token/request quota.")
+            raise AIProviderError("No candidate Gemini models are available.")
+
+        models_to_attempt = models_to_try[:6]
         last_error = None
+        last_model_used = models_to_attempt[0]
         overall_start_time = time.time()
 
-        for attempt in range(max_attempts):
-            if self.model in ("auto", "smallest", ""):
-                current_model = await self.resolve_smallest_model()
-            else:
-                current_model = self._resolved_model or self.model
-
+        for attempt, current_model in enumerate(models_to_attempt):
+            last_model_used = current_model
             now = time.time()
             elapsed = now - self._last_call_time
             if elapsed < self._min_call_interval:
@@ -219,27 +357,72 @@ class GeminiProvider(BaseAIProvider):
 
             try:
                 start_time = time.time()
-                async with httpx.AsyncClient(timeout=30.0) as client:
+                async with httpx.AsyncClient(timeout=25.0) as client:
                     resp = await client.post(url, json=payload)
                     status = resp.status_code
 
                     if status == 404:
                         self._failed_models.add(current_model)
-                        logger.warning("Gemini model '%s' returned 404 (retired). Rotating to next model...", current_model)
-                        await self.resolve_smallest_model(force_refresh=True)
+                        logger.warning(
+                            "Gemini model '%s' returned 404 (retired). Trying next candidate Gemini model...",
+                            current_model
+                        )
+                        last_error = httpx.HTTPStatusError(f"404 Not Found for {current_model}", request=resp.request, response=resp)
                         continue
 
                     if status == 429:
-                        self._rate_limited_models[current_model] = time.time() + 180
-                        logger.warning("Gemini model '%s' hit rate limit / quota (HTTP 429). Rotating to next model...", current_model)
-                        await self.resolve_smallest_model(force_refresh=True)
+                        is_daily, reason = self._is_daily_quota_error(resp)
+                        if is_daily:
+                            reset_epoch = get_daily_reset_epoch()
+                            self._daily_exhausted_models[current_model] = reset_epoch
+                            if (
+                                "project" in reason.lower()
+                                or "requestsperday" in resp.text.lower().replace("_", "")
+                                or "generatecontentrequestsperday" in resp.text.lower().replace("_", "")
+                            ):
+                                self._project_daily_quota_exhausted = True
+                                self._project_daily_quota_reset_time = reset_epoch
+                            logger.warning(
+                                "Gemini model '%s' exhausted DAILY quota (%s). Trying next candidate Gemini model...",
+                                current_model, reason
+                            )
+                        else:
+                            cooldown = self._parse_retry_after(resp, default=60)
+                            self._rate_limited_models[current_model] = time.time() + cooldown
+                            logger.warning(
+                                "Gemini model '%s' hit temporary rate limit (HTTP 429, retry after %ds). Trying next candidate Gemini model...",
+                                current_model, cooldown
+                            )
+                        last_error = httpx.HTTPStatusError(f"429 Quota/Rate Limit for {current_model}: {reason}", request=resp.request, response=resp)
                         continue
 
-                    if status == 503:
+                    if status in (500, 502, 503, 504):
                         self._rate_limited_models[current_model] = time.time() + 60
-                        logger.warning("Gemini model '%s' is overloaded (HTTP 503). Rotating to next model...", current_model)
-                        await self.resolve_smallest_model(force_refresh=True)
+                        logger.warning(
+                            "Gemini model '%s' returned HTTP %d (%s). Trying next candidate Gemini model...",
+                            current_model, status, resp.reason_phrase
+                        )
+                        last_error = httpx.HTTPStatusError(f"{status} Server Error for {current_model}", request=resp.request, response=resp)
                         continue
+
+                    if status in (401, 403):
+                        dur_ms = int((time.time() - overall_start_time) * 1000)
+                        err_code, err_msg = extract_gemini_error_details(httpx.HTTPStatusError(f"{status} Unauthorized", request=resp.request, response=resp))
+                        p_tok = max(1, math.ceil(len(full_prompt) / 3.8))
+                        metrics.record_token_usage(
+                            operation=operation,
+                            model=current_model,
+                            prompt_tokens=p_tok,
+                            completion_tokens=0,
+                            total_tokens=p_tok,
+                            duration_ms=dur_ms,
+                            item_title=item_title,
+                            success=False,
+                            error_code=err_code,
+                            prompt_text=full_prompt,
+                            response_text=err_msg,
+                        )
+                        raise AIProviderError(f"Gemini API Key is invalid or unauthorized ({err_code})")
 
                     resp.raise_for_status()
                     data = resp.json()
@@ -265,6 +448,8 @@ class GeminiProvider(BaseAIProvider):
                         th_tok = t_tok - (p_tok + c_tok)
                     duration_ms = int((time.time() - start_time) * 1000)
 
+                    self._resolved_model = current_model
+
                     metrics.record_token_usage(
                         operation=operation,
                         model=current_model,
@@ -284,67 +469,43 @@ class GeminiProvider(BaseAIProvider):
                     except json.JSONDecodeError as e:
                         return None, raw_text, f"Invalid JSON syntax: {e}"
 
-            except httpx.HTTPStatusError as e:
-                status = e.response.status_code
-                if status in (401, 403):
-                    dur_ms = int((time.time() - overall_start_time) * 1000)
-                    err_code, err_msg = extract_gemini_error_details(e)
-                    p_tok = max(1, math.ceil(len(full_prompt) / 3.8))
-                    metrics.record_token_usage(
-                        operation=operation,
-                        model=self._resolved_model or self.model,
-                        prompt_tokens=p_tok,
-                        completion_tokens=0,
-                        total_tokens=p_tok,
-                        duration_ms=dur_ms,
-                        item_title=item_title,
-                        success=False,
-                        error_code=err_code,
-                        prompt_text=full_prompt,
-                        response_text=err_msg,
-                    )
-                    raise AIProviderError(f"Gemini API Key is invalid or unauthorized ({err_code})") from e
-                last_error = e
             except (httpx.RequestError, httpx.TimeoutException) as e:
+                self._rate_limited_models[current_model] = time.time() + 60
+                logger.warning(
+                    "Gemini model '%s' timed out or encountered network error: %s. Trying next candidate Gemini model...",
+                    current_model, e
+                )
                 last_error = e
-                logger.warning("Network/timeout error calling Gemini '%s': %s. Retrying...", current_model, e)
+                continue
             except Exception as e:
                 last_error = e
                 break
 
         dur_ms = int((time.time() - overall_start_time) * 1000)
         p_tok = max(1, math.ceil(len(full_prompt) / 3.8))
-        if last_error:
-            err_code, err_msg = extract_gemini_error_details(last_error)
-            metrics.record_token_usage(
-                operation=operation,
-                model=self._resolved_model or self.model,
-                prompt_tokens=p_tok,
-                completion_tokens=0,
-                total_tokens=p_tok,
-                duration_ms=dur_ms,
-                item_title=item_title,
-                success=False,
-                error_code=err_code,
-                prompt_text=full_prompt,
-                response_text=err_msg,
-            )
-            raise AIProviderError(f"Gemini API failed after {max_attempts} attempts: {err_msg}") from last_error
-
+        err_code, err_msg = extract_gemini_error_details(last_error) if last_error else ("NO_MODELS", "All candidate Gemini models failed")
         metrics.record_token_usage(
             operation=operation,
-            model=self._resolved_model or self.model,
+            model=last_model_used,
             prompt_tokens=p_tok,
             completion_tokens=0,
             total_tokens=p_tok,
             duration_ms=dur_ms,
             item_title=item_title,
             success=False,
-            error_code="RATE_LIMITED_ALL",
+            error_code=err_code,
             prompt_text=full_prompt,
-            response_text="Gemini API failed: all candidate models exhausted or rate-limited",
+            response_text=err_msg,
         )
-        raise AIProviderError("Gemini API failed: all candidate models exhausted or rate-limited")
+
+        if self.is_daily_quota_exhausted():
+            raise DailyQuotaExhaustedError(
+                f"All Gemini models have exhausted their daily token/request quota for today ({err_code}: {err_msg})"
+            )
+
+        raise AIProviderError(
+            f"All {len(models_to_attempt)} candidate Gemini models returned temporary errors ({err_code}: {err_msg})"
+        )
 
     async def _call_gemini(
         self,

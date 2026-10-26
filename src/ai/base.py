@@ -10,6 +10,11 @@ class AIProviderError(Exception):
     pass
 
 
+class DailyQuotaExhaustedError(AIProviderError):
+    """Raised when an AI provider has exhausted its daily token or request quota."""
+    pass
+
+
 STAGE1_VALID_ACTIONS = {"extract", "no_extraction", "reject_delete"}
 STAGE2_VALID_DECISIONS = {"import", "reject_keep_in_client", "reject_delete", "dismiss_pack"}
 
