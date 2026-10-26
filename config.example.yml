@@ -37,10 +37,6 @@ ai:
   # Automatic fallback: if Gemini fails, AImportarr can automatically fall back to local Ollama.
   fallback_enabled: true
 
-  # Fallback trigger: when true, AImportarr tries all other available Gemini models first on errors/timeouts,
-  # and only falls back to local Ollama when all daily Gemini tokens/quotas are fully exhausted for the day.
-  fallback_on_daily_quota_only: true
-
   # Google Gemini configuration (Cloud / Free Tier)
   gemini:
     api_key: "YOUR_GEMINI_API_KEY"

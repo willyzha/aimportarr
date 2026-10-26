@@ -2281,17 +2281,6 @@ DASHBOARD_HTML = """<!DOCTYPE html>
             </label>
           </div>
 
-          <div class="form-row" id="row-ai-fallback-daily-only" style="margin-bottom: 0.85rem;">
-            <div>
-              <div class="form-label" style="margin-bottom: 0;">Fallback Only on Daily Quota Exhaustion</div>
-              <div class="form-hint">Rotate across all available Gemini models first; only fall back to Ollama when daily Gemini tokens are fully exhausted</div>
-            </div>
-            <label class="toggle-switch">
-              <input type="checkbox" id="cfg-ai-fallback-daily-only">
-              <span class="toggle-slider"></span>
-            </label>
-          </div>
-
           <div class="form-group">
             <label class="form-label" for="cfg-gemini-key">Gemini API Key</label>
             <input type="password" id="cfg-gemini-key" class="form-input" placeholder="AIza...">
@@ -3997,7 +3986,6 @@ DASHBOARD_HTML = """<!DOCTYPE html>
         ai: {
           provider: document.getElementById('cfg-ai-provider')?.value || 'gemini',
           fallback_enabled: Boolean(document.getElementById('cfg-ai-fallback')?.checked),
-          fallback_on_daily_quota_only: Boolean(document.getElementById('cfg-ai-fallback-daily-only')?.checked),
           gemini: {
             api_key: (document.getElementById('cfg-gemini-key')?.value || '').trim(),
             model: (document.getElementById('cfg-gemini-model')?.value || '').trim() || 'auto'
@@ -4131,8 +4119,6 @@ DASHBOARD_HTML = """<!DOCTYPE html>
 
         document.getElementById('cfg-ai-provider').value = ai.provider || 'gemini';
         document.getElementById('cfg-ai-fallback').checked = ai.fallback_enabled !== false;
-        const fbDaily = document.getElementById('cfg-ai-fallback-daily-only');
-        if (fbDaily) fbDaily.checked = ai.fallback_on_daily_quota_only !== false;
         document.getElementById('cfg-gemini-key').value = gm.api_key || '';
         document.getElementById('cfg-gemini-model').value = gm.model || 'auto';
         document.getElementById('cfg-ollama-url').value = ol.base_url || 'http://localhost:11434';

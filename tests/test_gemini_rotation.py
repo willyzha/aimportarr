@@ -83,6 +83,7 @@ class GeminiRotationAndDailyQuotaTests(unittest.IsolatedAsyncioTestCase):
     async def test_ordered_models_puts_preferred_first(self):
         """Verify get_ordered_models_to_try puts the user preferred model first."""
         prov = GeminiProvider(api_key="fake-key", model="gemini-3.5-flash")
+        prov._discovered_candidates = ["gemini-3.6-flash", "gemini-3.5-flash", "gemini-2.5-flash"]
         ordered = await prov.get_ordered_models_to_try(preferred="gemini-3.5-flash")
         self.assertEqual(ordered[0], "gemini-3.5-flash")
         self.assertIn("gemini-3.6-flash", ordered)
@@ -94,6 +95,7 @@ class GeminiRotationAndDailyQuotaTests(unittest.IsolatedAsyncioTestCase):
         """
         prov = GeminiProvider(api_key="fake-key", model="gemini-3.6-flash")
         prov._min_call_interval = 0  # Disable sleep for fast unit tests
+        prov._discovered_candidates = ["gemini-3.6-flash", "gemini-3.5-flash"]
 
         calls = []
 
@@ -128,8 +130,6 @@ class GeminiRotationAndDailyQuotaTests(unittest.IsolatedAsyncioTestCase):
                 }
 
         async def mock_post(client, url, json=None):
-            # Extract model from URL
-            # https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key=...
             model_name = url.split("/models/")[1].split(":")[0]
             calls.append(model_name)
             if model_name == "gemini-3.6-flash":
@@ -157,13 +157,118 @@ class GeminiRotationAndDailyQuotaTests(unittest.IsolatedAsyncioTestCase):
             self.assertIn("gemini-3.6-flash", prov._rate_limited_models)
             self.assertGreater(prov._rate_limited_models["gemini-3.6-flash"], time.time())
 
-    async def test_gemini_daily_quota_exhaustion_raises_special_error(self):
+    async def test_gemini_attempts_all_models_without_cap_and_two_passes(self):
         """
-        Verify that when a 429 response indicates daily quota exhaustion (PerDay),
-        DailyQuotaExhaustedError is raised and provider state is updated.
+        Verify that GeminiProvider attempts ALL candidate models (e.g. 10 models) without any
+        hardcoded cap (like 6), pauses between passes, and attempts Pass 2.
+        """
+        prov = GeminiProvider(api_key="fake-key", model="gemini-model-0")
+        prov._min_call_interval = 0
+        prov._discovered_candidates = [f"gemini-model-{i}" for i in range(10)]
+
+        calls = []
+
+        class Mock429Resp:
+            status_code = 429
+            reason_phrase = "Too Many Requests"
+            text = '{"error": {"code": 429, "message": "Resource has been exhausted: GenerateContentRequestsPerMinute."}}'
+            headers = {"retry-after": "5"}
+            request = MagicMock()
+
+            def json(self):
+                return json.loads(self.text)
+
+            def raise_for_status(self):
+                raise httpx.HTTPStatusError("429 Too Many Requests", request=self.request, response=self)
+
+        class Mock200Resp:
+            status_code = 200
+            reason_phrase = "OK"
+            request = MagicMock()
+
+            def raise_for_status(self):
+                pass
+
+            def json(self):
+                return {
+                    "candidates": [{
+                        "content": {
+                            "parts": [{"text": '{"decision": "import", "confidence": 0.99, "reasoning": "Pass 2 succeeded", "files_to_import": []}'}]
+                        }
+                    }]
+                }
+
+        async def mock_post(client, url, json=None):
+            model_name = url.split("/models/")[1].split(":")[0]
+            calls.append(model_name)
+            # In Pass 1 (first 10 calls), fail all of them
+            if len(calls) < 11:
+                return Mock429Resp()
+            # On 11th call (Pass 2), succeed
+            return Mock200Resp()
+
+        with patch("httpx.AsyncClient.post", new=mock_post), patch("asyncio.sleep", new_callable=AsyncMock) as mock_sleep:
+            data, raw, think = await prov._call_gemini_with_raw(
+                prompt="test prompt",
+                schema_desc="test schema",
+                operation="test_all_models"
+            )
+
+            # All 10 models must have been attempted in Pass 1 (verifying no cap of 6)
+            self.assertGreaterEqual(len(calls), 11)
+            for i in range(10):
+                self.assertIn(f"gemini-model-{i}", calls[:10])
+
+            # Sleep between passes was called
+            mock_sleep.assert_any_call(12.0)
+            self.assertEqual(data["decision"], "import")
+            self.assertEqual(data["reasoning"], "Pass 2 succeeded")
+
+    async def test_dynamic_discovery_from_api_without_hardcoded_names(self):
+        """
+        Verify that models are discovered dynamically via Google API without hardcoded model names,
+        and dynamically ranked and selected.
+        """
+        prov = GeminiProvider(api_key="fake-key", model="gemini-future-4.0-flash")
+
+        class MockCatalogResp:
+            status_code = 200
+            def raise_for_status(self):
+                pass
+            def json(self):
+                return {
+                    "models": [
+                        {"name": "models/gemini-future-pro", "supportedGenerationMethods": ["generateContent"]},
+                        {"name": "models/gemini-future-4.0-flash", "supportedGenerationMethods": ["generateContent"]},
+                        {"name": "models/gemini-future-flash-lite", "supportedGenerationMethods": ["generateContent"]},
+                        {"name": "models/embedding-001", "supportedGenerationMethods": ["embedContent"]}
+                    ]
+                }
+
+        async def mock_get(client, url):
+            return MockCatalogResp()
+
+        with patch("httpx.AsyncClient.get", new=mock_get):
+            candidates = await prov.get_candidate_models()
+            self.assertIn("gemini-future-4.0-flash", candidates)
+            self.assertIn("gemini-future-flash-lite", candidates)
+            self.assertIn("gemini-future-pro", candidates)
+            self.assertNotIn("embedding-001", candidates)
+            # Flash tier prioritized over Pro
+            idx_flash = candidates.index("gemini-future-4.0-flash")
+            idx_pro = candidates.index("gemini-future-pro")
+            self.assertLess(idx_flash, idx_pro)
+
+    async def test_gemini_daily_quota_exhaustion_raises_special_error_and_breaks_early(self):
+        """
+        Verify that when a 429 response indicates project daily quota exhaustion (PerDay),
+        GeminiProvider breaks early, raises DailyQuotaExhaustedError, and sets is_daily_quota_exhausted().
         """
         prov = GeminiProvider(api_key="fake-key", model="gemini-3.6-flash")
         prov._min_call_interval = 0
+        prov._discovered_candidates = ["gemini-3.6-flash", "gemini-3.5-flash", "gemini-2.5-flash"]
+
+        calls = []
 
         class MockDaily429Resp:
             status_code = 429
@@ -179,6 +284,8 @@ class GeminiRotationAndDailyQuotaTests(unittest.IsolatedAsyncioTestCase):
                 raise httpx.HTTPStatusError("429 Daily Quota Exceeded", request=self.request, response=self)
 
         async def mock_post(client, url, json=None):
+            model_name = url.split("/models/")[1].split(":")[0]
+            calls.append(model_name)
             return MockDaily429Resp()
 
         with patch("httpx.AsyncClient.post", new=mock_post):
@@ -191,15 +298,13 @@ class GeminiRotationAndDailyQuotaTests(unittest.IsolatedAsyncioTestCase):
 
         # Provider should recognize daily exhaustion
         self.assertTrue(prov.is_daily_quota_exhausted())
+        # Should fast-break: only 1 call was needed to detect project daily quota
+        self.assertEqual(len(calls), 1)
 
-    async def test_fallback_provider_daily_quota_only_policy(self):
+    async def test_fallback_provider_automatic_fallback_on_gemini_failure(self):
         """
-        Verify FallbackProvider:
-        - When fallback_on_daily_quota_only=True:
-            - Transient AIProviderError (timeout/rate limit): does NOT invoke fallback; returns safe default (confidence=0.0).
-            - DailyQuotaExhaustedError: DOES invoke fallback.
-        - When fallback_on_daily_quota_only=False:
-            - Transient AIProviderError: DOES invoke fallback.
+        Verify FallbackProvider seamlessly delegates to Ollama when Gemini fails after exhausting
+        all models/retries or upon daily quota exhaustion.
         """
         mock_primary = MagicMock()
         mock_fallback = MagicMock()
@@ -207,7 +312,6 @@ class GeminiRotationAndDailyQuotaTests(unittest.IsolatedAsyncioTestCase):
         mock_primary.name = "Gemini (gemini-3.6-flash)"
         mock_fallback.model = "qwen2.5:14b"
         mock_fallback.name = "Ollama (qwen2.5:14b)"
-        mock_primary.is_daily_quota_exhausted.return_value = False
 
         fb_result = Stage2DecisionResult(
             decision="import",
@@ -217,16 +321,11 @@ class GeminiRotationAndDailyQuotaTests(unittest.IsolatedAsyncioTestCase):
         )
         mock_fallback.evaluate_import_decision = AsyncMock(return_value=fb_result)
 
-        # 1. Policy: fallback_on_daily_quota_only = True
-        fb_provider = FallbackProvider(
-            primary=mock_primary,
-            fallback=mock_fallback,
-            fallback_on_daily_quota_only=True
-        )
+        fb_provider = FallbackProvider(primary=mock_primary, fallback=mock_fallback)
 
-        # Case A: Transient error (e.g. timeout)
-        mock_primary.evaluate_import_decision = AsyncMock(side_effect=AIProviderError("Gemini API request timed out after 60s"))
-        res_transient = await fb_provider.evaluate_import_decision(
+        # Case A: Gemini exhausts retries and raises AIProviderError
+        mock_primary.evaluate_import_decision = AsyncMock(side_effect=AIProviderError("All Gemini models failed across 2 retry passes"))
+        res_error = await fb_provider.evaluate_import_decision(
             media_type="series",
             release_title="Show.S01E01",
             folder_name="Show.S01E01",
@@ -236,15 +335,12 @@ class GeminiRotationAndDailyQuotaTests(unittest.IsolatedAsyncioTestCase):
             manual_import_files=[],
             existing_disk_files=[],
         )
+        mock_fallback.evaluate_import_decision.assert_called_once()
+        self.assertEqual(res_error.decision, "import")
+        self.assertEqual(res_error.confidence, 0.92)
 
-        # Fallback should NOT have been invoked
-        mock_fallback.evaluate_import_decision.assert_not_called()
-        # Safe 0.0 confidence returned
-        self.assertEqual(res_transient.decision, "reject_keep_in_client")
-        self.assertEqual(res_transient.confidence, 0.0)
-        self.assertIn("daily quota not exhausted", res_transient.reasoning)
-
-        # Case B: Daily Quota Exhausted error
+        # Case B: Gemini raises DailyQuotaExhaustedError
+        mock_fallback.evaluate_import_decision.reset_mock()
         mock_primary.evaluate_import_decision = AsyncMock(side_effect=DailyQuotaExhaustedError("Daily quota exhausted for Gemini"))
         res_daily = await fb_provider.evaluate_import_decision(
             media_type="series",
@@ -256,54 +352,20 @@ class GeminiRotationAndDailyQuotaTests(unittest.IsolatedAsyncioTestCase):
             manual_import_files=[],
             existing_disk_files=[],
         )
-
-        # Fallback SHOULD have been invoked
         mock_fallback.evaluate_import_decision.assert_called_once()
         self.assertEqual(res_daily.decision, "import")
         self.assertEqual(res_daily.confidence, 0.92)
 
-        # 2. Policy: fallback_on_daily_quota_only = False
-        mock_fallback.evaluate_import_decision.reset_mock()
-        fb_provider_legacy = FallbackProvider(
-            primary=mock_primary,
-            fallback=mock_fallback,
-            fallback_on_daily_quota_only=False
-        )
-
-        # Transient error triggers fallback when flag is False
-        mock_primary.evaluate_import_decision = AsyncMock(side_effect=AIProviderError("Transient error"))
-        res_legacy = await fb_provider_legacy.evaluate_import_decision(
-            media_type="series",
-            release_title="Show.S01E01",
-            folder_name="Show.S01E01",
-            queue_messages=[],
-            candidate_media={},
-            library_candidates=[],
-            manual_import_files=[],
-            existing_disk_files=[],
-        )
-        mock_fallback.evaluate_import_decision.assert_called_once()
-        self.assertEqual(res_legacy.decision, "import")
-
-    def test_config_and_web_ui_integration(self):
-        """Verify configuration round-trip and presence of Web UI toggle."""
-        # 1. Config defaults
+    def test_config_and_web_ui_clean(self):
+        """Verify fallback_on_daily_quota_only is completely removed from config and Web UI."""
         cfg = AIConfig()
-        self.assertTrue(cfg.fallback_on_daily_quota_only)
+        self.assertFalse(hasattr(cfg, "fallback_on_daily_quota_only"))
 
-        # 2. Serialization & update
         d = config_to_dict(AppConfig(ai=cfg))
-        self.assertIn("fallback_on_daily_quota_only", d["ai"])
-        self.assertTrue(d["ai"]["fallback_on_daily_quota_only"])
+        self.assertNotIn("fallback_on_daily_quota_only", d["ai"])
 
-        d["ai"]["fallback_on_daily_quota_only"] = False
-        app_cfg = AppConfig()
-        update_config_from_dict(app_cfg, d)
-        self.assertFalse(app_cfg.ai.fallback_on_daily_quota_only)
-
-        # 3. Web UI HTML toggle
-        self.assertIn("cfg-ai-fallback-daily-only", RENDERED_DASHBOARD_HTML)
-        self.assertIn("Fallback Only on Daily Quota Exhaustion", RENDERED_DASHBOARD_HTML)
+        self.assertNotIn("cfg-ai-fallback-daily-only", RENDERED_DASHBOARD_HTML)
+        self.assertNotIn("Fallback Only on Daily Quota Exhaustion", RENDERED_DASHBOARD_HTML)
 
 
 if __name__ == "__main__":

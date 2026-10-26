@@ -17,19 +17,16 @@ logger = logging.getLogger("aimportarr.ai.fallback")
 class FallbackProvider(BaseAIProvider):
     """
     Wraps a primary AI provider (e.g. Gemini) and a secondary fallback provider (e.g. Ollama).
-    If the primary provider is Gemini and fallback_on_daily_quota_only is True (default),
-    Gemini rotates through all candidate models on temporary errors and ONLY falls back to Ollama
-    when all Gemini models have exhausted their daily token/request quota.
+    When the primary provider is Gemini, it retries across all candidate Gemini models (2 passes)
+    before falling back to Ollama.
     """
     def __init__(
         self,
         primary: BaseAIProvider,
         fallback: Optional[BaseAIProvider] = None,
-        fallback_on_daily_quota_only: bool = True
     ):
         self.primary = primary
         self.fallback = fallback
-        self.fallback_on_daily_quota_only = fallback_on_daily_quota_only
 
     @property
     def name(self) -> str:
@@ -38,28 +35,8 @@ class FallbackProvider(BaseAIProvider):
         return self.primary.name
 
     def _should_fallback(self, error: Exception) -> bool:
-        """
-        Determine whether to invoke the fallback provider.
-        When Gemini is primary and fallback_on_daily_quota_only is True,
-        we only fall back if we are sure daily tokens/quotas have been exhausted.
-        """
-        if not self.fallback:
-            return False
-        from .gemini import GeminiProvider
-        is_gemini = (
-            isinstance(self.primary, GeminiProvider)
-            or "gemini" in getattr(self.primary, "name", "").lower()
-            or "gemini" in getattr(self.primary, "model", "").lower()
-        )
-        if not is_gemini:
-            return True
-        if not self.fallback_on_daily_quota_only:
-            return True
-        if isinstance(error, DailyQuotaExhaustedError):
-            return True
-        if hasattr(self.primary, "is_daily_quota_exhausted") and self.primary.is_daily_quota_exhausted():
-            return True
-        return False
+        """Determine whether to invoke the fallback provider."""
+        return bool(self.fallback)
 
     async def evaluate_stage1_triage(
         self,
@@ -80,19 +57,18 @@ class FallbackProvider(BaseAIProvider):
         except (AIProviderError, Exception) as e:
             if not self._should_fallback(e):
                 logger.warning(
-                    "Primary AI provider '%s' encountered error: %s. "
-                    "Daily quota is not exhausted; skipping fallback to preserve local compute.",
+                    "Primary AI provider '%s' failed: %s. No fallback configured.",
                     self.primary.name, e
                 )
                 return Stage1TriageResult(
                     action="no_extraction",
                     confidence=0.0,
-                    reasoning=f"Primary AI temporary error (daily quota not exhausted): {e}",
+                    reasoning=f"Primary AI error (no fallback configured): {e}",
                     model_name=self.primary.name,
                 )
 
             logger.warning(
-                "Primary AI provider '%s' failed (daily quota exhausted): %s. Automatically falling back to '%s'...",
+                "Primary AI provider '%s' failed: %s. Automatically falling back to '%s'...",
                 self.primary.name, e, self.fallback.name
             )
             try:
@@ -141,19 +117,18 @@ class FallbackProvider(BaseAIProvider):
         except (AIProviderError, Exception) as e:
             if not self._should_fallback(e):
                 logger.warning(
-                    "Primary AI provider '%s' encountered error: %s. "
-                    "Daily quota is not exhausted; skipping fallback so item can retry on next scan.",
+                    "Primary AI provider '%s' failed: %s. No fallback configured.",
                     self.primary.name, e
                 )
                 return Stage2DecisionResult(
                     decision="reject_keep_in_client",
                     confidence=0.0,
-                    reasoning=f"Primary AI temporary error (daily quota not exhausted): {e}",
+                    reasoning=f"Primary AI error (no fallback configured): {e}",
                     model_name=self.primary.name,
                 )
 
             logger.warning(
-                "Primary AI provider '%s' failed (daily quota exhausted): %s. Automatically falling back to '%s'...",
+                "Primary AI provider '%s' failed: %s. Automatically falling back to '%s'...",
                 self.primary.name, e, self.fallback.name
             )
             try:
@@ -193,19 +168,18 @@ class FallbackProvider(BaseAIProvider):
         except (AIProviderError, Exception) as e:
             if not self._should_fallback(e):
                 logger.warning(
-                    "Primary AI provider '%s' encountered error: %s. "
-                    "Daily quota is not exhausted; skipping fallback.",
+                    "Primary AI provider '%s' failed: %s. No fallback configured.",
                     self.primary.name, e
                 )
                 return BackfillPackMatchResult(
                     matched_guid=None,
                     confidence=0.0,
-                    reasoning=f"Primary AI temporary error: {e}",
+                    reasoning=f"Primary AI error (no fallback configured): {e}",
                     model_name=self.primary.name,
                 )
 
             logger.warning(
-                "Primary AI provider '%s' failed (daily quota exhausted): %s. Automatically falling back to '%s'...",
+                "Primary AI provider '%s' failed: %s. Automatically falling back to '%s'...",
                 self.primary.name, e, self.fallback.name
             )
             try:
@@ -242,19 +216,18 @@ class FallbackProvider(BaseAIProvider):
         except (AIProviderError, Exception) as e:
             if not self._should_fallback(e):
                 logger.warning(
-                    "Primary AI provider '%s' encountered error: %s. "
-                    "Daily quota is not exhausted; skipping fallback.",
+                    "Primary AI provider '%s' failed: %s. No fallback configured.",
                     self.primary.name, e
                 )
                 return BackfillPackMatchResult(
                     matched_guid=None,
                     confidence=0.0,
-                    reasoning=f"Primary AI temporary error: {e}",
+                    reasoning=f"Primary AI error (no fallback configured): {e}",
                     model_name=self.primary.name,
                 )
 
             logger.warning(
-                "Primary AI provider '%s' failed (daily quota exhausted): %s. Automatically falling back to '%s'...",
+                "Primary AI provider '%s' failed: %s. Automatically falling back to '%s'...",
                 self.primary.name, e, self.fallback.name
             )
             try:
@@ -291,14 +264,13 @@ class FallbackProvider(BaseAIProvider):
         except (AIProviderError, Exception) as e:
             if not self._should_fallback(e):
                 logger.warning(
-                    "Primary AI provider '%s' encountered error: %s. "
-                    "Daily quota is not exhausted; skipping fallback.",
+                    "Primary AI provider '%s' failed: %s. No fallback configured.",
                     self.primary.name, e
                 )
                 return BackfillBulkEpisodesMatchResult(matches=[], model_name=self.primary.name)
 
             logger.warning(
-                "Primary AI provider '%s' failed (daily quota exhausted): %s. Automatically falling back to '%s'...",
+                "Primary AI provider '%s' failed: %s. Automatically falling back to '%s'...",
                 self.primary.name, e, self.fallback.name
             )
             try:
@@ -325,19 +297,18 @@ class FallbackProvider(BaseAIProvider):
         except (AIProviderError, Exception) as e:
             if not self._should_fallback(e):
                 logger.warning(
-                    "Primary AI provider '%s' encountered error: %s. "
-                    "Daily quota is not exhausted; skipping fallback.",
+                    "Primary AI provider '%s' failed: %s. No fallback configured.",
                     self.primary.name, e
                 )
                 return BackfillPackMatchResult(
                     matched_guid=None,
                     confidence=0.0,
-                    reasoning=f"Primary AI temporary error: {e}",
+                    reasoning=f"Primary AI error (no fallback configured): {e}",
                     model_name=self.primary.name,
                 )
 
             logger.warning(
-                "Primary AI provider '%s' failed (daily quota exhausted): %s. Automatically falling back to '%s'...",
+                "Primary AI provider '%s' failed: %s. Automatically falling back to '%s'...",
                 self.primary.name, e, self.fallback.name
             )
             try:
@@ -369,20 +340,19 @@ class FallbackProvider(BaseAIProvider):
         except (AIProviderError, Exception) as e:
             if not self._should_fallback(e):
                 logger.warning(
-                    "Primary AI provider '%s' failed alias verification: %s. "
-                    "Daily quota is not exhausted; skipping fallback.",
+                    "Primary AI provider '%s' failed alias verification: %s. No fallback configured.",
                     self.primary.name, e
                 )
                 return AliasVerificationResult(
                     is_match=False,
                     match_type="uncertain",
                     confidence=0.0,
-                    reasoning=f"Primary AI error: {e}",
+                    reasoning=f"Primary AI error (no fallback configured): {e}",
                     model_name=self.primary.name,
                 )
 
             logger.warning(
-                "Primary AI provider '%s' failed alias verification (daily quota exhausted): %s. Automatically falling back to '%s'...",
+                "Primary AI provider '%s' failed alias verification: %s. Automatically falling back to '%s'...",
                 self.primary.name, e, self.fallback.name
             )
             try:

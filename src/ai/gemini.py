@@ -101,6 +101,7 @@ class GeminiProvider(BaseAIProvider):
         self._project_daily_quota_exhausted: bool = False
         self._project_daily_quota_reset_time: float = 0.0
         self._discovered_candidates: List[str] = []
+        self._candidates_last_fetched: float = 0.0
         self._last_call_time: float = 0.0
         self._min_call_interval: float = 1.0  # Pacing delay between calls to respect rate limits
 
@@ -122,7 +123,7 @@ class GeminiProvider(BaseAIProvider):
             self._project_daily_quota_exhausted = False
             self._project_daily_quota_reset_time = 0.0
 
-        candidates = self._discovered_candidates or FALLBACK_GEMINI_MODELS
+        candidates = self._discovered_candidates
         if not candidates:
             return False
 
@@ -177,8 +178,15 @@ class GeminiProvider(BaseAIProvider):
                 pass
         return default
 
-    async def get_candidate_models(self, raw_models: Optional[List[Union[str, dict]]] = None) -> List[str]:
-        """Fetch and score candidate models once or when refreshed, or filter a supplied list."""
+    async def get_candidate_models(
+        self,
+        raw_models: Optional[List[Union[str, dict]]] = None,
+        force_refresh: bool = False
+    ) -> List[str]:
+        """
+        Dynamically fetch and score candidate models from Google API catalog.
+        Contains zero hardcoded model names; adapts automatically to newly released models.
+        """
         if raw_models is not None:
             models_data = []
             for item in raw_models:
@@ -188,7 +196,8 @@ class GeminiProvider(BaseAIProvider):
                     models_data.append(item)
             data = {"models": models_data}
         else:
-            if self._discovered_candidates:
+            now = time.time()
+            if self._discovered_candidates and not force_refresh and (now - self._candidates_last_fetched) < 21600.0:
                 return self._discovered_candidates
 
             url = f"https://generativelanguage.googleapis.com/v1beta/models?key={self.api_key}"
@@ -198,19 +207,11 @@ class GeminiProvider(BaseAIProvider):
                     resp.raise_for_status()
                     data = resp.json()
             except Exception as e:
-                logger.warning(
-                    "Failed to auto-discover Gemini models catalog: %s. Using default flash fallback list.",
-                    e
-                )
-                return [
-                    "gemini-3.6-flash",
-                    "gemini-3.5-flash",
-                    "gemini-2.5-flash",
-                    "gemini-3.5-flash-lite",
-                    "gemini-2.5-flash-lite",
-                    "gemini-flash-latest",
-                    "gemini-2.5-pro",
-                ]
+                logger.warning("Failed to auto-discover Gemini models catalog: %s", e)
+                if self._discovered_candidates:
+                    return self._discovered_candidates
+                pref = self.model.strip() if self.model and self.model not in ("auto", "smallest", "") else None
+                return [pref] if pref else []
 
         candidates = []
         for m in data.get("models", []):
@@ -241,6 +242,7 @@ class GeminiProvider(BaseAIProvider):
 
         candidates.sort(key=model_score)
         self._discovered_candidates = candidates
+        self._candidates_last_fetched = time.time()
         return candidates
 
     async def get_ordered_models_to_try(self, preferred: Optional[str] = None) -> List[str]:
@@ -294,7 +296,7 @@ class GeminiProvider(BaseAIProvider):
             self._resolved_model = chosen
             return chosen
 
-        fallback = self.model if self.model not in ("auto", "smallest", "") else "gemini-3.6-flash"
+        fallback = self.model if self.model not in ("auto", "smallest", "") else (self._discovered_candidates[0] if self._discovered_candidates else "gemini-flash")
         self._resolved_model = fallback
         return fallback
 
@@ -340,146 +342,169 @@ class GeminiProvider(BaseAIProvider):
                 raise DailyQuotaExhaustedError("All Gemini models have exhausted their daily token/request quota.")
             raise AIProviderError("No candidate Gemini models are available.")
 
-        models_to_attempt = models_to_try[:6]
         last_error = None
-        last_model_used = models_to_attempt[0]
+        last_model_used = models_to_try[0]
         overall_start_time = time.time()
+        total_attempts = 0
 
-        for attempt, current_model in enumerate(models_to_attempt):
-            last_model_used = current_model
-            now = time.time()
-            elapsed = now - self._last_call_time
-            if elapsed < self._min_call_interval:
-                await asyncio.sleep(self._min_call_interval - elapsed)
-            self._last_call_time = time.time()
+        for pass_num in (1, 2):
+            if pass_num == 2:
+                models_to_try = await self.get_ordered_models_to_try(preferred=self.model)
+                if not models_to_try:
+                    break
 
-            url = f"https://generativelanguage.googleapis.com/v1beta/models/{current_model}:generateContent?key={self.api_key}"
+            for current_model in models_to_try:
+                total_attempts += 1
+                last_model_used = current_model
+                now = time.time()
+                elapsed = now - self._last_call_time
+                if elapsed < self._min_call_interval:
+                    await asyncio.sleep(self._min_call_interval - elapsed)
+                self._last_call_time = time.time()
 
-            try:
-                start_time = time.time()
-                async with httpx.AsyncClient(timeout=25.0) as client:
-                    resp = await client.post(url, json=payload)
-                    status = resp.status_code
+                url = f"https://generativelanguage.googleapis.com/v1beta/models/{current_model}:generateContent?key={self.api_key}"
 
-                    if status == 404:
-                        self._failed_models.add(current_model)
-                        logger.warning(
-                            "Gemini model '%s' returned 404 (retired). Trying next candidate Gemini model...",
-                            current_model
-                        )
-                        last_error = httpx.HTTPStatusError(f"404 Not Found for {current_model}", request=resp.request, response=resp)
-                        continue
+                try:
+                    start_time = time.time()
+                    async with httpx.AsyncClient(timeout=25.0) as client:
+                        resp = await client.post(url, json=payload)
+                        status = resp.status_code
 
-                    if status == 429:
-                        is_daily, reason = self._is_daily_quota_error(resp)
-                        if is_daily:
-                            reset_epoch = get_daily_reset_epoch()
-                            self._daily_exhausted_models[current_model] = reset_epoch
-                            if (
-                                "project" in reason.lower()
-                                or "requestsperday" in resp.text.lower().replace("_", "")
-                                or "generatecontentrequestsperday" in resp.text.lower().replace("_", "")
-                            ):
-                                self._project_daily_quota_exhausted = True
-                                self._project_daily_quota_reset_time = reset_epoch
+                        if status == 404:
+                            self._failed_models.add(current_model)
                             logger.warning(
-                                "Gemini model '%s' exhausted DAILY quota (%s). Trying next candidate Gemini model...",
-                                current_model, reason
+                                "Gemini model '%s' returned 404 (retired). Trying next candidate Gemini model...",
+                                current_model
                             )
-                        else:
-                            cooldown = self._parse_retry_after(resp, default=60)
-                            self._rate_limited_models[current_model] = time.time() + cooldown
+                            last_error = httpx.HTTPStatusError(f"404 Not Found for {current_model}", request=resp.request, response=resp)
+                            continue
+
+                        if status == 429:
+                            is_daily, reason = self._is_daily_quota_error(resp)
+                            if is_daily:
+                                reset_epoch = get_daily_reset_epoch()
+                                self._daily_exhausted_models[current_model] = reset_epoch
+                                if (
+                                    "project" in reason.lower()
+                                    or "requestsperday" in resp.text.lower().replace("_", "")
+                                    or "generatecontentrequestsperday" in resp.text.lower().replace("_", "")
+                                ):
+                                    self._project_daily_quota_exhausted = True
+                                    self._project_daily_quota_reset_time = reset_epoch
+                                    logger.warning(
+                                        "Gemini project-level daily quota exhausted (%s). Halting cloud attempts for today.",
+                                        reason
+                                    )
+                                    break
+                                logger.warning(
+                                    "Gemini model '%s' exhausted DAILY quota (%s). Trying next candidate Gemini model...",
+                                    current_model, reason
+                                )
+                            else:
+                                cooldown = self._parse_retry_after(resp, default=60)
+                                self._rate_limited_models[current_model] = time.time() + cooldown
+                                logger.warning(
+                                    "Gemini model '%s' hit temporary rate limit (HTTP 429, retry after %ds). Trying next candidate Gemini model...",
+                                    current_model, cooldown
+                                )
+                            last_error = httpx.HTTPStatusError(f"429 Quota/Rate Limit for {current_model}: {reason}", request=resp.request, response=resp)
+                            continue
+
+                        if status in (500, 502, 503, 504):
+                            self._rate_limited_models[current_model] = time.time() + 60
                             logger.warning(
-                                "Gemini model '%s' hit temporary rate limit (HTTP 429, retry after %ds). Trying next candidate Gemini model...",
-                                current_model, cooldown
+                                "Gemini model '%s' returned HTTP %d (%s). Trying next candidate Gemini model...",
+                                current_model, status, resp.reason_phrase
                             )
-                        last_error = httpx.HTTPStatusError(f"429 Quota/Rate Limit for {current_model}: {reason}", request=resp.request, response=resp)
-                        continue
+                            last_error = httpx.HTTPStatusError(f"{status} Server Error for {current_model}", request=resp.request, response=resp)
+                            continue
 
-                    if status in (500, 502, 503, 504):
-                        self._rate_limited_models[current_model] = time.time() + 60
-                        logger.warning(
-                            "Gemini model '%s' returned HTTP %d (%s). Trying next candidate Gemini model...",
-                            current_model, status, resp.reason_phrase
-                        )
-                        last_error = httpx.HTTPStatusError(f"{status} Server Error for {current_model}", request=resp.request, response=resp)
-                        continue
+                        if status in (401, 403):
+                            dur_ms = int((time.time() - overall_start_time) * 1000)
+                            err_code, err_msg = extract_gemini_error_details(httpx.HTTPStatusError(f"{status} Unauthorized", request=resp.request, response=resp))
+                            p_tok = max(1, math.ceil(len(full_prompt) / 3.8))
+                            metrics.record_token_usage(
+                                operation=operation,
+                                model=current_model,
+                                prompt_tokens=p_tok,
+                                completion_tokens=0,
+                                total_tokens=p_tok,
+                                duration_ms=dur_ms,
+                                item_title=item_title,
+                                success=False,
+                                error_code=err_code,
+                                prompt_text=full_prompt,
+                                response_text=err_msg,
+                            )
+                            raise AIProviderError(f"Gemini API Key is invalid or unauthorized ({err_code})")
 
-                    if status in (401, 403):
-                        dur_ms = int((time.time() - overall_start_time) * 1000)
-                        err_code, err_msg = extract_gemini_error_details(httpx.HTTPStatusError(f"{status} Unauthorized", request=resp.request, response=resp))
-                        p_tok = max(1, math.ceil(len(full_prompt) / 3.8))
+                        resp.raise_for_status()
+                        data = resp.json()
+                        candidates = data.get("candidates", [])
+                        if not candidates:
+                            raise AIProviderError(f"No response candidates returned from Gemini: {data}")
+                        parts = candidates[0].get("content", {}).get("parts", [])
+                        if not parts:
+                            raise AIProviderError("Empty response parts from Gemini")
+
+                        raw_text = parts[0].get("text", "").strip()
+                        clean_json = re.sub(r"^```(?:json)?\s*", "", raw_text, flags=re.MULTILINE)
+                        clean_json = re.sub(r"\s*```$", "", clean_json, flags=re.MULTILINE)
+
+                        usage = data.get("usageMetadata", {})
+                        p_tok = usage.get("promptTokenCount", 0)
+                        if p_tok == 0 and full_prompt:
+                            p_tok = max(1, math.ceil(len(full_prompt) / 3.8))
+                        c_tok = usage.get("candidatesTokenCount", 0)
+                        th_tok = usage.get("thoughtsTokenCount", 0)
+                        t_tok = usage.get("totalTokenCount", p_tok + c_tok + th_tok)
+                        if th_tok == 0 and t_tok > (p_tok + c_tok):
+                            th_tok = t_tok - (p_tok + c_tok)
+                        duration_ms = int((time.time() - start_time) * 1000)
+
+                        self._resolved_model = current_model
+
                         metrics.record_token_usage(
                             operation=operation,
                             model=current_model,
                             prompt_tokens=p_tok,
-                            completion_tokens=0,
-                            total_tokens=p_tok,
-                            duration_ms=dur_ms,
+                            thinking_tokens=th_tok,
+                            completion_tokens=c_tok,
+                            total_tokens=t_tok,
+                            duration_ms=duration_ms,
                             item_title=item_title,
-                            success=False,
-                            error_code=err_code,
+                            success=True,
                             prompt_text=full_prompt,
-                            response_text=err_msg,
+                            response_text=raw_text,
                         )
-                        raise AIProviderError(f"Gemini API Key is invalid or unauthorized ({err_code})")
 
-                    resp.raise_for_status()
-                    data = resp.json()
-                    candidates = data.get("candidates", [])
-                    if not candidates:
-                        raise AIProviderError(f"No response candidates returned from Gemini: {data}")
-                    parts = candidates[0].get("content", {}).get("parts", [])
-                    if not parts:
-                        raise AIProviderError("Empty response parts from Gemini")
+                        try:
+                            return json.loads(clean_json), raw_text, None
+                        except json.JSONDecodeError as e:
+                            return None, raw_text, f"Invalid JSON syntax: {e}"
 
-                    raw_text = parts[0].get("text", "").strip()
-                    clean_json = re.sub(r"^```(?:json)?\s*", "", raw_text, flags=re.MULTILINE)
-                    clean_json = re.sub(r"\s*```$", "", clean_json, flags=re.MULTILINE)
-
-                    usage = data.get("usageMetadata", {})
-                    p_tok = usage.get("promptTokenCount", 0)
-                    if p_tok == 0 and full_prompt:
-                        p_tok = max(1, math.ceil(len(full_prompt) / 3.8))
-                    c_tok = usage.get("candidatesTokenCount", 0)
-                    th_tok = usage.get("thoughtsTokenCount", 0)
-                    t_tok = usage.get("totalTokenCount", p_tok + c_tok + th_tok)
-                    if th_tok == 0 and t_tok > (p_tok + c_tok):
-                        th_tok = t_tok - (p_tok + c_tok)
-                    duration_ms = int((time.time() - start_time) * 1000)
-
-                    self._resolved_model = current_model
-
-                    metrics.record_token_usage(
-                        operation=operation,
-                        model=current_model,
-                        prompt_tokens=p_tok,
-                        thinking_tokens=th_tok,
-                        completion_tokens=c_tok,
-                        total_tokens=t_tok,
-                        duration_ms=duration_ms,
-                        item_title=item_title,
-                        success=True,
-                        prompt_text=full_prompt,
-                        response_text=raw_text,
+                except (httpx.RequestError, httpx.TimeoutException) as e:
+                    self._rate_limited_models[current_model] = time.time() + 60
+                    logger.warning(
+                        "Gemini model '%s' timed out or encountered network error: %s. Trying next candidate Gemini model...",
+                        current_model, e
                     )
+                    last_error = e
+                    continue
+                except Exception as e:
+                    last_error = e
+                    break
 
-                    try:
-                        return json.loads(clean_json), raw_text, None
-                    except json.JSONDecodeError as e:
-                        return None, raw_text, f"Invalid JSON syntax: {e}"
-
-            except (httpx.RequestError, httpx.TimeoutException) as e:
-                self._rate_limited_models[current_model] = time.time() + 60
-                logger.warning(
-                    "Gemini model '%s' timed out or encountered network error: %s. Trying next candidate Gemini model...",
-                    current_model, e
-                )
-                last_error = e
-                continue
-            except Exception as e:
-                last_error = e
+            if self._project_daily_quota_exhausted:
                 break
+
+            if pass_num == 1:
+                wait_time = 12.0
+                logger.info(
+                    "All candidate Gemini models failed in Pass 1. Pausing %.1fs before Pass 2 retry...",
+                    wait_time
+                )
+                await asyncio.sleep(wait_time)
 
         dur_ms = int((time.time() - overall_start_time) * 1000)
         p_tok = max(1, math.ceil(len(full_prompt) / 3.8))
@@ -504,7 +529,7 @@ class GeminiProvider(BaseAIProvider):
             )
 
         raise AIProviderError(
-            f"All {len(models_to_attempt)} candidate Gemini models returned temporary errors ({err_code}: {err_msg})"
+            f"All candidate Gemini models failed across 2 retry passes ({total_attempts} attempts) ({err_code}: {err_msg})"
         )
 
     async def _call_gemini(

@@ -27,7 +27,6 @@ class OllamaConfig(BaseModel):
 class AIConfig(BaseModel):
     provider: Literal["gemini", "ollama"] = "gemini"
     fallback_enabled: bool = True
-    fallback_on_daily_quota_only: bool = True
     gemini: GeminiConfig = Field(default_factory=GeminiConfig)
     ollama: OllamaConfig = Field(default_factory=OllamaConfig)
 
@@ -207,7 +206,6 @@ def config_to_dict(config: AppConfig) -> Dict[str, Any]:
         "ai": {
             "provider": str(config.ai.provider),
             "fallback_enabled": bool(config.ai.fallback_enabled),
-            "fallback_on_daily_quota_only": bool(config.ai.fallback_on_daily_quota_only),
             "gemini": {
                 "api_key": str(config.ai.gemini.api_key),
                 "model": str(config.ai.gemini.model),
@@ -296,8 +294,6 @@ def update_config_from_dict(config: AppConfig, data: Dict[str, Any]) -> AppConfi
             config.ai.provider = a["provider"]
         if "fallback_enabled" in a and a["fallback_enabled"] is not None:
             config.ai.fallback_enabled = bool(a["fallback_enabled"])
-        if "fallback_on_daily_quota_only" in a and a["fallback_on_daily_quota_only"] is not None:
-            config.ai.fallback_on_daily_quota_only = bool(a["fallback_on_daily_quota_only"])
         if "gemini" in a and isinstance(a["gemini"], dict):
             gm = a["gemini"]
             if "api_key" in gm and gm["api_key"] is not None:
@@ -467,8 +463,6 @@ def load_config(config_path: Optional[str] = None) -> AppConfig:
             config.ai.provider = env_provider
     if env_fallback := os.getenv("AI_FALLBACK_ENABLED"):
         config.ai.fallback_enabled = env_fallback.lower() in ("true", "1", "yes")
-    if env_fallback_daily := os.getenv("AI_FALLBACK_ON_DAILY_QUOTA_ONLY"):
-        config.ai.fallback_on_daily_quota_only = env_fallback_daily.lower() in ("true", "1", "yes")
     if env_gemini_key := os.getenv("GEMINI_API_KEY"):
         config.ai.gemini.api_key = env_gemini_key
     if env_gemini_model := os.getenv("GEMINI_MODEL"):

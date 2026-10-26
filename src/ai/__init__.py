@@ -52,12 +52,10 @@ def get_ai_provider(config: AIConfig) -> BaseAIProvider:
                 model=config.ollama.model,
                 timeout=config.ollama.timeout_seconds,
             )
-            daily_msg = " [daily quota exhaustion only]" if config.fallback_on_daily_quota_only else ""
-            logger.info(f"AI Provider initialized: Gemini ({config.gemini.model}) with automatic fallback to Ollama ({config.ollama.model}){daily_msg}")
+            logger.info(f"AI Provider initialized: Gemini ({config.gemini.model}) with automatic fallback to Ollama ({config.ollama.model})")
             return FallbackProvider(
                 primary=primary,
                 fallback=fallback,
-                fallback_on_daily_quota_only=config.fallback_on_daily_quota_only,
             )
 
         return primary
