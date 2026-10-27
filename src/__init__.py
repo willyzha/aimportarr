@@ -1,2 +1,2 @@
 # AImportarr package
-__version__ = "0.2.0-dev.43"
+__version__ = "0.2.0-dev.44"

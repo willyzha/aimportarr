@@ -318,6 +318,9 @@ class ContainerSmokeTests(unittest.TestCase):
                     # Theme switching & preferences verification
                     self.assertIn('data-theme', html)
                     self.assertIn('theme-toggle-btn', html)
+                    self.assertIn('#theme-toggle-btn', html)
+                    self.assertIn('#theme-toggle-icon', html)
+                    self.assertIn('#theme-toggle-label', html)
                     self.assertIn('cfg-theme-select', html)
                     self.assertIn('cycleTheme()', html)
                     self.assertIn('setTheme(', html)

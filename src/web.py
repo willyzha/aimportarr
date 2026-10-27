@@ -387,6 +387,43 @@ DASHBOARD_HTML = """<!DOCTYPE html>
       border-radius: 4px;
     }
 
+    #theme-toggle-btn {
+      width: 84px;
+      min-width: 84px;
+      max-width: 84px;
+      height: 32px;
+      box-sizing: border-box;
+      justify-content: center;
+      padding: 0 0.5rem;
+      white-space: nowrap;
+      overflow: hidden;
+    }
+
+    #theme-toggle-icon {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      width: 16px;
+      height: 16px;
+      font-size: 0.85rem;
+      line-height: 1;
+      flex-shrink: 0;
+    }
+
+    #theme-toggle-label {
+      display: inline-block;
+      min-width: 36px;
+      text-align: left;
+      line-height: 1;
+      font-feature-settings: "tnum";
+    }
+
+    #refresh-btn {
+      height: 32px;
+      box-sizing: border-box;
+      white-space: nowrap;
+    }
+
     /* Fixed Action Column & Stable Button Sizing */
     .col-action {
       width: 108px !important;
@@ -1717,7 +1754,12 @@ DASHBOARD_HTML = """<!DOCTYPE html>
       }
       #refresh-btn,
       #theme-toggle-btn {
-        padding: 0.35rem 0.55rem;
+        width: 32px;
+        min-width: 32px;
+        max-width: 32px;
+        height: 32px;
+        padding: 0;
+        justify-content: center;
       }
       main {
         padding: 0.75rem 0.65rem;
@@ -1955,7 +1997,7 @@ DASHBOARD_HTML = """<!DOCTYPE html>
       </div>
 
       <button id="theme-toggle-btn" class="btn" onclick="cycleTheme()" title="Theme: System / Dark / Light">
-        <span id="theme-toggle-icon">🌓</span><span id="theme-toggle-label" class="header-btn-text"> Auto</span>
+        <span id="theme-toggle-icon">🌓</span><span id="theme-toggle-label" class="header-btn-text">Auto</span>
       </button>
 
       <button id="refresh-btn" class="btn" onclick="fetchData(true)" title="Refresh data">
@@ -2895,7 +2937,7 @@ DASHBOARD_HTML = """<!DOCTYPE html>
       }
 
       if (iconEl) iconEl.textContent = icon;
-      if (labelEl) labelEl.textContent = ' ' + label;
+      if (labelEl) labelEl.textContent = label;
       if (btnEl) btnEl.title = title;
       if (selectEl && selectEl.value !== theme) selectEl.value = theme;
     }
