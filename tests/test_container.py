@@ -401,6 +401,24 @@ class ContainerSmokeTests(unittest.TestCase):
                 rejected_id = test_tracker.get_processed_history()[0]["id"]
                 self.assertFalse(test_tracker.mark_item_for_retry(rejected_id))
 
+                # Verify that an imported item CANNOT be retried via REST API
+                test_tracker.record_processed_item(
+                    app="Sonarr",
+                    title="Imported.Show.S01E01",
+                    category="id_match",
+                    status="imported",
+                    details="Imported cleanly"
+                )
+                imported_id = test_tracker.get_processed_history()[0]["id"]
+                req_imp = urllib.request.Request(
+                    f"http://127.0.0.1:{port}/api/retry",
+                    data=json.dumps({"id": imported_id}).encode("utf-8"),
+                    headers={"Content-Type": "application/json"}
+                )
+                with self.assertRaises(urllib.error.HTTPError) as ctx:
+                    urllib.request.urlopen(req_imp, timeout=3.0)
+                self.assertEqual(ctx.exception.code, 400)
+
                 # 7. REST API: POST /api/retry cancel and all items
                 req_cancel = urllib.request.Request(
                     f"http://127.0.0.1:{port}/api/retry",

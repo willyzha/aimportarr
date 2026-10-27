@@ -3093,7 +3093,7 @@ DASHBOARD_HTML = """<!DOCTYPE html>
 
     function renderActionCell(item, isCard = false) {
       const normStatus = normalizeStatus(item.status);
-      if (!['skipped', 'failed', 'dry_run', 'imported', 'dismissed'].includes(normStatus)) {
+      if (!['skipped', 'failed', 'dry_run'].includes(normStatus)) {
         return isCard ? '' : '<span style="color: var(--text-dim); font-size: 0.75rem;">--</span>';
       }
 
@@ -5266,7 +5266,7 @@ class MetricsHTTPHandler(BaseHTTPRequestHandler):
                     })
                     return
 
-                success = self.metrics.mark_item_for_retry(item_id, allow_all=True)
+                success = self.metrics.mark_item_for_retry(item_id, allow_all=False)
                 if success:
                     if self.on_trigger_scan:
                         self.on_trigger_scan(f"retry:{item_id}")
@@ -5279,7 +5279,7 @@ class MetricsHTTPHandler(BaseHTTPRequestHandler):
                 else:
                     self._send_json({
                         "status": "error",
-                        "message": f"Item #{item_id} cannot be retried (not found or already deleted from client).",
+                        "message": f"Item #{item_id} cannot be retried (only skipped, failed, or dry_run items can be retried).",
                     }, status=400)
                 return
 
