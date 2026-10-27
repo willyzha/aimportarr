@@ -2001,6 +2001,139 @@ class QualityEnforcementTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(imported_payload[0]["seriesId"], 200)
             self.assertEqual(imported_payload[0]["episodeIds"], [20003])
 
+    async def test_sonarr_id_match_with_matching_title_omits_library_candidates(self):
+        """When an ID_MATCH item has a plausible title match with candidate media, library candidates and get_all_series are omitted."""
+        series_info = {"id": 346, "title": "Love in Disguise (2026)", "year": 2026, "alternateTitles": []}
+        queue_item = {
+            "id": 880,
+            "title": "Love in Disguise.S01E04.1080p.HDTV.AAC.H.264-NEXT",
+            "status": "warning",
+            "trackedDownloadStatus": "warning",
+            "statusMessages": [
+                {"messages": ["Found matching series via grab history, but release was matched to series by ID. Automatic import is not possible."]}
+            ],
+            "series": series_info,
+            "outputPath": "/downloads/Love in Disguise.S01E04.1080p.HDTV.AAC.H.264-NEXT",
+            "downloadId": "dl-love-in-disguise",
+        }
+        manual_items = [{
+            "path": "/downloads/Love in Disguise.S01E04.1080p.HDTV.AAC.H.264-NEXT.mp4",
+            "name": "Love in Disguise.S01E04.1080p.HDTV.AAC.H.264-NEXT.mp4",
+            "rejections": [],
+            "episodes": [{"id": 24121, "seasonNumber": 1, "episodeNumber": 4}],
+            "quality": {"quality": {"id": 3, "name": "HDTV-1080p"}},
+        }]
+        stage2_decision = Stage2DecisionResult(
+            decision="import",
+            confidence=0.98,
+            reasoning="Valid episode 4 matching series.",
+            matched_media_id=346,
+            files_to_import=[
+                ApprovedFileItem(
+                    path="/downloads/Love in Disguise.S01E04.1080p.HDTV.AAC.H.264-NEXT.mp4",
+                    season_number=1,
+                    episode_numbers=[4],
+                )
+            ],
+            category_tag="id_match",
+            model_name="Gemini",
+        )
+
+        with patch.object(self.sonarr, "get_manual_import_items", new_callable=AsyncMock, return_value=manual_items), \
+             patch.object(self.sonarr, "get_series_episodes", new_callable=AsyncMock, return_value=[]), \
+             patch.object(self.sonarr, "get_episode_files", new_callable=AsyncMock, return_value=[]), \
+             patch.object(self.sonarr, "get_all_series", new_callable=AsyncMock) as mock_get_all_series, \
+             patch.object(self.sonarr, "trigger_manual_import", new_callable=AsyncMock, return_value=True):
+
+            self.mock_ai.evaluate_import_decision = AsyncMock(return_value=stage2_decision)
+            res = await self.sonarr.process_queue_item(item=queue_item, ai_provider=self.mock_ai)
+
+            self.assertTrue(res)
+            # Must NOT query all series because title cleanly matched candidate series!
+            mock_get_all_series.assert_not_called()
+            # library_candidates passed to evaluate_import_decision must be None
+            call_kwargs = self.mock_ai.evaluate_import_decision.call_args[1]
+            self.assertIsNone(call_kwargs["library_candidates"])
+
+    async def test_gemini_stage2_prompt_pruning(self):
+        """Verify Gemini evaluate_import_decision prunes Library Candidates and Raw Files on Disk when redundant."""
+        from src.ai.gemini import GeminiProvider
+        provider = GeminiProvider(api_key="fake-test-key", model="gemini-2.5-flash")
+
+        captured_prompts = []
+        async def mock_call(*args, **kwargs):
+            prompt = kwargs.get("prompt") or (args[0] if args else "")
+            captured_prompts.append(prompt)
+            if "Candidate Files from /manualimport: []" in prompt:
+                return {
+                    "decision": "dismiss_pack",
+                    "confidence": 0.95,
+                    "reasoning": "Test ok",
+                    "matched_media_id": 10,
+                    "files_to_import": [],
+                    "category_tag": "season_pack",
+                }, "{}", None
+            p_match = "/downloads/Unrelated.mkv" if "Unrelated.mkv" in prompt else "/downloads/Show.mkv"
+            return {
+                "decision": "import",
+                "confidence": 0.95,
+                "reasoning": "Test ok",
+                "matched_media_id": 10,
+                "files_to_import": [{"path": p_match, "season_number": 1, "episode_numbers": [1]}],
+                "category_tag": "id_match",
+            }, "{}", None
+
+        provider._call_gemini_with_raw = mock_call
+
+        # Case 1: /manualimport found files, library_candidates is None -> OMIT both
+        await provider.evaluate_import_decision(
+            media_type="series",
+            release_title="Show.S01E01.1080p",
+            folder_name="Show.S01E01.1080p",
+            queue_messages=["Matched by ID"],
+            candidate_media={"id": 10, "title": "Show", "year": 2026, "aliases": []},
+            library_candidates=None,
+            manual_import_files=[{"path": "/downloads/Show.mkv", "name": "Show.mkv", "size": 1000}],
+            existing_disk_files=[],
+            known_episodes=[{"id": 1, "season": 1, "episode": 1, "hasFile": False}],
+            raw_disk_files=["Show.mkv", "Show.nfo"],
+        )
+        prompt_1 = captured_prompts[-1]
+        self.assertNotIn("Library Candidates", prompt_1)
+        self.assertNotIn("Raw Files on Disk", prompt_1)
+        self.assertIn("Candidate Files from /manualimport", prompt_1)
+
+        # Case 2: /manualimport found 0 files -> INCLUDE Raw Files on Disk
+        await provider.evaluate_import_decision(
+            media_type="series",
+            release_title="Show.S01E01.1080p",
+            folder_name="Show.S01E01.1080p",
+            queue_messages=["No files found"],
+            candidate_media={"id": 10, "title": "Show", "year": 2026, "aliases": []},
+            library_candidates=None,
+            manual_import_files=[],
+            existing_disk_files=[],
+            known_episodes=[{"id": 1, "season": 1, "episode": 1, "hasFile": False}],
+            raw_disk_files=["Show.rar", "Show.r01"],
+        )
+        prompt_2 = captured_prompts[-1]
+        self.assertIn("Raw Files on Disk (if /manualimport found 0):", prompt_2)
+
+        # Case 3: Genuine ID mismatch -> INCLUDE Library Candidates
+        await provider.evaluate_import_decision(
+            media_type="series",
+            release_title="Unrelated.Show.S01E01",
+            folder_name="Unrelated.Show.S01E01",
+            queue_messages=["Matched by ID"],
+            candidate_media={"id": 10, "title": "Show", "year": 2026, "aliases": []},
+            library_candidates=[{"id": 20, "title": "Other Show", "year": 2026, "aliases": []}],
+            manual_import_files=[{"path": "/downloads/Unrelated.mkv", "name": "Unrelated.mkv", "size": 1000}],
+            existing_disk_files=[],
+            known_episodes=[],
+        )
+        prompt_3 = captured_prompts[-1]
+        self.assertIn("Library Candidates (if media unknown):", prompt_3)
+
 
 
 

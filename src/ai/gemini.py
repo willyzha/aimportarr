@@ -678,19 +678,33 @@ class GeminiProvider(BaseAIProvider):
             '  "confidence": float (0.0 to 1.0)\n'
             "}"
         )
-        prompt = (
-            f"Media Type: {media_type} ({'Sonarr TV Series' if media_type == 'series' else 'Radarr Movie'})\n"
-            f"Release Title: {release_title}\n"
-            f"Folder Name: {folder_name}\n"
-            f"Queue Status Messages: {json.dumps(queue_messages[:15], ensure_ascii=False)}\n"
-            f"Candidate Media (if known by *arr): {json.dumps(candidate_media, ensure_ascii=False)}\n"
-            f"Library Candidates (if media unknown): {json.dumps((library_candidates or [])[:50], ensure_ascii=False)}\n"
-            f"Candidate Files from /manualimport: {json.dumps(comp_candidates, ensure_ascii=False, indent=2)}\n"
-            f"Raw Files on Disk (if /manualimport found 0): {json.dumps((raw_disk_files or [])[:30], ensure_ascii=False)}\n"
-            f"Existing Imported Files Already on Disk: {json.dumps(comp_existing, ensure_ascii=False)}\n"
-            f"Known Episodes in Series (if TV): {json.dumps(comp_known, ensure_ascii=False)}\n\n"
-            f"REQUIRED JSON OUTPUT SCHEMA:\n{schema}"
+        prompt_parts = [
+            f"Media Type: {media_type} ({'Sonarr TV Series' if media_type == 'series' else 'Radarr Movie'})",
+            f"Release Title: {release_title}",
+            f"Folder Name: {folder_name}",
+            f"Queue Status Messages: {json.dumps(queue_messages[:15], ensure_ascii=False)}",
+            f"Candidate Media (if known by *arr): {json.dumps(candidate_media, ensure_ascii=False)}",
+        ]
+        if library_candidates:
+            prompt_parts.append(
+                f"Library Candidates (if media unknown): {json.dumps(library_candidates[:25], ensure_ascii=False)}"
+            )
+        prompt_parts.append(
+            f"Candidate Files from /manualimport: {json.dumps(comp_candidates, ensure_ascii=False, indent=2)}"
         )
+        if not comp_candidates and raw_disk_files:
+            prompt_parts.append(
+                f"Raw Files on Disk (if /manualimport found 0): {json.dumps(raw_disk_files[:30], ensure_ascii=False)}"
+            )
+        prompt_parts.append(
+            f"Existing Imported Files Already on Disk: {json.dumps(comp_existing, ensure_ascii=False)}"
+        )
+        if comp_known is not None:
+            prompt_parts.append(
+                f"Known Episodes in Series (if TV): {json.dumps(comp_known, ensure_ascii=False)}"
+            )
+        prompt_parts.append(f"\nREQUIRED JSON OUTPUT SCHEMA:\n{schema}")
+        prompt = "\n".join(prompt_parts)
         system_instruction = (
             "Stage 2 Unified Import vs. Reject Evaluation Rules:\n"
             "1. Identity & Matching Verification (CRITICAL):\n"

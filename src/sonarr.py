@@ -1045,7 +1045,11 @@ class SonarrClient:
 
             all_series: List[Dict[str, Any]] = []
             library_candidates: Optional[List[Dict[str, Any]]] = None
-            if not series_info or initial_category == ErrorCategory.ID_MATCH:
+            candidate_title = series_info.get("title", "") if series_info else ""
+            target_aliases = [a.get("title") for a in (series_info.get("alternateTitles", []) if series_info else [])]
+            is_matching_candidate = bool(series_info and is_plausible_title_match(title, candidate_title, target_aliases))
+
+            if not series_info or (initial_category == ErrorCategory.ID_MATCH and not is_matching_candidate):
                 all_series = await self.get_all_series()
                 library_candidates = [
                     {

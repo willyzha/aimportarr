@@ -888,7 +888,11 @@ class RadarrClient:
 
             all_movies: List[Dict[str, Any]] = []
             library_candidates: Optional[List[Dict[str, Any]]] = None
-            if not movie_info or initial_category == ErrorCategory.ID_MATCH:
+            candidate_title = movie_info.get("title", "") if movie_info else ""
+            target_aliases = [a.get("title") for a in (movie_info.get("alternateTitles", []) if movie_info else [])]
+            is_matching_candidate = bool(movie_info and is_plausible_title_match(title, candidate_title, target_aliases))
+
+            if not movie_info or (initial_category == ErrorCategory.ID_MATCH and not is_matching_candidate):
                 all_movies = await self.get_all_movies()
                 library_candidates = [
                     {
