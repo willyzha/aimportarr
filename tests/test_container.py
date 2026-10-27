@@ -315,6 +315,14 @@ class ContainerSmokeTests(unittest.TestCase):
                     self.assertIn("Processed History", html)
                     self.assertIn("Token Usage History", html)
                     self.assertIn("Settings", html)
+                    # Theme switching & preferences verification
+                    self.assertIn('data-theme', html)
+                    self.assertIn('theme-toggle-btn', html)
+                    self.assertIn('cfg-theme-select', html)
+                    self.assertIn('cycleTheme()', html)
+                    self.assertIn('setTheme(', html)
+                    self.assertIn('prefers-color-scheme: light', html)
+                    self.assertIn('html[data-theme="light"]', html)
 
                 # 2. REST API: Summary / Metrics
                 req = urllib.request.Request(f"http://127.0.0.1:{port}/api/metrics")

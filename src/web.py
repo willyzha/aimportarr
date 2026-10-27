@@ -24,13 +24,23 @@ DASHBOARD_HTML = """<!DOCTYPE html>
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>AImportarr - Metrics & History</title>
   <link rel="icon" type="image/png" href="/assets/logo.png">
+  <script>
+    (function() {
+      try {
+        const theme = localStorage.getItem('aimportarr_theme') || 'system';
+        document.documentElement.setAttribute('data-theme', theme);
+      } catch (e) {}
+    })();
+  </script>
   <style>
     :root {
       --bg-base: #0b0e14;
+      --bg-header: #11151c;
       --bg-card: #151921;
       --bg-card-hover: #1b212c;
       --border: #262e3d;
       --border-subtle: #1e2430;
+      --border-hover: #3b4556;
       --text-main: #f1f5f9;
       --text-muted: #94a3b8;
       --text-dim: #64748b;
@@ -48,6 +58,168 @@ DASHBOARD_HTML = """<!DOCTYPE html>
       --purple-bg: rgba(139, 92, 246, 0.15);
       --sonarr: #38bdf8;
       --radarr: #fb923c;
+      --scrollbar-track: #11151d;
+      --scrollbar-thumb: #2b3545;
+      --scrollbar-thumb-hover: #3e4c63;
+      --bg-th: #12161f;
+      --bg-detail-row: #0d1017;
+      --bg-reasoning: #121620;
+      --text-reasoning: #cbd5e1;
+      --bg-debug-panel: #0b0e14;
+      --bg-debug-header: #161b26;
+      --bar-track-bg: #1f2735;
+      --bg-input: #0e1218;
+      --toggle-bg: #2b3545;
+      --tab-badge-bg: #232b38;
+      --bg-toast: #1e2430;
+      --bg-save-bar: rgba(21, 25, 33, 0.94);
+      --shadow-modal: 0 20px 40px rgba(0, 0, 0, 0.5);
+      --shadow-toast: 0 4px 16px rgba(0, 0, 0, 0.5);
+      --shadow-save-bar: 0 12px 36px rgba(0, 0, 0, 0.65), 0 0 24px var(--accent-glow);
+      --automation-card-bg: linear-gradient(180deg, rgba(30, 41, 59, 0.7) 0%, rgba(15, 23, 42, 0.7) 100%);
+      --task-meta-border: rgba(255, 255, 255, 0.05);
+      --modal-footer-bg: rgba(0, 0, 0, 0.15);
+      --path-mapping-bg: rgba(0, 0, 0, 0.2);
+      --bg-subtle-box: rgba(0, 0, 0, 0.2);
+      --card-shadow: none;
+      --version-tag-bg: rgba(99, 102, 241, 0.15);
+      --version-tag-color: #818cf8;
+      --version-tag-border: rgba(99, 102, 241, 0.3);
+      --badge-category-bg: rgba(139, 92, 246, 0.12);
+      --badge-category-color: #c084fc;
+      --badge-category-border: rgba(139, 92, 246, 0.25);
+      --badge-retry-bg: rgba(245, 158, 11, 0.12);
+      --badge-retry-border: rgba(245, 158, 11, 0.35);
+      --badge-retry-color: #fbbf24;
+      --badge-retry-hover-bg: rgba(245, 158, 11, 0.25);
+      --badge-retry-hover-border: #f59e0b;
+    }
+
+    /* Light Theme Styles: applied when explicit 'light' or system preference */
+    html[data-theme="light"] {
+      --bg-base: #f8fafc;
+      --bg-header: #ffffff;
+      --bg-card: #ffffff;
+      --bg-card-hover: #f1f5f9;
+      --border: #e2e8f0;
+      --border-subtle: #f1f5f9;
+      --border-hover: #cbd5e1;
+      --text-main: #0f172a;
+      --text-muted: #475569;
+      --text-dim: #64748b;
+      --accent: #4f46e5;
+      --accent-glow: rgba(79, 70, 229, 0.2);
+      --success: #059669;
+      --success-bg: rgba(5, 150, 105, 0.12);
+      --warning: #d97706;
+      --warning-bg: rgba(217, 119, 6, 0.12);
+      --danger: #dc2626;
+      --danger-bg: rgba(220, 38, 38, 0.12);
+      --info: #0284c7;
+      --info-bg: rgba(2, 132, 199, 0.12);
+      --purple: #7c3aed;
+      --purple-bg: rgba(124, 58, 237, 0.12);
+      --sonarr: #0284c7;
+      --radarr: #ea580c;
+      --scrollbar-track: #f1f5f9;
+      --scrollbar-thumb: #cbd5e1;
+      --scrollbar-thumb-hover: #94a3b8;
+      --bg-th: #f8fafc;
+      --bg-detail-row: #f8fafc;
+      --bg-reasoning: #f1f5f9;
+      --text-reasoning: #1e293b;
+      --bg-debug-panel: #ffffff;
+      --bg-debug-header: #f1f5f9;
+      --bar-track-bg: #e2e8f0;
+      --bg-input: #ffffff;
+      --toggle-bg: #cbd5e1;
+      --tab-badge-bg: #e2e8f0;
+      --bg-toast: #ffffff;
+      --bg-save-bar: rgba(255, 255, 255, 0.95);
+      --shadow-modal: 0 20px 40px rgba(0, 0, 0, 0.15);
+      --shadow-toast: 0 4px 16px rgba(0, 0, 0, 0.12);
+      --shadow-save-bar: 0 12px 36px rgba(0, 0, 0, 0.15), 0 0 20px rgba(79, 70, 229, 0.15);
+      --automation-card-bg: linear-gradient(180deg, #ffffff 0%, #f1f5f9 100%);
+      --task-meta-border: rgba(0, 0, 0, 0.06);
+      --modal-footer-bg: #f8fafc;
+      --path-mapping-bg: rgba(0, 0, 0, 0.04);
+      --bg-subtle-box: #f1f5f9;
+      --card-shadow: 0 1px 3px rgba(0, 0, 0, 0.07), 0 1px 2px rgba(0, 0, 0, 0.04);
+      --version-tag-bg: rgba(79, 70, 229, 0.1);
+      --version-tag-color: #4338ca;
+      --version-tag-border: rgba(79, 70, 229, 0.3);
+      --badge-category-bg: rgba(124, 58, 237, 0.1);
+      --badge-category-color: #7c3aed;
+      --badge-category-border: rgba(124, 58, 237, 0.25);
+      --badge-retry-bg: rgba(217, 119, 6, 0.12);
+      --badge-retry-border: rgba(217, 119, 6, 0.35);
+      --badge-retry-color: #b45309;
+      --badge-retry-hover-bg: rgba(217, 119, 6, 0.22);
+      --badge-retry-hover-border: #d97706;
+    }
+
+    @media (prefers-color-scheme: light) {
+      html:not([data-theme="dark"]) {
+        --bg-base: #f8fafc;
+        --bg-header: #ffffff;
+        --bg-card: #ffffff;
+        --bg-card-hover: #f1f5f9;
+        --border: #e2e8f0;
+        --border-subtle: #f1f5f9;
+        --border-hover: #cbd5e1;
+        --text-main: #0f172a;
+        --text-muted: #475569;
+        --text-dim: #64748b;
+        --accent: #4f46e5;
+        --accent-glow: rgba(79, 70, 229, 0.2);
+        --success: #059669;
+        --success-bg: rgba(5, 150, 105, 0.12);
+        --warning: #d97706;
+        --warning-bg: rgba(217, 119, 6, 0.12);
+        --danger: #dc2626;
+        --danger-bg: rgba(220, 38, 38, 0.12);
+        --info: #0284c7;
+        --info-bg: rgba(2, 132, 199, 0.12);
+        --purple: #7c3aed;
+        --purple-bg: rgba(124, 58, 237, 0.12);
+        --sonarr: #0284c7;
+        --radarr: #ea580c;
+        --scrollbar-track: #f1f5f9;
+        --scrollbar-thumb: #cbd5e1;
+        --scrollbar-thumb-hover: #94a3b8;
+        --bg-th: #f8fafc;
+        --bg-detail-row: #f8fafc;
+        --bg-reasoning: #f1f5f9;
+        --text-reasoning: #1e293b;
+        --bg-debug-panel: #ffffff;
+        --bg-debug-header: #f1f5f9;
+        --bar-track-bg: #e2e8f0;
+        --bg-input: #ffffff;
+        --toggle-bg: #cbd5e1;
+        --tab-badge-bg: #e2e8f0;
+        --bg-toast: #ffffff;
+        --bg-save-bar: rgba(255, 255, 255, 0.95);
+        --shadow-modal: 0 20px 40px rgba(0, 0, 0, 0.15);
+        --shadow-toast: 0 4px 16px rgba(0, 0, 0, 0.12);
+        --shadow-save-bar: 0 12px 36px rgba(0, 0, 0, 0.15), 0 0 20px rgba(79, 70, 229, 0.15);
+        --automation-card-bg: linear-gradient(180deg, #ffffff 0%, #f1f5f9 100%);
+        --task-meta-border: rgba(0, 0, 0, 0.06);
+        --modal-footer-bg: #f8fafc;
+        --path-mapping-bg: rgba(0, 0, 0, 0.04);
+        --bg-subtle-box: #f1f5f9;
+        --card-shadow: 0 1px 3px rgba(0, 0, 0, 0.07), 0 1px 2px rgba(0, 0, 0, 0.04);
+        --version-tag-bg: rgba(79, 70, 229, 0.1);
+        --version-tag-color: #4338ca;
+        --version-tag-border: rgba(79, 70, 229, 0.3);
+        --badge-category-bg: rgba(124, 58, 237, 0.1);
+        --badge-category-color: #7c3aed;
+        --badge-category-border: rgba(124, 58, 237, 0.25);
+        --badge-retry-bg: rgba(217, 119, 6, 0.12);
+        --badge-retry-border: rgba(217, 119, 6, 0.35);
+        --badge-retry-color: #b45309;
+        --badge-retry-hover-bg: rgba(217, 119, 6, 0.22);
+        --badge-retry-hover-border: #d97706;
+      }
     }
 
     * {
@@ -74,7 +246,7 @@ DASHBOARD_HTML = """<!DOCTYPE html>
 
     /* Top Navigation */
     header {
-      background-color: #11151c;
+      background-color: var(--bg-header);
       border-bottom: 1px solid var(--border);
       padding: 0.75rem 1.5rem;
       display: flex;
@@ -130,9 +302,9 @@ DASHBOARD_HTML = """<!DOCTYPE html>
       font-weight: 600;
       padding: 0.12rem 0.45rem;
       border-radius: 4px;
-      background: rgba(99, 102, 241, 0.15);
-      color: #818cf8;
-      border: 1px solid rgba(99, 102, 241, 0.3);
+      background: var(--version-tag-bg);
+      color: var(--version-tag-color);
+      border: 1px solid var(--version-tag-border);
       line-height: 1.2;
       display: inline-block;
     }
@@ -188,7 +360,7 @@ DASHBOARD_HTML = """<!DOCTYPE html>
 
     .btn:hover {
       background-color: var(--bg-card-hover);
-      border-color: #3b4556;
+      border-color: var(--border-hover);
     }
 
     .btn:disabled,
@@ -255,16 +427,16 @@ DASHBOARD_HTML = """<!DOCTYPE html>
     }
 
     .btn-retry {
-      background-color: rgba(245, 158, 11, 0.12);
-      border: 1px solid rgba(245, 158, 11, 0.35);
-      color: #fbbf24;
+      background-color: var(--badge-retry-bg);
+      border: 1px solid var(--badge-retry-border);
+      color: var(--badge-retry-color);
       cursor: pointer;
     }
 
     .btn-retry:hover {
-      background-color: rgba(245, 158, 11, 0.25);
-      border-color: #f59e0b;
-      color: #fff;
+      background-color: var(--badge-retry-hover-bg);
+      border-color: var(--badge-retry-hover-border);
+      color: var(--text-main);
     }
 
     .btn-retry:active {
@@ -272,9 +444,9 @@ DASHBOARD_HTML = """<!DOCTYPE html>
     }
 
     .badge-pending-retry {
-      background-color: rgba(245, 158, 11, 0.16);
-      border: 1px solid rgba(245, 158, 11, 0.45);
-      color: #fbbf24;
+      background-color: var(--badge-retry-bg);
+      border: 1px solid var(--badge-retry-border);
+      color: var(--badge-retry-color);
       cursor: pointer;
     }
 
@@ -435,14 +607,14 @@ DASHBOARD_HTML = """<!DOCTYPE html>
     }
 
     .toast {
-      background: #1e2430;
+      background: var(--bg-toast);
       border: 1px solid var(--border);
       border-left: 4px solid var(--accent);
       color: var(--text-main);
       padding: 0.65rem 1rem;
       border-radius: 6px;
       font-size: 0.8rem;
-      box-shadow: 0 4px 16px rgba(0, 0, 0, 0.5);
+      box-shadow: var(--shadow-toast);
       animation: toastIn 0.2s ease forwards;
       pointer-events: auto;
       max-width: 380px;
@@ -461,7 +633,7 @@ DASHBOARD_HTML = """<!DOCTYPE html>
       opacity: 0;
       pointer-events: none;
       z-index: 1000;
-      background: rgba(21, 25, 33, 0.94);
+      background: var(--bg-save-bar);
       backdrop-filter: blur(12px);
       -webkit-backdrop-filter: blur(12px);
       border: 1px solid var(--accent);
@@ -470,7 +642,7 @@ DASHBOARD_HTML = """<!DOCTYPE html>
       display: flex;
       align-items: center;
       gap: 1.5rem;
-      box-shadow: 0 12px 36px rgba(0, 0, 0, 0.65), 0 0 24px var(--accent-glow);
+      box-shadow: var(--shadow-save-bar);
       transition: transform 0.35s cubic-bezier(0.16, 1, 0.3, 1), opacity 0.25s ease;
     }
 
@@ -567,11 +739,12 @@ DASHBOARD_HTML = """<!DOCTYPE html>
       flex-direction: column;
       position: relative;
       overflow: hidden;
-      transition: transform 0.15s ease, border-color 0.15s ease;
+      box-shadow: var(--card-shadow);
+      transition: transform 0.15s ease, border-color 0.15s ease, box-shadow 0.15s ease;
     }
 
     .metric-card:hover {
-      border-color: #3b4556;
+      border-color: var(--border-hover);
       transform: translateY(-2px);
     }
 
@@ -616,11 +789,12 @@ DASHBOARD_HTML = """<!DOCTYPE html>
 
     /* Automation Tasks Panel */
     .automation-tasks-card {
-      background: linear-gradient(180deg, rgba(30, 41, 59, 0.7) 0%, rgba(15, 23, 42, 0.7) 100%);
+      background: var(--automation-card-bg);
       border: 1px solid var(--border);
       border-radius: 10px;
       padding: 0.95rem 1.15rem;
       margin-bottom: 1.5rem;
+      box-shadow: var(--card-shadow);
     }
 
     .automation-tasks-header {
@@ -646,6 +820,7 @@ DASHBOARD_HTML = """<!DOCTYPE html>
       display: flex;
       flex-direction: column;
       gap: 0.6rem;
+      box-shadow: var(--card-shadow);
       transition: all 0.2s ease;
     }
 
@@ -726,7 +901,7 @@ DASHBOARD_HTML = """<!DOCTYPE html>
       justify-content: space-between;
       gap: 0.5rem;
       padding-top: 0.4rem;
-      border-top: 1px solid rgba(255, 255, 255, 0.05);
+      border-top: 1px solid var(--task-meta-border);
       font-size: 0.72rem;
       color: var(--text-muted);
       flex-wrap: wrap;
@@ -795,7 +970,7 @@ DASHBOARD_HTML = """<!DOCTYPE html>
     }
 
     .tab-badge {
-      background-color: #232b38;
+      background-color: var(--tab-badge-bg);
       color: var(--text-muted);
       padding: 0.15rem 0.45rem;
       border-radius: 9999px;
@@ -912,6 +1087,7 @@ DASHBOARD_HTML = """<!DOCTYPE html>
       overflow-x: auto;
       overflow-y: hidden;
       -webkit-overflow-scrolling: touch;
+      box-shadow: var(--card-shadow);
     }
 
     .history-table-wrapper,
@@ -933,12 +1109,13 @@ DASHBOARD_HTML = """<!DOCTYPE html>
       display: flex;
       flex-direction: column;
       gap: 0.5rem;
+      box-shadow: var(--card-shadow);
       transition: background 0.15s ease, border-color 0.15s ease;
     }
 
     .history-mobile-card:hover,
     .token-mobile-card:hover {
-      border-color: #3b4556;
+      border-color: var(--border-hover);
       background: var(--bg-card-hover);
     }
 
@@ -958,17 +1135,17 @@ DASHBOARD_HTML = """<!DOCTYPE html>
     }
 
     .card-table-wrapper::-webkit-scrollbar-track {
-      background: #11151d;
+      background: var(--scrollbar-track);
       border-radius: 4px;
     }
 
     .card-table-wrapper::-webkit-scrollbar-thumb {
-      background: #2b3545;
+      background: var(--scrollbar-thumb);
       border-radius: 4px;
     }
 
     .card-table-wrapper::-webkit-scrollbar-thumb:hover {
-      background: #3e4c63;
+      background: var(--scrollbar-thumb-hover);
     }
 
     table {
@@ -978,7 +1155,7 @@ DASHBOARD_HTML = """<!DOCTYPE html>
     }
 
     th {
-      background-color: #12161f;
+      background-color: var(--bg-th);
       color: var(--text-muted);
       font-size: 0.75rem;
       font-weight: 600;
@@ -1104,9 +1281,9 @@ DASHBOARD_HTML = """<!DOCTYPE html>
     .badge-radarr { background: rgba(251, 146, 60, 0.15); color: var(--radarr); }
 
     .badge-category {
-      background: rgba(139, 92, 246, 0.12);
-      color: #c084fc;
-      border: 1px solid rgba(139, 92, 246, 0.25);
+      background: var(--badge-category-bg);
+      color: var(--badge-category-color);
+      border: 1px solid var(--badge-category-border);
       font-size: 0.68rem;
     }
 
@@ -1137,7 +1314,7 @@ DASHBOARD_HTML = """<!DOCTYPE html>
     .reasoning-row,
     .token-detail-row {
       display: none;
-      background-color: #0d1017;
+      background-color: var(--bg-detail-row);
     }
 
     .reasoning-row.open,
@@ -1148,10 +1325,10 @@ DASHBOARD_HTML = """<!DOCTYPE html>
     .reasoning-box {
       padding: 0.85rem 1.25rem;
       font-size: 0.8rem;
-      color: #cbd5e1;
+      color: var(--text-reasoning);
       border-left: 3px solid var(--accent);
       margin: 0.35rem 0;
-      background-color: #121620;
+      background-color: var(--bg-reasoning);
       border-radius: 0 6px 6px 0;
     }
 
@@ -1169,7 +1346,7 @@ DASHBOARD_HTML = """<!DOCTYPE html>
     }
 
     .debug-msg-panel {
-      background-color: #0b0e14;
+      background-color: var(--bg-debug-panel);
       border: 1px solid var(--border);
       border-radius: 6px;
       overflow: hidden;
@@ -1180,7 +1357,7 @@ DASHBOARD_HTML = """<!DOCTYPE html>
       align-items: center;
       justify-content: space-between;
       padding: 0.4rem 0.75rem;
-      background-color: #161b26;
+      background-color: var(--bg-debug-header);
       border-bottom: 1px solid var(--border);
       font-size: 0.72rem;
       font-weight: 600;
@@ -1194,7 +1371,7 @@ DASHBOARD_HTML = """<!DOCTYPE html>
       font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
       font-size: 0.75rem;
       line-height: 1.45;
-      color: #e2e8f0;
+      color: var(--text-main);
       white-space: pre-wrap;
       word-break: break-word;
       max-height: 340px;
@@ -1268,6 +1445,7 @@ DASHBOARD_HTML = """<!DOCTYPE html>
       border: 1px solid var(--border);
       border-radius: 10px;
       padding: 1.25rem;
+      box-shadow: var(--card-shadow);
     }
 
     .analytics-card-title {
@@ -1294,7 +1472,7 @@ DASHBOARD_HTML = """<!DOCTYPE html>
 
     .bar-track {
       height: 8px;
-      background-color: #1f2735;
+      background-color: var(--bar-track-bg);
       border-radius: 9999px;
       overflow: hidden;
       display: flex;
@@ -1341,7 +1519,7 @@ DASHBOARD_HTML = """<!DOCTYPE html>
 
     .form-input {
       width: 100%;
-      background-color: #0e1218;
+      background-color: var(--bg-input);
       border: 1px solid var(--border);
       color: var(--text-main);
       padding: 0.5rem 0.75rem;
@@ -1402,7 +1580,7 @@ DASHBOARD_HTML = """<!DOCTYPE html>
       position: absolute;
       cursor: pointer;
       top: 0; left: 0; right: 0; bottom: 0;
-      background-color: #2b3545;
+      background-color: var(--toggle-bg);
       transition: .2s;
       border-radius: 22px;
     }
@@ -1537,7 +1715,8 @@ DASHBOARD_HTML = """<!DOCTYPE html>
       .status-badge #header-status {
         display: none;
       }
-      #refresh-btn {
+      #refresh-btn,
+      #theme-toggle-btn {
         padding: 0.35rem 0.55rem;
       }
       main {
@@ -1618,7 +1797,7 @@ DASHBOARD_HTML = """<!DOCTYPE html>
         flex-direction: column;
         align-items: stretch;
         gap: 0.35rem;
-        background: rgba(0, 0, 0, 0.2);
+        background: var(--path-mapping-bg);
         padding: 0.6rem;
         border-radius: 6px;
       }
@@ -1682,7 +1861,7 @@ DASHBOARD_HTML = """<!DOCTYPE html>
       border-radius: 12px;
       width: 100%;
       max-width: 480px;
-      box-shadow: 0 20px 40px rgba(0, 0, 0, 0.5);
+      box-shadow: var(--shadow-modal);
       overflow: hidden;
       display: flex;
       flex-direction: column;
@@ -1711,7 +1890,7 @@ DASHBOARD_HTML = """<!DOCTYPE html>
     .modal-footer {
       padding: 1rem 1.4rem;
       border-top: 1px solid var(--border);
-      background: rgba(0, 0, 0, 0.15);
+      background: var(--modal-footer-bg);
       display: flex;
       align-items: center;
       justify-content: flex-end;
@@ -1774,6 +1953,10 @@ DASHBOARD_HTML = """<!DOCTYPE html>
           <option value="0">Off</option>
         </select>
       </div>
+
+      <button id="theme-toggle-btn" class="btn" onclick="cycleTheme()" title="Theme: System / Dark / Light">
+        <span id="theme-toggle-icon">🌓</span><span id="theme-toggle-label" class="header-btn-text"> Auto</span>
+      </button>
 
       <button id="refresh-btn" class="btn" onclick="fetchData(true)" title="Refresh data">
         <span id="refresh-icon">🔄</span><span class="header-btn-text"> Refresh</span>
@@ -2231,12 +2414,12 @@ DASHBOARD_HTML = """<!DOCTYPE html>
           </button>
 
           <!-- Pull Progress Bar -->
-          <div id="ollama-pull-progress-box" style="display: none; margin-top: 1rem; padding: 0.85rem; background: rgba(0, 0, 0, 0.25); border: 1px solid var(--border); border-radius: 8px;">
+          <div id="ollama-pull-progress-box" style="display: none; margin-top: 1rem; padding: 0.85rem; background: var(--bg-subtle-box); border: 1px solid var(--border); border-radius: 8px;">
             <div style="display: flex; justify-content: space-between; font-size: 0.85rem; margin-bottom: 0.4rem;">
               <span id="ollama-pull-status-text" style="font-weight: 500;">Downloading...</span>
               <span id="ollama-pull-percent-text" style="color: var(--sonarr); font-weight: 600;">0%</span>
             </div>
-            <div style="width: 100%; height: 8px; background: rgba(255, 255, 255, 0.1); border-radius: 4px; overflow: hidden; margin-bottom: 0.4rem;">
+            <div style="width: 100%; height: 8px; background: var(--bar-track-bg); border-radius: 4px; overflow: hidden; margin-bottom: 0.4rem;">
               <div id="ollama-pull-progress-bar" style="width: 0%; height: 100%; background: var(--sonarr); transition: width 0.3s ease;"></div>
             </div>
             <div id="ollama-pull-detail-text" style="font-size: 0.75rem; color: var(--text-dim);">Connecting to Ollama...</div>
@@ -2328,6 +2511,16 @@ DASHBOARD_HTML = """<!DOCTYPE html>
             <input type="text" id="cfg-timezone" class="form-input" placeholder="e.g. America/Los_Angeles, Europe/London (default: TZ env or UTC)">
             <div class="form-hint">Used for cron schedules and logs. Leave blank to inherit from container <code>TZ</code> environment variable or UTC.</div>
           </div>
+
+          <div class="form-group">
+            <label class="form-label" for="cfg-theme-select">Interface Theme</label>
+            <select id="cfg-theme-select" class="form-input" onchange="event.stopPropagation(); setTheme(this.value);">
+              <option value="system">🖥️ System Default</option>
+              <option value="dark">🌙 Dark Mode</option>
+              <option value="light">☀️ Light Mode</option>
+            </select>
+            <div class="form-hint">Choose dark mode, light mode, or follow your operating system appearance.</div>
+          </div>
         </div>
 
         <!-- AI Provider Configuration -->
@@ -2365,7 +2558,7 @@ DASHBOARD_HTML = """<!DOCTYPE html>
           </div>
 
           <!-- Consolidated Ollama Local Engine Summary in Settings -->
-          <div style="background: rgba(0, 0, 0, 0.25); border: 1px solid var(--border); border-radius: 8px; padding: 0.85rem; margin-top: 0.75rem;">
+          <div style="background: var(--bg-subtle-box); border: 1px solid var(--border); border-radius: 8px; padding: 0.85rem; margin-top: 0.75rem;">
             <div style="display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 0.6rem;">
               <div style="display: flex; align-items: center; gap: 0.65rem;">
                 <span style="font-size: 1.35rem;">🦙</span>
@@ -2666,6 +2859,84 @@ DASHBOARD_HTML = """<!DOCTYPE html>
   </div>
 
   <script>
+    const THEME_STORAGE_KEY = 'aimportarr_theme';
+
+    function getStoredTheme() {
+      try {
+        return localStorage.getItem(THEME_STORAGE_KEY) || 'system';
+      } catch (e) {
+        return 'system';
+      }
+    }
+
+    function updateThemeUI(theme) {
+      const iconEl = document.getElementById('theme-toggle-icon');
+      const labelEl = document.getElementById('theme-toggle-label');
+      const btnEl = document.getElementById('theme-toggle-btn');
+      const selectEl = document.getElementById('cfg-theme-select');
+
+      const isSystemDark = window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches;
+      let icon = '🌓';
+      let label = 'Auto';
+      let title = `Theme: System (${isSystemDark ? 'Dark' : 'Light'})`;
+
+      if (theme === 'dark') {
+        icon = '🌙';
+        label = 'Dark';
+        title = 'Theme: Dark';
+      } else if (theme === 'light') {
+        icon = '☀️';
+        label = 'Light';
+        title = 'Theme: Light';
+      } else {
+        icon = '🖥️';
+        label = 'Auto';
+        title = `Theme: System (${isSystemDark ? 'Dark' : 'Light'})`;
+      }
+
+      if (iconEl) iconEl.textContent = icon;
+      if (labelEl) labelEl.textContent = ' ' + label;
+      if (btnEl) btnEl.title = title;
+      if (selectEl && selectEl.value !== theme) selectEl.value = theme;
+    }
+
+    function applyTheme(theme, save = true) {
+      if (save) {
+        try {
+          localStorage.setItem(THEME_STORAGE_KEY, theme);
+        } catch (e) {}
+      }
+      document.documentElement.setAttribute('data-theme', theme);
+      updateThemeUI(theme);
+    }
+
+    function cycleTheme() {
+      const current = getStoredTheme();
+      let next = 'system';
+      if (current === 'system') {
+        next = 'dark';
+      } else if (current === 'dark') {
+        next = 'light';
+      } else {
+        next = 'system';
+      }
+      applyTheme(next, true);
+    }
+
+    function setTheme(theme) {
+      applyTheme(theme, true);
+    }
+
+    if (window.matchMedia) {
+      try {
+        window.matchMedia('(prefers-color-scheme: dark)').addEventListener('change', () => {
+          if (getStoredTheme() === 'system') {
+            updateThemeUI('system');
+          }
+        });
+      } catch (e) {}
+    }
+
     let rawHistory = [];
     let rawTokens = [];
     let historyTotal = 0;
@@ -3234,7 +3505,7 @@ DASHBOARD_HTML = """<!DOCTYPE html>
                 ${item.details ? `<div style="font-size: 0.74rem; color: var(--text-dim); margin-top: 0.15rem; word-break: break-all;">${escapeHtml(item.details)}</div>` : ''}
               </div>
 
-              <div style="display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 0.4rem; background: rgba(0, 0, 0, 0.2); padding: 0.45rem 0.65rem; border-radius: 6px; font-size: 0.74rem;">
+              <div style="display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 0.4rem; background: var(--bg-subtle-box); padding: 0.45rem 0.65rem; border-radius: 6px; font-size: 0.74rem;">
                 <div style="display: flex; align-items: center; gap: 0.35rem;">
                   <span style="color: var(--text-dim);">Category:</span>
                   <span class="badge badge-category" style="font-size: 0.68rem; padding: 0.1rem 0.35rem;">${item.category}</span>
@@ -3437,7 +3708,7 @@ DASHBOARD_HTML = """<!DOCTYPE html>
                 </div>
               </div>
 
-              <div style="display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 0.4rem; font-size: 0.75rem; background: rgba(0, 0, 0, 0.2); padding: 0.45rem 0.65rem; border-radius: 6px;">
+              <div style="display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 0.4rem; font-size: 0.75rem; background: var(--bg-subtle-box); padding: 0.45rem 0.65rem; border-radius: 6px;">
                 <div><span style="color: var(--text-dim);">Model:</span> <span style="color: #c084fc; font-weight: 500;">${escapeHtml(t.model)}</span></div>
                 <div style="display: flex; gap: 0.4rem; align-items: center; font-feature-settings: 'tnum'; font-size: 0.72rem;">
                   <span style="color: #60a5fa;" title="Prompt tokens">${formatNumber(t.prompt_tokens)}</span>
@@ -4243,6 +4514,8 @@ DASHBOARD_HTML = """<!DOCTYPE html>
         if (whInput && window.location.origin) {
           whInput.value = `${window.location.origin}/api/webhook`;
         }
+        const themeSel = document.getElementById('cfg-theme-select');
+        if (themeSel) themeSel.value = getStoredTheme();
 
         document.getElementById('cfg-ai-provider').value = ai.provider || 'gemini';
         document.getElementById('cfg-ai-fallback').checked = ai.fallback_enabled !== false;
@@ -4460,7 +4733,7 @@ DASHBOARD_HTML = """<!DOCTYPE html>
       if (!container) return;
 
       container.innerHTML = `
-        <div style="padding: 1.25rem; background: rgba(0, 0, 0, 0.2); border: 1px solid var(--border); border-radius: 8px;">
+        <div style="padding: 1.25rem; background: var(--bg-subtle-box); border: 1px solid var(--border); border-radius: 8px;">
           <div style="display: flex; align-items: flex-start; gap: 0.75rem; flex-wrap: wrap;">
             <span style="font-size: 2rem; line-height: 1;">🦙</span>
             <div style="flex: 1; min-width: 220px;">
@@ -4472,7 +4745,7 @@ DASHBOARD_HTML = """<!DOCTYPE html>
               </p>
 
               <div class="ollama-unconfigured-grid">
-                <div style="background: rgba(255, 255, 255, 0.03); border: 1px solid var(--border); border-radius: 6px; padding: 0.85rem;">
+                <div style="background: var(--bg-card); border: 1px solid var(--border); border-radius: 6px; padding: 0.85rem;">
                   <div style="font-weight: 600; font-size: 0.85rem; color: var(--accent); margin-bottom: 0.35rem;">✨ Using Google Gemini?</div>
                   <div style="font-size: 0.78rem; color: var(--text-muted); line-height: 1.4; margin-bottom: 0.65rem;">
                     If you use Google Gemini for AI evaluations, Ollama is entirely optional. AImportarr runs completely through your Gemini API key.
@@ -4482,7 +4755,7 @@ DASHBOARD_HTML = """<!DOCTYPE html>
                   </button>
                 </div>
 
-                <div style="background: rgba(255, 255, 255, 0.03); border: 1px solid var(--border); border-radius: 6px; padding: 0.85rem;">
+                <div style="background: var(--bg-card); border: 1px solid var(--border); border-radius: 6px; padding: 0.85rem;">
                   <div style="font-weight: 600; font-size: 0.85rem; color: var(--sonarr); margin-bottom: 0.35rem;">🐳 Running Ollama in Docker or LAN?</div>
                   <div style="font-size: 0.78rem; color: var(--text-muted); line-height: 1.4; margin-bottom: 0.65rem;">
                     In Docker, <code>localhost</code> points inside this container. Use <code>host.docker.internal</code> or your host LAN IP above.
@@ -4493,8 +4766,8 @@ DASHBOARD_HTML = """<!DOCTYPE html>
                 </div>
               </div>
 
-              <div style="font-size: 0.78rem; color: var(--text-dim); background: rgba(0, 0, 0, 0.35); padding: 0.65rem 0.85rem; border-radius: 6px; border: 1px solid var(--border-subtle); word-break: break-all;">
-                <strong>Want to run local AI?</strong> Install Ollama on your host: <code style="color: #a5f3fc; word-break: break-all;">curl -fsSL https://ollama.com/install.sh | sh</code>
+              <div style="font-size: 0.78rem; color: var(--text-dim); background: var(--bg-card); padding: 0.65rem 0.85rem; border-radius: 6px; border: 1px solid var(--border-subtle); word-break: break-all;">
+                <strong>Want to run local AI?</strong> Install Ollama on your host: <code style="color: var(--sonarr); word-break: break-all;">curl -fsSL https://ollama.com/install.sh | sh</code>
               </div>
             </div>
           </div>
@@ -4522,7 +4795,7 @@ DASHBOARD_HTML = """<!DOCTYPE html>
       }
 
       let html = `
-        <div style="display: flex; justify-content: space-between; align-items: center; background: rgba(0, 0, 0, 0.25); border: 1px solid var(--border); border-radius: 6px; padding: 0.65rem 0.85rem; margin-bottom: 0.85rem; flex-wrap: wrap; gap: 0.5rem;">
+        <div style="display: flex; justify-content: space-between; align-items: center; background: var(--bg-subtle-box); border: 1px solid var(--border); border-radius: 6px; padding: 0.65rem 0.85rem; margin-bottom: 0.85rem; flex-wrap: wrap; gap: 0.5rem;">
           <div>
             <div style="font-size: 0.72rem; color: var(--text-dim); text-transform: uppercase; font-weight: 600; letter-spacing: 0.03em;">Active Engine in AImportarr</div>
             <div style="display: flex; align-items: center; gap: 0.5rem; margin-top: 0.15rem;">
@@ -4609,7 +4882,7 @@ DASHBOARD_HTML = """<!DOCTYPE html>
               </div>
             </div>
 
-            <div style="display: flex; gap: 0.85rem; font-size: 0.75rem; color: var(--text-muted); background: rgba(0, 0, 0, 0.2); padding: 0.45rem 0.65rem; border-radius: 6px; flex-wrap: wrap;">
+            <div style="display: flex; gap: 0.85rem; font-size: 0.75rem; color: var(--text-muted); background: var(--bg-subtle-box); padding: 0.45rem 0.65rem; border-radius: 6px; flex-wrap: wrap;">
               <div><span style="color: var(--text-dim);">Format:</span> <strong>${escapeHtml(m.quantization_level || '—')}</strong></div>
               <div><span style="color: var(--text-dim);">Size:</span> <strong>${escapeHtml(m.size_human || '—')}</strong></div>
             </div>
@@ -4807,6 +5080,7 @@ DASHBOARD_HTML = """<!DOCTYPE html>
     loadConfigFromApi();
     loadOllamaModels(false);
     updateAutoRefresh();
+    updateThemeUI(getStoredTheme());
     setupSettingsDirtyTracking();
   </script>
 </body>
