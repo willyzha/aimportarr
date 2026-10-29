@@ -356,6 +356,118 @@ class GeminiRotationAndDailyQuotaTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(res_daily.decision, "import")
         self.assertEqual(res_daily.confidence, 0.92)
 
+    async def test_gemini_rotates_model_on_timeout_and_records_intermediate_metrics(self):
+        """
+        Verify that when a model times out, Gemini rotates to the next candidate model,
+        and accurately records the timeout attempt in metrics with model name, duration, and TIMEOUT code.
+        """
+        prov = GeminiProvider(api_key="fake-key", model="gemini-3.6-flash")
+        prov._min_call_interval = 0
+        prov._discovered_candidates = ["gemini-3.6-flash", "gemini-3.5-flash"]
+
+        calls = []
+
+        class Mock200Resp:
+            status_code = 200
+            reason_phrase = "OK"
+            request = MagicMock()
+
+            def raise_for_status(self):
+                pass
+
+            def json(self):
+                return {
+                    "candidates": [{
+                        "content": {
+                            "parts": [{"text": '{"decision": "import", "confidence": 0.95, "reasoning": "Model 2 succeeded", "files_to_import": []}'}]
+                        }
+                    }]
+                }
+
+        async def mock_post(client, url, json=None):
+            model_name = url.split("/models/")[1].split(":")[0]
+            calls.append(model_name)
+            if model_name == "gemini-3.6-flash":
+                raise httpx.TimeoutException("Read timed out after 25.0s")
+            return Mock200Resp()
+
+        with patch("httpx.AsyncClient.post", new=mock_post), patch("src.ai.gemini.metrics.record_token_usage") as mock_record:
+            data, raw, think = await prov._call_gemini_with_raw(
+                prompt="test prompt",
+                schema_desc="test schema",
+                operation="test_timeout_rotate"
+            )
+
+            # Both models attempted
+            self.assertEqual(calls, ["gemini-3.6-flash", "gemini-3.5-flash"])
+            self.assertEqual(data["decision"], "import")
+
+            # Verify metrics logged both the failure and the rotated success
+            self.assertEqual(mock_record.call_count, 2)
+            # Call 1: gemini-3.6-flash timeout
+            call1_kwargs = mock_record.call_args_list[0].kwargs
+            self.assertEqual(call1_kwargs["model"], "gemini-3.6-flash")
+            self.assertFalse(call1_kwargs["success"])
+            self.assertEqual(call1_kwargs["error_code"], "TIMEOUT")
+
+            # Call 2: gemini-3.5-flash success
+            call2_kwargs = mock_record.call_args_list[1].kwargs
+            self.assertEqual(call2_kwargs["model"], "gemini-3.5-flash")
+            self.assertTrue(call2_kwargs["success"])
+
+            # gemini-3.6-flash placed in cooldown
+            self.assertIn("gemini-3.6-flash", prov._rate_limited_models)
+
+    async def test_gemini_all_models_timeout_records_each_attempt_accurately(self):
+        """
+        Verify that when all candidate models time out across passes, every single attempt
+        is recorded in token metrics with its actual model name and TIMEOUT error code,
+        and no duplicate phantom summary record is created.
+        """
+        prov = GeminiProvider(api_key="fake-key", model="gemini-model-a")
+        prov._min_call_interval = 0
+        prov._discovered_candidates = ["gemini-model-a", "gemini-model-b"]
+
+        async def mock_post(client, url, json=None):
+            raise httpx.TimeoutException("Gateway timed out after 25.0s")
+
+        with patch("httpx.AsyncClient.post", new=mock_post), \
+             patch("asyncio.sleep", new_callable=AsyncMock), \
+             patch("src.ai.gemini.metrics.record_token_usage") as mock_record:
+
+            with self.assertRaises(AIProviderError):
+                await prov._call_gemini_with_raw(
+                    prompt="test prompt",
+                    schema_desc="test schema",
+                    operation="test_all_timeout"
+                )
+
+            # All attempts (2 in Pass 1, 2 in Pass 2 = 4 total attempts)
+            self.assertEqual(mock_record.call_count, 4)
+            for call in mock_record.call_args_list:
+                kw = call.kwargs
+                self.assertIn(kw["model"], ["gemini-model-a", "gemini-model-b"])
+                self.assertFalse(kw["success"])
+                self.assertEqual(kw["error_code"], "TIMEOUT")
+
+    async def test_gemini_auto_discovery_fallback_when_catalog_api_fails(self):
+        """
+        Verify that if Google catalog API discovery fails, get_candidate_models returns
+        the user preferred model plus the fallback candidate models rather than just 1 or 0 models.
+        """
+        prov = GeminiProvider(api_key="fake-key", model="gemini-user-pref")
+
+        async def mock_get(client, url):
+            raise httpx.ConnectTimeout("Connection timed out after 8.0s")
+
+        with patch("httpx.AsyncClient.get", new=mock_get):
+            candidates = await prov.get_candidate_models()
+            self.assertIn("gemini-user-pref", candidates)
+            self.assertIn("gemini-2.5-flash", candidates)
+            self.assertIn("gemini-2.0-flash", candidates)
+            self.assertIn("gemini-1.5-flash", candidates)
+            self.assertGreaterEqual(len(candidates), 4)
+
     def test_config_and_web_ui_clean(self):
         """Verify fallback_on_daily_quota_only is completely removed from config and Web UI."""
         cfg = AIConfig()
