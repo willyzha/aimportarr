@@ -468,6 +468,67 @@ class GeminiRotationAndDailyQuotaTests(unittest.IsolatedAsyncioTestCase):
             self.assertIn("gemini-1.5-flash", candidates)
             self.assertGreaterEqual(len(candidates), 4)
 
+    async def test_gemini_uses_previously_discovered_catalog_on_timeout_or_error(self):
+        """
+        Verify that if a model catalog was previously discovered, and subsequent catalog
+        queries fail or time out, GeminiProvider automatically returns the previously discovered catalog.
+        """
+        prov = GeminiProvider(api_key="fake-key", model="gemini-cached-pref")
+
+        class MockCatalogResp:
+            status_code = 200
+            def raise_for_status(self):
+                pass
+            def json(self):
+                return {
+                    "models": [
+                        {"name": "models/gemini-discovered-flash", "supportedGenerationMethods": ["generateContent"]},
+                        {"name": "models/gemini-discovered-pro", "supportedGenerationMethods": ["generateContent"]},
+                    ]
+                }
+
+        # 1. Successful initial discovery
+        async def mock_get_success(client, url):
+            return MockCatalogResp()
+
+        with patch("httpx.AsyncClient.get", new=mock_get_success):
+            initial = await prov.get_candidate_models()
+            self.assertIn("gemini-discovered-flash", initial)
+            self.assertIn("gemini-discovered-pro", initial)
+
+        # 2. Subsequent call times out (with force_refresh=True)
+        async def mock_get_timeout(client, url):
+            raise httpx.TimeoutException("Catalog discovery timed out after 8.0s")
+
+        with patch("httpx.AsyncClient.get", new=mock_get_timeout):
+            recovered = await prov.get_candidate_models(force_refresh=True)
+            # Must return previously discovered catalog
+            self.assertEqual(recovered, initial)
+            self.assertIn("gemini-discovered-flash", recovered)
+
+    async def test_gemini_persistent_catalog_cache_in_db(self):
+        """
+        Verify that discovered model catalog is persisted to DatabaseManager metadata
+        and seamlessly reloaded upon re-instantiation without requiring any network calls.
+        """
+        mock_db = MagicMock()
+        cached_data = json.dumps(["gemini-saved-1.0", "gemini-saved-2.0"])
+        mock_db.get_metadata.side_effect = lambda k: cached_data if k == "gemini_model_catalog" else "12345678.0"
+
+        with patch("src.ai.gemini.metrics.db", new=mock_db):
+            prov = GeminiProvider(api_key="fake-key", model="auto")
+            # Should have loaded from DB
+            self.assertEqual(prov._discovered_candidates, ["gemini-saved-1.0", "gemini-saved-2.0"])
+            self.assertEqual(prov._candidates_last_fetched, 12345678.0)
+
+            # When calling get_candidate_models with API failure, it returns the DB cached catalog
+            async def mock_get_fail(client, url):
+                raise httpx.ConnectError("Network is down")
+
+            with patch("httpx.AsyncClient.get", new=mock_get_fail):
+                candidates = await prov.get_candidate_models(force_refresh=True)
+                self.assertEqual(candidates, ["gemini-saved-1.0", "gemini-saved-2.0"])
+
     def test_config_and_web_ui_clean(self):
         """Verify fallback_on_daily_quota_only is completely removed from config and Web UI."""
         cfg = AIConfig()

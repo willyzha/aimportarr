@@ -112,6 +112,35 @@ class GeminiProvider(BaseAIProvider):
         self._candidates_last_fetched: float = 0.0
         self._last_call_time: float = 0.0
         self._min_call_interval: float = 1.0  # Pacing delay between calls to respect rate limits
+        self._load_cached_catalog_from_db()
+
+    def _load_cached_catalog_from_db(self) -> None:
+        """Load previously discovered model catalog from persistent database if available."""
+        try:
+            if hasattr(metrics, "db") and metrics.db is not None:
+                cached_json = metrics.db.get_metadata("gemini_model_catalog")
+                if cached_json:
+                    models = json.loads(cached_json)
+                    if isinstance(models, list) and models:
+                        self._discovered_candidates = [str(m) for m in models]
+                        last_ts_str = metrics.db.get_metadata("gemini_model_catalog_ts")
+                        self._candidates_last_fetched = float(last_ts_str) if last_ts_str else 0.0
+                        logger.info(
+                            "Loaded %d cached Gemini models from persistent storage: %s",
+                            len(self._discovered_candidates),
+                            self._discovered_candidates,
+                        )
+        except Exception as e:
+            logger.debug("Could not load cached Gemini catalog from DB: %s", e)
+
+    def _save_cached_catalog_to_db(self, candidates: List[str]) -> None:
+        """Persist discovered model catalog to database so it survives restarts."""
+        try:
+            if hasattr(metrics, "db") and metrics.db is not None:
+                metrics.db.set_metadata("gemini_model_catalog", json.dumps(candidates))
+                metrics.db.set_metadata("gemini_model_catalog_ts", str(time.time()))
+        except Exception as e:
+            logger.debug("Could not save cached Gemini catalog to DB: %s", e)
 
     @property
     def name(self) -> str:
@@ -205,7 +234,10 @@ class GeminiProvider(BaseAIProvider):
             data = {"models": models_data}
         else:
             now = time.time()
-            if self._discovered_candidates and not force_refresh and (now - self._candidates_last_fetched) < 21600.0:
+            if not self._discovered_candidates:
+                self._load_cached_catalog_from_db()
+
+            if self._discovered_candidates and not force_refresh and (now - self._candidates_last_fetched) < 86400.0:
                 return self._discovered_candidates
 
             url = f"https://generativelanguage.googleapis.com/v1beta/models?key={self.api_key}"
@@ -216,8 +248,19 @@ class GeminiProvider(BaseAIProvider):
                     data = resp.json()
             except Exception as e:
                 logger.warning("Failed to auto-discover Gemini models catalog: %s", e)
+                if not self._discovered_candidates:
+                    self._load_cached_catalog_from_db()
+
                 if self._discovered_candidates:
+                    logger.info(
+                        "Using previously discovered Gemini models catalog (%d models): %s",
+                        len(self._discovered_candidates),
+                        self._discovered_candidates,
+                    )
+                    # Back off retry for 1 hour to prevent hammering Google's failing endpoint on every request
+                    self._candidates_last_fetched = now - 82800.0
                     return self._discovered_candidates
+
                 pref = self.model.strip() if self.model and self.model not in ("auto", "smallest", "") else None
                 fallback_list = [pref] if pref else []
                 for def_m in DEFAULT_FALLBACK_CANDIDATES:
@@ -255,6 +298,8 @@ class GeminiProvider(BaseAIProvider):
         candidates.sort(key=model_score)
         self._discovered_candidates = candidates
         self._candidates_last_fetched = time.time()
+        if raw_models is None:
+            self._save_cached_catalog_to_db(candidates)
         return candidates
 
     async def get_ordered_models_to_try(self, preferred: Optional[str] = None) -> List[str]:

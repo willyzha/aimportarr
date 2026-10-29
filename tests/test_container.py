@@ -1050,5 +1050,26 @@ class ContainerSmokeTests(unittest.TestCase):
         self.assertIn("submitClearHistory", RENDERED_DASHBOARD_HTML)
         self.assertIn("/api/history/clear", RENDERED_DASHBOARD_HTML)
 
+    def test_database_metadata_cache_and_preservation(self):
+        """Verify DatabaseManager.get_metadata and set_metadata store and preserve Gemini catalog across counter resets."""
+        from src.database import DatabaseManager
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            db_path = str(Path(tmp_dir) / "test_meta.db")
+            db = DatabaseManager(db_path=db_path)
+            try:
+                self.assertIsNone(db.get_metadata("gemini_model_catalog"))
+                db.set_metadata("gemini_model_catalog", '["gemini-2.5-flash", "gemini-2.0-flash"]')
+                db.set_metadata("lifetime_processed_count", "42")
+
+                self.assertEqual(db.get_metadata("gemini_model_catalog"), '["gemini-2.5-flash", "gemini-2.0-flash"]')
+                self.assertEqual(db.get_metadata("lifetime_processed_count"), "42")
+
+                # Reset counters should clear lifetime counters but preserve gemini catalog
+                db.clear_history(reset_counters=True)
+                self.assertIsNone(db.get_metadata("lifetime_processed_count"))
+                self.assertEqual(db.get_metadata("gemini_model_catalog"), '["gemini-2.5-flash", "gemini-2.0-flash"]')
+            finally:
+                db.close()
+
 if __name__ == "__main__":
     unittest.main()

@@ -214,7 +214,7 @@ class DatabaseManager:
                     c_tokens = conn.execute("DELETE FROM token_usage;")
                     deleted_tokens = c_tokens.rowcount
                 if reset_counters:
-                    c_meta = conn.execute("DELETE FROM app_metadata;")
+                    c_meta = conn.execute("DELETE FROM app_metadata WHERE key NOT LIKE 'gemini_%';")
                     reset_metadata = c_meta.rowcount
 
             try:
@@ -232,6 +232,29 @@ class DatabaseManager:
             "deleted_tokens": deleted_tokens,
             "reset_metadata": reset_metadata,
         }
+
+    def get_metadata(self, key: str, default: Optional[str] = None) -> Optional[str]:
+        """Retrieve a string value from the app_metadata key-value table."""
+        try:
+            with self._lock:
+                conn = self._get_connection()
+                cur = conn.execute("SELECT value FROM app_metadata WHERE key = ?;", (key,))
+                row = cur.fetchone()
+                if row and row["value"] is not None:
+                    return str(row["value"])
+        except Exception as e:
+            logger.warning("Failed to get metadata key '%s': %s", key, e)
+        return default
+
+    def set_metadata(self, key: str, value: str) -> None:
+        """Store or update a string value in the app_metadata key-value table."""
+        try:
+            with self._lock:
+                conn = self._get_connection()
+                with conn:
+                    conn.execute("INSERT OR REPLACE INTO app_metadata (key, value) VALUES (?, ?);", (key, value))
+        except Exception as e:
+            logger.warning("Failed to set metadata key '%s': %s", key, e)
 
     def get_latest_item_record(self, item_keys: List[str]) -> Optional[Dict[str, Any]]:
         """
