@@ -57,6 +57,7 @@ class RadarrClient:
         self._dismissed_downloads: set = set()
         self._attempted_items: set = set()
         self._attempted_movie_retry_keys: set = set()
+        self._grab_provenance_cache: Dict[str, Tuple[Optional[str], Optional[str]]] = {}
         self.headers = {
             "X-Api-Key": self.api_key,
             "Content-Type": "application/json",
@@ -105,6 +106,41 @@ class RadarrClient:
             },
         )
         return data.get("records", [])
+
+    async def get_grab_provenance(self, download_id: Optional[str]) -> Tuple[Optional[str], Optional[str]]:
+        """Look up releaseSource and indexer for a downloadId from Radarr history.
+        eventType=1 corresponds to 'grabbed'.
+        Returns (release_source, indexer).
+        """
+        if not download_id:
+            return None, None
+
+        dl_key = str(download_id).strip().upper()
+        if dl_key in self._grab_provenance_cache:
+            return self._grab_provenance_cache[dl_key]
+
+        try:
+            records = await self._get("history", params={"downloadId": dl_key, "eventType": 1})
+            if isinstance(records, dict):
+                records = records.get("records", [])
+            if not records and dl_key != str(download_id).strip():
+                records = await self._get("history", params={"downloadId": str(download_id).strip(), "eventType": 1})
+                if isinstance(records, dict):
+                    records = records.get("records", [])
+
+            if records and isinstance(records, list):
+                grab_record = records[0]
+                data = grab_record.get("data", {})
+                release_source = data.get("releaseSource") or data.get("grabMethod") or grab_record.get("sourceTitle")
+                indexer = data.get("indexer") or grab_record.get("indexer")
+                res = (release_source, indexer)
+                self._grab_provenance_cache[dl_key] = res
+                return res
+        except Exception as e:
+            logger.debug(f"Failed to fetch grab provenance for downloadId {download_id}: {e}")
+
+        self._grab_provenance_cache[dl_key] = (None, None)
+        return (None, None)
 
     async def get_movie(self, movie_id: int) -> Dict[str, Any]:
         """Fetch detailed movie metadata (including movieFile if downloaded)."""
@@ -501,6 +537,18 @@ class RadarrClient:
         mode_tag = "[DRY RUN]" if is_dry_run else "[LIVE]"
         logger.info(f"Processing stuck Radarr movie: '{title}' [{initial_category.value}] {mode_tag}")
 
+        queue_messages_str = "; ".join(all_messages) or item.get("errorMessage") or (f"Status: {status}, State: {tracked_state}" if (status or tracked_state) else "")
+        release_source, indexer = await self.get_grab_provenance(download_id)
+        if not indexer and item.get("indexer"):
+            indexer = item.get("indexer")
+
+        def record_item(**kwargs):
+            kwargs.setdefault("trigger_source", "queue")
+            kwargs.setdefault("queue_messages", queue_messages_str)
+            kwargs.setdefault("release_source", release_source)
+            kwargs.setdefault("indexer", indexer)
+            return metrics.record_processed_item(**kwargs)
+
         # ------------------------------------------------------------------
         # STEP 2 & STEP 3: Stage 1 Triage & Optional Archive Extraction
         # ------------------------------------------------------------------
@@ -561,7 +609,7 @@ class RadarrClient:
                             logger.warning(
                                 f"  🚨 Stage 1 AI confirmed malware/corrupt archive: '{title}' | Model: {model_label} | Confidence: {triage.confidence:.0%}"
                             )
-                            metrics.record_processed_item(
+                            record_item(
                                 app="Radarr",
                                 title=title,
                                 category=triage.category_tag or "malware_or_corrupt",
@@ -604,7 +652,7 @@ class RadarrClient:
                     logger.warning(
                         f"  🚨 Stage 1 AI confirmed fake/malware release: '{title}' | Model: {model_label} | Confidence: {triage.confidence:.0%}"
                     )
-                    metrics.record_processed_item(
+                    record_item(
                         app="Radarr",
                         title=title,
                         category=triage.category_tag or "malware_or_corrupt",
@@ -623,7 +671,7 @@ class RadarrClient:
                     )
                 elif triage.action == "reject_delete" and triage.confidence < self.min_confidence:
                     if self.reject_on_low_confidence:
-                        metrics.record_processed_item(
+                        record_item(
                             app="Radarr",
                             title=title,
                             category="low_confidence",
@@ -643,7 +691,7 @@ class RadarrClient:
                             dry_run=is_dry_run,
                             title=title,
                         )
-                    metrics.record_processed_item(
+                    record_item(
                         app="Radarr",
                         title=title,
                         category="low_confidence",
@@ -676,7 +724,7 @@ class RadarrClient:
                     logger.warning(
                         f"  Radarr returned 0 files for '{title}' and local path '{p_local}' is not accessible. Leaving in queue."
                     )
-                    metrics.record_processed_item(
+                    record_item(
                         app="Radarr",
                         title=title,
                         category="path_unreachable",
@@ -696,7 +744,7 @@ class RadarrClient:
                 )
                 model_label = triage.model_name or "AI"
                 if triage.action == "reject_delete" and triage.confidence >= self.min_confidence:
-                    metrics.record_processed_item(
+                    record_item(
                         app="Radarr",
                         title=title,
                         category=triage.category_tag or "sample_only",
@@ -713,7 +761,7 @@ class RadarrClient:
                         dry_run=is_dry_run,
                         title=title,
                     )
-                metrics.record_processed_item(
+                record_item(
                     app="Radarr",
                     title=title,
                     category="no_importable_files",
@@ -803,15 +851,15 @@ class RadarrClient:
             if (quality_rejected_count + already_imported_count) == len(manual_items):
                 reason_str = "; ".join(sorted(set(all_rejection_reasons))) or "Existing file on disk has equal or higher quality"
                 if already_imported_count > 0:
-                    metrics.record_processed_item(
+                    record_item(
                         app="Radarr",
                         title=title,
                         category="already_imported",
-                        status="dry_run" if is_dry_run else "imported",
+                        status="dry_run" if is_dry_run else "dismissed",
                         confidence=1.0,
                         model="Radarr (Quality Rule)",
-                        reasoning=f"Movie file already imported ({reason_str})",
-                        details="Imported (movie file already imported)",
+                        reasoning=f"Download redundant: movie file was already imported in Radarr at an earlier time ({reason_str}). Dismissed stuck download from queue.",
+                        details=f"All {already_imported_count} file(s) already in library (0 imported, queue cleared)",
                         item_keys=item_keys,
                     )
                     await self.dismiss_queue_warning(
@@ -822,7 +870,7 @@ class RadarrClient:
                     )
                     return True
 
-                metrics.record_processed_item(
+                record_item(
                     app="Radarr",
                     title=title,
                     category="quality_downgrade",
@@ -856,7 +904,7 @@ class RadarrClient:
                     fast_path_import_files, dry_run=is_dry_run, category_tag=cat_tag
                 )
                 status_label = "dry_run" if is_dry_run else ("imported" if import_ok else "failed")
-                metrics.record_processed_item(
+                record_item(
                     app="Radarr",
                     title=title,
                     category=cat_tag,
@@ -951,7 +999,7 @@ class RadarrClient:
                     f"  ⚠️ Stage 2 AI confidence ({stage2.confidence:.0%}) is below threshold ({self.min_confidence:.0%}) for '{title}': {stage2.reasoning}"
                 )
                 if self.reject_on_low_confidence:
-                    metrics.record_processed_item(
+                    record_item(
                         app="Radarr",
                         title=title,
                         category="low_confidence",
@@ -973,7 +1021,7 @@ class RadarrClient:
                     )
                     return False
 
-                metrics.record_processed_item(
+                record_item(
                     app="Radarr",
                     title=title,
                     category="low_confidence",
@@ -1039,7 +1087,7 @@ class RadarrClient:
 
             if stage2.decision == "import":
                 if not movie_id:
-                    metrics.record_processed_item(
+                    record_item(
                         app="Radarr",
                         title=title,
                         category="unknown_media",
@@ -1093,7 +1141,7 @@ class RadarrClient:
                         files_to_import, dry_run=is_dry_run, category_tag=cat_tag
                     )
                     status_label = "dry_run" if is_dry_run else ("imported" if import_ok else "failed")
-                    metrics.record_processed_item(
+                    record_item(
                         app="Radarr",
                         title=title,
                         category=cat_tag,
@@ -1108,7 +1156,7 @@ class RadarrClient:
 
             if stage2.decision == "reject_delete":
                 cat_tag = stage2.category_tag or "malware_or_corrupt"
-                metrics.record_processed_item(
+                record_item(
                     app="Radarr",
                     title=title,
                     category=cat_tag,
@@ -1128,7 +1176,7 @@ class RadarrClient:
                 return False
 
             cat_tag = stage2.category_tag or "dismissed"
-            metrics.record_processed_item(
+            record_item(
                 app="Radarr",
                 title=title,
                 category=cat_tag,
@@ -1412,6 +1460,10 @@ class RadarrClient:
                     reasoning=f"No indexer releases found for missing movie '{movie_label}'.",
                     details=f"Checked Radarr indexers; 0 releases returned.",
                     item_keys=[retry_key],
+                    trigger_source="movie_search",
+                    release_source="AImportarr Movie Search",
+                    indexer=None,
+                    queue_messages=f"Missing movie ({movie_label})",
                 )
                 self._attempted_movie_retry_keys.add(retry_key)
                 continue
@@ -1499,6 +1551,10 @@ class RadarrClient:
                         reasoning=reason,
                         details=f"Grabbed release: {winning_rel.get('title')}",
                         item_keys=[retry_key],
+                        trigger_source="movie_search",
+                        release_source="AImportarr Movie Search",
+                        indexer=winning_rel.get("indexer") if winning_rel else None,
+                        queue_messages=f"Missing movie ({movie_label})",
                     )
                     self._attempted_movie_retry_keys.add(retry_key)
             else:
@@ -1513,6 +1569,10 @@ class RadarrClient:
                     reasoning=f"No qualifying release found among {len(releases)} candidate(s) for '{movie_label}'.",
                     details=f"Checked {len(releases)} release(s); none passed criteria.",
                     item_keys=[retry_key],
+                    trigger_source="movie_search",
+                    release_source="AImportarr Movie Search",
+                    indexer=None,
+                    queue_messages=f"Missing movie ({movie_label})",
                 )
                 self._attempted_movie_retry_keys.add(retry_key)
 

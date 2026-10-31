@@ -395,8 +395,8 @@ class QualityEnforcementTests(unittest.IsolatedAsyncioTestCase):
             self.assertFalse(mock_resolve.call_args.kwargs["remove_from_client"])
             self.assertFalse(mock_resolve.call_args.kwargs["blocklist"])
             history = metrics.get_processed_history()
-            self.assertEqual(history[0]["status"], "imported")
-            self.assertEqual(history[0]["details"], "Imported (movie file already imported)")
+            self.assertEqual(history[0]["status"], "dismissed")
+            self.assertEqual(history[0]["details"], "All 1 file(s) already in library (0 imported, queue cleared)")
 
     async def test_sonarr_unmapped_episode_triggers_ai_parsing(self):
         """When curr_episodes is empty (unmapped episode) and no quality rejections, Stage 2 AI resolves it."""
@@ -796,7 +796,7 @@ class QualityEnforcementTests(unittest.IsolatedAsyncioTestCase):
             mock_resolve.assert_not_called()
             self.assertTrue(res)
             history = metrics.get_processed_history()
-            self.assertEqual(history[0]["status"], "imported")
+            self.assertEqual(history[0]["status"], "dismissed")
             self.assertIn("Completed season", history[0]["details"])
 
     async def test_season_pack_already_imported_and_quality_rejected_fast_path_dismisses(self):
@@ -867,9 +867,9 @@ class QualityEnforcementTests(unittest.IsolatedAsyncioTestCase):
             self.assertTrue(mock_resolve.call_args.kwargs["skip_redownload"])
             self.assertTrue(res)
             history = metrics.get_processed_history()
-            self.assertEqual(history[0]["status"], "imported")
-            self.assertIn("1 episode(s) imported", history[0]["details"])
-            self.assertIn("1 existing file(s) kept on disk", history[0]["details"])
+            self.assertEqual(history[0]["status"], "dismissed")
+            self.assertIn("1 already imported", history[0]["details"])
+            self.assertIn("1 existing kept", history[0]["details"])
 
     async def test_season_pack_missing_episodes_unimported_dismisses_as_dismissed(self):
         """When a season pack has missing episodes, but 0 were imported and season is not satisfied, it records status as dismissed."""

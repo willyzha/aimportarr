@@ -1324,6 +1324,89 @@ DASHBOARD_HTML = """<!DOCTYPE html>
       font-size: 0.68rem;
     }
 
+    .badge-category.cat-already-imported {
+      background: rgba(16, 185, 129, 0.12);
+      color: #10b981;
+      border: 1px solid rgba(16, 185, 129, 0.25);
+    }
+    .badge-category.cat-season-pack {
+      background: rgba(99, 102, 241, 0.12);
+      color: #818cf8;
+      border: 1px solid rgba(99, 102, 241, 0.25);
+    }
+    .badge-category.cat-archive {
+      background: rgba(245, 158, 11, 0.12);
+      color: #fbbf24;
+      border: 1px solid rgba(245, 158, 11, 0.25);
+    }
+    .badge-category.cat-direct {
+      background: rgba(59, 130, 246, 0.12);
+      color: #60a5fa;
+      border: 1px solid rgba(59, 130, 246, 0.25);
+    }
+    .badge-category.cat-ai {
+      background: rgba(168, 85, 247, 0.12);
+      color: #c084fc;
+      border: 1px solid rgba(168, 85, 247, 0.25);
+    }
+    .badge-category.cat-backfill,
+    .badge-category.cat-ep-retry,
+    .badge-category.cat-movie-search {
+      background: rgba(236, 72, 153, 0.12);
+      color: #f472b6;
+      border: 1px solid rgba(236, 72, 153, 0.25);
+    }
+
+    .badge-trigger {
+      display: inline-flex;
+      align-items: center;
+      gap: 0.25rem;
+      font-size: 0.65rem;
+      font-weight: 600;
+      padding: 0.1rem 0.4rem;
+      border-radius: 4px;
+      text-transform: uppercase;
+      letter-spacing: 0.03em;
+    }
+    .badge-trigger-queue {
+      background: rgba(56, 189, 248, 0.12);
+      color: #38bdf8;
+      border: 1px solid rgba(56, 189, 248, 0.25);
+    }
+    .badge-trigger-automated {
+      background: rgba(168, 85, 247, 0.12);
+      color: #c084fc;
+      border: 1px solid rgba(168, 85, 247, 0.25);
+    }
+
+    .reasoning-section {
+      margin-bottom: 0.55rem;
+    }
+    .reasoning-section:last-child {
+      margin-bottom: 0;
+    }
+    .reasoning-header {
+      font-weight: 600;
+      color: var(--accent);
+      margin-bottom: 0.2rem;
+      font-size: 0.78rem;
+      display: flex;
+      align-items: center;
+      gap: 0.35rem;
+    }
+    .reasoning-body {
+      line-height: 1.45;
+      word-break: break-word;
+      font-size: 0.78rem;
+    }
+    .reasoning-meta {
+      font-size: 0.7rem;
+      color: var(--text-dim);
+      margin-top: 0.4rem;
+      padding-top: 0.4rem;
+      border-top: 1px solid var(--border-subtle);
+    }
+
     .title-cell {
       min-width: 320px;
       word-break: break-word;
@@ -2183,12 +2266,20 @@ DASHBOARD_HTML = """<!DOCTYPE html>
           </div>
 
           <div class="filter-pills">
+            <span style="font-size: 0.72rem; color: var(--text-dim); margin-right: 0.15rem; align-self: center; font-weight: 500;">Status:</span>
             <div class="filter-pill active" data-filter="all" onclick="setFilter('all')">All</div>
             <div class="filter-pill" data-filter="imported" onclick="setFilter('imported')" title="Imported into Sonarr/Radarr media library">Imported</div>
             <div class="filter-pill" data-filter="skipped" onclick="setFilter('skipped')" title="Skipped (no release found, cooldown applied, or review needed)">Skipped</div>
             <div class="filter-pill" data-filter="rejected" onclick="setFilter('rejected')" title="Deleted from download client &amp; blocklisted (malware/corrupt)">Rejected</div>
             <div class="filter-pill" data-filter="dismissed" onclick="setFilter('dismissed')" title="Ignored/removed from *arr queue, files kept in download client">Dismissed</div>
             <div class="filter-pill" data-filter="failed" onclick="setFilter('failed')" title="Import or grab errors (eligible for retry)">Failed</div>
+          </div>
+
+          <div class="filter-pills" style="margin-left: 0.2rem;">
+            <span style="font-size: 0.72rem; color: var(--text-dim); margin-right: 0.15rem; align-self: center; font-weight: 500;">Origin:</span>
+            <div class="filter-pill trigger-pill active" data-trigger="all" onclick="setTriggerFilter('all')">All Origins</div>
+            <div class="filter-pill trigger-pill" data-trigger="queue" onclick="setTriggerFilter('queue')" title="Stuck queue rescue (downloads grabbed by Sonarr/Radarr)">📥 Queue Rescue</div>
+            <div class="filter-pill trigger-pill" data-trigger="automated" onclick="setTriggerFilter('automated')" title="AImportarr automated proactive searches (Season Backfill, Episode Retry, Movie Search)">🤖 Automated Searches</div>
           </div>
         </div>
 
@@ -2997,6 +3088,7 @@ DASHBOARD_HTML = """<!DOCTYPE html>
     let lastKnownGlobalTokensTotal = null;
 
     let currentFilter = 'all';
+    let currentTriggerFilter = 'all';
     let historySearchDebounce = null;
     let tokensSearchDebounce = null;
     let refreshTimer = null;
@@ -3009,7 +3101,8 @@ DASHBOARD_HTML = """<!DOCTYPE html>
       for (let i = 0; i < oldItems.length; i++) {
         if (oldItems[i].id !== newItems[i].id ||
             oldItems[i].status !== newItems[i].status ||
-            oldItems[i].retry_requested !== newItems[i].retry_requested) {
+            oldItems[i].retry_requested !== newItems[i].retry_requested ||
+            oldItems[i].trigger_source !== newItems[i].trigger_source) {
           return true;
         }
       }
@@ -3133,8 +3226,17 @@ DASHBOARD_HTML = """<!DOCTYPE html>
     function setFilter(status) {
       currentFilter = status;
       historyCurrentPage = 1;
-      document.querySelectorAll('.filter-pill').forEach(el => {
+      document.querySelectorAll('.filter-pill:not(.trigger-pill)').forEach(el => {
         el.classList.toggle('active', el.dataset.filter === status);
+      });
+      fetchHistoryData(true);
+    }
+
+    function setTriggerFilter(trig) {
+      currentTriggerFilter = trig;
+      historyCurrentPage = 1;
+      document.querySelectorAll('.trigger-pill').forEach(el => {
+        el.classList.toggle('active', el.dataset.trigger === trig);
       });
       fetchHistoryData(true);
     }
@@ -3164,8 +3266,12 @@ DASHBOARD_HTML = """<!DOCTYPE html>
 
       // Reset filter to 'all' so new items (regardless of status/category) are visible
       currentFilter = 'all';
-      document.querySelectorAll('.filter-pill').forEach(el => {
+      currentTriggerFilter = 'all';
+      document.querySelectorAll('.filter-pill:not(.trigger-pill)').forEach(el => {
         el.classList.toggle('active', el.dataset.filter === 'all');
+      });
+      document.querySelectorAll('.trigger-pill').forEach(el => {
+        el.classList.toggle('active', el.dataset.trigger === 'all');
       });
 
       // Clear search box so newly arrived items are not hidden
@@ -3261,6 +3367,9 @@ DASHBOARD_HTML = """<!DOCTYPE html>
           limit: historyPageSize,
           filter: currentFilter,
         });
+        if (currentTriggerFilter && currentTriggerFilter !== 'all') {
+          params.set('trigger', currentTriggerFilter);
+        }
         if (q) params.set('search', q);
 
         const res = await fetch(`/api/history?${params.toString()}`);
@@ -3284,7 +3393,7 @@ DASHBOARD_HTML = """<!DOCTYPE html>
         rawHistory = newItems;
         lastKnownHistoryTotal = historyTotal;
 
-        const isViewingLatestHistory = (currentFilter === 'all' && historyCurrentPage === 1 && !q);
+        const isViewingLatestHistory = (currentFilter === 'all' && currentTriggerFilter === 'all' && historyCurrentPage === 1 && !q);
         if (typeof data.global_total === 'number') {
           if (isViewingLatestHistory || lastKnownGlobalHistoryTotal === null) {
             lastKnownGlobalHistoryTotal = data.global_total;
@@ -3446,6 +3555,89 @@ DASHBOARD_HTML = """<!DOCTYPE html>
       `;
     }
 
+    function formatCategoryBadge(category) {
+      const cat = (category || '').toLowerCase();
+      const map = {
+        'already_imported': { label: 'Already in Library', class: 'cat-already-imported' },
+        'season_pack': { label: 'Season Pack', class: 'cat-season-pack' },
+        'archive_extracted': { label: 'Archive Extracted', class: 'cat-archive' },
+        'direct_match': { label: 'Direct Match', class: 'cat-direct' },
+        'ai_imported': { label: 'AI Matched', class: 'cat-ai' },
+        'quality_downgrade': { label: 'Quality Downgrade', class: 'cat-quality' },
+        'wrong_media': { label: 'Wrong Media', class: 'cat-wrong' },
+        'low_confidence': { label: 'Low Confidence', class: 'cat-low-conf' },
+        'malware_or_corrupt': { label: 'Malware / Corrupt', class: 'cat-malware' },
+        'sample_only': { label: 'Sample Only', class: 'cat-sample' },
+        'path_unreachable': { label: 'Path Unreachable', class: 'cat-path' },
+        'no_importable_files': { label: 'No Video Files', class: 'cat-no-files' },
+        'season_backfill': { label: 'Season Backfill', class: 'cat-backfill' },
+        'episode_retry': { label: 'Episode Retry', class: 'cat-ep-retry' },
+        'missing_movie': { label: 'Movie Search', class: 'cat-movie-search' }
+      };
+      if (map[cat]) {
+        return `<span class="badge badge-category ${map[cat].class}">${map[cat].label}</span>`;
+      }
+      const human = (category || 'Unknown').replace(/_/g, ' ').replace(/\\b\\w/g, c => c.toUpperCase());
+      return `<span class="badge badge-category">${escapeHtml(human)}</span>`;
+    }
+
+    function getTriggerInfo(item) {
+      let src = (item.trigger_source || '').toLowerCase();
+      if (!src) {
+        // Fallback for legacy items
+        const cat = (item.category || '').toLowerCase();
+        if (cat === 'season_backfill') src = 'season_backfill';
+        else if (cat === 'episode_retry') src = 'episode_retry';
+        else if (cat === 'missing_movie') src = 'movie_search';
+        else src = 'queue';
+      }
+
+      const isAutomated = (src === 'season_backfill' || src === 'episode_retry' || src === 'movie_search');
+      let badgeLabel = '📥 Queue Rescue';
+      let badgeClass = 'badge-trigger-queue';
+      let originTitle = 'Stuck Queue Rescue';
+
+      if (src === 'season_backfill') {
+        badgeLabel = '🤖 Season Backfill';
+        badgeClass = 'badge-trigger-automated';
+        originTitle = 'Proactive Season Pack Backfill';
+      } else if (src === 'episode_retry') {
+        badgeLabel = '🔍 Episode Retry';
+        badgeClass = 'badge-trigger-automated';
+        originTitle = 'Proactive Missing Episode Retry';
+      } else if (src === 'movie_search') {
+        badgeLabel = '🎬 Movie Search';
+        badgeClass = 'badge-trigger-automated';
+        originTitle = 'Proactive Missing Movie Search';
+      }
+
+      let grabText = '';
+      if (item.release_source && item.indexer) {
+        grabText = `Grabbed via ${item.release_source} (${item.indexer})`;
+      } else if (item.release_source) {
+        grabText = `Grabbed via ${item.release_source}`;
+      } else if (item.indexer) {
+        grabText = `Indexer: ${item.indexer}`;
+      } else if (!isAutomated) {
+        grabText = 'Grabbed by Sonarr/Radarr (stuck in queue)';
+      }
+
+      let issueText = item.queue_messages || '';
+      if (!issueText && !isAutomated) {
+        issueText = 'Stuck in queue with import warning/error';
+      }
+
+      return {
+        isAutomated,
+        src,
+        badgeLabel,
+        badgeClass,
+        originTitle,
+        grabText,
+        issueText
+      };
+    }
+
     function renderHistoryTable(items) {
       const tbody = document.getElementById('history-table-body');
       const cardsContainer = document.getElementById('history-cards-container');
@@ -3481,6 +3673,7 @@ DASHBOARD_HTML = """<!DOCTYPE html>
           const statusClass = `badge-${normStatus}`;
           const statusTooltip = getStatusTooltip(normStatus);
           const isOpen = openReasoningIds.has(Number(item.id));
+          const trig = getTriggerInfo(item);
 
           return `
             <tr class="clickable-row" onclick="toggleReasoning(${item.id})">
@@ -3488,9 +3681,16 @@ DASHBOARD_HTML = """<!DOCTYPE html>
               <td><span class="badge ${appClass}">${item.app || 'App'}</span></td>
               <td class="title-cell">
                 <div class="title-main">${escapeHtml(item.title)}</div>
-                ${item.details ? `<div class="title-sub">${escapeHtml(item.details)}</div>` : ''}
+                <div class="title-sub" style="margin-top: 0.25rem; font-size: 0.74rem; display: flex; flex-direction: column; gap: 0.15rem;">
+                  <div style="display: flex; align-items: center; gap: 0.4rem; flex-wrap: wrap;">
+                    <span class="badge-trigger ${trig.badgeClass}">${trig.badgeLabel}</span>
+                    ${trig.issueText ? `<span style="color: var(--text-dim);" title="${escapeHtml(trig.issueText)}"><strong>Issue:</strong> "${escapeHtml(trig.issueText.length > 70 ? trig.issueText.slice(0, 70) + '...' : trig.issueText)}"</span>` : ''}
+                    ${trig.grabText ? `<span style="color: var(--text-muted);">&bull; ${escapeHtml(trig.grabText)}</span>` : ''}
+                  </div>
+                  ${item.details ? `<div style="color: var(--text-muted); font-size: 0.73rem;">${escapeHtml(item.details)}</div>` : ''}
+                </div>
               </td>
-              <td><span class="badge badge-category">${item.category}</span></td>
+              <td>${formatCategoryBadge(item.category)}</td>
               <td><span class="badge ${statusClass}" title="${escapeHtml(statusTooltip)}">${normStatus}</span></td>
               <td>
                 <div style="font-weight: 600;">${confText}</div>
@@ -3502,11 +3702,24 @@ DASHBOARD_HTML = """<!DOCTYPE html>
             <tr id="reasoning-${item.id}" class="reasoning-row ${isOpen ? 'open' : ''}" onclick="event.stopPropagation()">
               <td colspan="8">
                 <div class="reasoning-box">
-                  <div style="font-weight: 600; color: #a5b4fc; margin-bottom: 0.35rem;">
-                    🤖 AI Reasoning & Decision Details
+                  <div class="reasoning-section">
+                    <div class="reasoning-header">📌 Trigger &amp; Provenance</div>
+                    <div class="reasoning-body">
+                      <div>&bull; <strong>Origin:</strong> ${escapeHtml(trig.originTitle)}</div>
+                      ${trig.issueText ? `<div>&bull; <strong>Initial Issue:</strong> "${escapeHtml(trig.issueText)}"</div>` : ''}
+                      ${trig.grabText ? `<div>&bull; <strong>Grab Provenance:</strong> ${escapeHtml(trig.grabText)}</div>` : ''}
+                    </div>
                   </div>
-                  <div>${escapeHtml(item.reasoning || item.details || 'No reasoning details recorded.')}</div>
-                  <div style="font-size: 0.7rem; color: var(--text-dim); margin-top: 0.35rem;">
+                  ${item.details ? `
+                  <div class="reasoning-section">
+                    <div class="reasoning-header">⚡ Action Taken &amp; Result</div>
+                    <div class="reasoning-body">${escapeHtml(item.details)}</div>
+                  </div>` : ''}
+                  <div class="reasoning-section">
+                    <div class="reasoning-header">🤖 AI Reasoning &amp; Decision Details</div>
+                    <div class="reasoning-body" style="white-space: pre-wrap; line-height: 1.5;">${escapeHtml(item.reasoning || item.details || 'No reasoning details recorded.')}</div>
+                  </div>
+                  <div class="reasoning-meta">
                     ID: #${item.id} &bull; Time: ${formatDateTime(item.timestamp)} &bull; Model: ${escapeHtml(modelText)} &bull; Confidence: ${confText}
                   </div>
                 </div>
@@ -3528,6 +3741,7 @@ DASHBOARD_HTML = """<!DOCTYPE html>
           const statusClass = `badge-${normStatus}`;
           const statusTooltip = getStatusTooltip(normStatus);
           const isOpen = openReasoningIds.has(Number(item.id));
+          const trig = getTriggerInfo(item);
 
           return `
             <div class="history-mobile-card clickable-row" onclick="toggleReasoning(${item.id})">
@@ -3542,15 +3756,22 @@ DASHBOARD_HTML = """<!DOCTYPE html>
                 </div>
               </div>
 
-              <div style="margin: 0.15rem 0;">
+              <div style="margin: 0.25rem 0;">
                 <div style="font-weight: 600; font-size: 0.88rem; color: var(--text-main); word-break: break-all; line-height: 1.35;">${escapeHtml(item.title)}</div>
-                ${item.details ? `<div style="font-size: 0.74rem; color: var(--text-dim); margin-top: 0.15rem; word-break: break-all;">${escapeHtml(item.details)}</div>` : ''}
+                <div style="margin-top: 0.25rem; font-size: 0.74rem; display: flex; flex-direction: column; gap: 0.15rem;">
+                  <div style="display: flex; align-items: center; gap: 0.35rem; flex-wrap: wrap;">
+                    <span class="badge-trigger ${trig.badgeClass}">${trig.badgeLabel}</span>
+                    ${trig.grabText ? `<span style="color: var(--text-muted); font-size: 0.72rem;">${escapeHtml(trig.grabText)}</span>` : ''}
+                  </div>
+                  ${trig.issueText ? `<div style="font-size: 0.72rem; color: var(--text-dim);"><strong>Issue:</strong> "${escapeHtml(trig.issueText)}"</div>` : ''}
+                  ${item.details ? `<div style="font-size: 0.72rem; color: var(--text-muted);">${escapeHtml(item.details)}</div>` : ''}
+                </div>
               </div>
 
               <div style="display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 0.4rem; background: var(--bg-subtle-box); padding: 0.45rem 0.65rem; border-radius: 6px; font-size: 0.74rem;">
                 <div style="display: flex; align-items: center; gap: 0.35rem;">
                   <span style="color: var(--text-dim);">Category:</span>
-                  <span class="badge badge-category" style="font-size: 0.68rem; padding: 0.1rem 0.35rem;">${item.category}</span>
+                  ${formatCategoryBadge(item.category)}
                 </div>
                 <div style="display: flex; align-items: center; gap: 0.35rem;">
                   <span style="color: var(--text-dim);">AI:</span>
@@ -3564,17 +3785,30 @@ DASHBOARD_HTML = """<!DOCTYPE html>
               </div>
 
               <div style="display: flex; justify-content: space-between; align-items: center; font-size: 0.72rem; color: var(--accent); padding-top: 0.3rem; border-top: 1px solid var(--border-subtle);">
-                <span>AI Reasoning &amp; Details</span>
+                <span>Trigger, Provenance &amp; Details</span>
                 <span id="chevron-card-${item.id}" class="reasoning-chevron" style="font-size: 0.85rem;">${isOpen ? '▴' : '▾'}</span>
               </div>
 
               <div id="reasoning-card-${item.id}" class="reasoning-card-panel ${isOpen ? 'open' : ''}" style="margin-top: 0.2rem;" onclick="event.stopPropagation()">
                 <div class="reasoning-box">
-                  <div style="font-weight: 600; color: #a5b4fc; margin-bottom: 0.35rem;">
-                    🤖 AI Reasoning &amp; Decision Details
+                  <div class="reasoning-section">
+                    <div class="reasoning-header">📌 Trigger &amp; Provenance</div>
+                    <div class="reasoning-body">
+                      <div>&bull; <strong>Origin:</strong> ${escapeHtml(trig.originTitle)}</div>
+                      ${trig.issueText ? `<div>&bull; <strong>Initial Issue:</strong> "${escapeHtml(trig.issueText)}"</div>` : ''}
+                      ${trig.grabText ? `<div>&bull; <strong>Grab Provenance:</strong> ${escapeHtml(trig.grabText)}</div>` : ''}
+                    </div>
                   </div>
-                  <div style="line-height: 1.45; word-break: break-word;">${escapeHtml(item.reasoning || item.details || 'No reasoning details recorded.')}</div>
-                  <div style="font-size: 0.7rem; color: var(--text-dim); margin-top: 0.45rem;">
+                  ${item.details ? `
+                  <div class="reasoning-section">
+                    <div class="reasoning-header">⚡ Action Taken &amp; Result</div>
+                    <div class="reasoning-body">${escapeHtml(item.details)}</div>
+                  </div>` : ''}
+                  <div class="reasoning-section">
+                    <div class="reasoning-header">🤖 AI Reasoning &amp; Decision Details</div>
+                    <div class="reasoning-body" style="white-space: pre-wrap; line-height: 1.5;">${escapeHtml(item.reasoning || item.details || 'No reasoning details recorded.')}</div>
+                  </div>
+                  <div class="reasoning-meta">
                     ID: #${item.id} &bull; Time: ${formatDateTime(item.timestamp)} &bull; Model: ${escapeHtml(modelText)} &bull; Confidence: ${confText}
                   </div>
                 </div>
@@ -5380,6 +5614,7 @@ class MetricsHTTPHandler(BaseHTTPRequestHandler):
             page = None
             search = None
             filter_val = None
+            filter_trigger = None
             if "limit" in params:
                 try:
                     limit = max(1, min(1000, int(params["limit"][0])))
@@ -5394,12 +5629,15 @@ class MetricsHTTPHandler(BaseHTTPRequestHandler):
                 search = params["search"][0].strip() or None
             if "filter" in params:
                 filter_val = params["filter"][0].strip() or None
+            if "trigger" in params:
+                filter_trigger = params["trigger"][0].strip() or None
 
             self._send_json(self.metrics.get_processed_history(
                 limit=limit,
                 page=page,
                 search=search,
                 filter_status=filter_val,
+                filter_trigger=filter_trigger,
             ))
             return
 

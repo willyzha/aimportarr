@@ -324,6 +324,11 @@ class MetricsTracker:
         reasoning: Optional[str] = None,
         details: Optional[str] = None,
         item_keys: Optional[List[str]] = None,
+        trigger_source: str = "queue",
+        queue_messages: Optional[str] = None,
+        release_source: Optional[str] = None,
+        indexer: Optional[str] = None,
+        extra_data: Optional[str] = None,
     ) -> None:
         """
         Record a processed queue item in SQLite and in-memory summary.
@@ -357,6 +362,11 @@ class MetricsTracker:
                         reasoning=reasoning,
                         details=details,
                         item_keys=item_keys,
+                        trigger_source=trigger_source,
+                        queue_messages=queue_messages,
+                        release_source=release_source,
+                        indexer=indexer,
+                        extra_data=extra_data,
                     )
                 except Exception as e:
                     logger.error(f"Failed to record processed item to SQLite: {e}")
@@ -377,6 +387,11 @@ class MetricsTracker:
                 "reasoning": reasoning or "",
                 "details": details or "",
                 "retry_requested": 0,
+                "trigger_source": trigger_source or "queue",
+                "queue_messages": queue_messages or "",
+                "release_source": release_source or "",
+                "indexer": indexer or "",
+                "extra_data": extra_data or "",
             }
             # Remove any superseded in-memory entry for the same app+title
             self.processed_history = collections.deque(
@@ -547,6 +562,7 @@ class MetricsTracker:
         page: Optional[int] = None,
         search: Optional[str] = None,
         filter_status: Optional[str] = None,
+        filter_trigger: Optional[str] = None,
     ) -> Union[List[Dict[str, Any]], Dict[str, Any]]:
         """Return the most recent processed items with optional pagination, filter, and search."""
         with self._lock:
@@ -556,6 +572,7 @@ class MetricsTracker:
                     page=page,
                     search=search,
                     filter_status=filter_status,
+                    filter_trigger=filter_trigger,
                 )
                 if isinstance(result, dict):
                     result["global_total"] = self.total_items_processed
@@ -573,6 +590,14 @@ class MetricsTracker:
                 else:
                     items = [it for it in items if it.get("status") == filter_status]
 
+            if filter_trigger and filter_trigger != "all":
+                if filter_trigger == "queue":
+                    items = [it for it in items if (it.get("trigger_source") or "queue") == "queue"]
+                elif filter_trigger == "automated":
+                    items = [it for it in items if (it.get("trigger_source") or "queue") != "queue"]
+                else:
+                    items = [it for it in items if it.get("trigger_source") == filter_trigger]
+
             if search:
                 q = search.lower()
                 items = [
@@ -582,6 +607,9 @@ class MetricsTracker:
                     or q in (it.get("reasoning") or "").lower()
                     or q in (it.get("model") or "").lower()
                     or q in (it.get("details") or "").lower()
+                    or q in (it.get("indexer") or "").lower()
+                    or q in (it.get("release_source") or "").lower()
+                    or q in (it.get("queue_messages") or "").lower()
                 ]
 
             if page is None:

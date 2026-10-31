@@ -1071,5 +1071,112 @@ class ContainerSmokeTests(unittest.TestCase):
             finally:
                 db.close()
 
+    def test_processed_history_provenance_and_trigger_filtering(self):
+        """Verify trigger provenance fields and filtering across database and in-memory tracker."""
+        from src.database import DatabaseManager
+        from src.metrics import MetricsTracker
+        from src.web import RENDERED_DASHBOARD_HTML
+
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            db_path = str(Path(tmp_dir) / "test_prov.db")
+            db = DatabaseManager(db_path=db_path)
+            try:
+                # 1. Record queue item
+                db.record_processed_item(
+                    app="Sonarr",
+                    title="Series.S01E01",
+                    category="already_imported",
+                    status="dismissed",
+                    confidence=1.0,
+                    model="Sonarr (Quality Rule)",
+                    reasoning="All files already imported",
+                    details="All 1 file(s) already in library (0 imported, queue cleared)",
+                    item_keys=["dl:HASH1"],
+                    trigger_source="queue",
+                    queue_messages="Episode file already imported",
+                    release_source="Rss",
+                    indexer="baoziPT Freeleach",
+                )
+
+                # 2. Record automated backfill item
+                db.record_processed_item(
+                    app="Sonarr",
+                    title="Series - Season 01",
+                    category="season_backfill",
+                    status="imported",
+                    confidence=0.95,
+                    model="Gemini",
+                    reasoning="Found season pack",
+                    details="Grabbed season pack",
+                    item_keys=["backfill:1"],
+                    trigger_source="season_backfill",
+                    release_source="AImportarr Backfill",
+                    indexer="baoziPT Prowlarr",
+                )
+
+                # Query all
+                all_res = db.get_processed_history(page=1, limit=10)
+                self.assertEqual(all_res["total"], 2)
+
+                # Filter trigger = queue
+                queue_res = db.get_processed_history(page=1, limit=10, filter_trigger="queue")
+                self.assertEqual(queue_res["total"], 1)
+                self.assertEqual(queue_res["items"][0]["trigger_source"], "queue")
+                self.assertEqual(queue_res["items"][0]["queue_messages"], "Episode file already imported")
+                self.assertEqual(queue_res["items"][0]["release_source"], "Rss")
+                self.assertEqual(queue_res["items"][0]["indexer"], "baoziPT Freeleach")
+
+                # Filter trigger = automated
+                auto_res = db.get_processed_history(page=1, limit=10, filter_trigger="automated")
+                self.assertEqual(auto_res["total"], 1)
+                self.assertEqual(auto_res["items"][0]["trigger_source"], "season_backfill")
+                self.assertEqual(auto_res["items"][0]["release_source"], "AImportarr Backfill")
+
+                # Search by indexer
+                search_res = db.get_processed_history(page=1, limit=10, search="Freeleach")
+                self.assertEqual(search_res["total"], 1)
+                self.assertEqual(search_res["items"][0]["indexer"], "baoziPT Freeleach")
+
+                # 3. Test in-memory tracker fallback
+                mem_tracker = MetricsTracker(db_manager=None)
+                mem_tracker.record_processed_item(
+                    app="Sonarr",
+                    title="Mem.Item.Q",
+                    category="already_imported",
+                    status="dismissed",
+                    trigger_source="queue",
+                    queue_messages="Stuck error",
+                    release_source="Usenet",
+                    indexer="NZBGeek",
+                )
+                mem_tracker.record_processed_item(
+                    app="Sonarr",
+                    title="Mem.Item.A",
+                    category="episode_retry",
+                    status="imported",
+                    trigger_source="episode_retry",
+                    release_source="AImportarr Retry",
+                    indexer="NZBGeek",
+                )
+
+                mem_queue = mem_tracker.get_processed_history(page=1, filter_trigger="queue")
+                self.assertEqual(mem_queue["total"], 1)
+                self.assertEqual(mem_queue["items"][0]["title"], "Mem.Item.Q")
+
+                mem_auto = mem_tracker.get_processed_history(page=1, filter_trigger="automated")
+                self.assertEqual(mem_auto["total"], 1)
+                self.assertEqual(mem_auto["items"][0]["title"], "Mem.Item.A")
+            finally:
+                db.close()
+
+        # 4. Web UI verification
+        self.assertIn("trigger-pill", RENDERED_DASHBOARD_HTML)
+        self.assertIn('data-trigger="queue"', RENDERED_DASHBOARD_HTML)
+        self.assertIn('data-trigger="automated"', RENDERED_DASHBOARD_HTML)
+        self.assertIn("badge-trigger", RENDERED_DASHBOARD_HTML)
+        self.assertIn("cat-already-imported", RENDERED_DASHBOARD_HTML)
+        self.assertIn("setTriggerFilter", RENDERED_DASHBOARD_HTML)
+        self.assertIn("formatCategoryBadge", RENDERED_DASHBOARD_HTML)
+
 if __name__ == "__main__":
     unittest.main()

@@ -99,6 +99,7 @@ class SonarrClient:
         self._attempted_items: set = set()
         self._attempted_backfill_keys: set = set()
         self._attempted_episode_retry_keys: set = set()
+        self._grab_provenance_cache: Dict[str, Tuple[Optional[str], Optional[str]]] = {}
         self.headers = {
             "X-Api-Key": self.api_key,
             "Content-Type": "application/json",
@@ -148,6 +149,41 @@ class SonarrClient:
             },
         )
         return data.get("records", [])
+
+    async def get_grab_provenance(self, download_id: Optional[str]) -> Tuple[Optional[str], Optional[str]]:
+        """Look up releaseSource and indexer for a downloadId from Sonarr history.
+        eventType=1 corresponds to 'grabbed'.
+        Returns (release_source, indexer).
+        """
+        if not download_id:
+            return None, None
+
+        dl_key = str(download_id).strip().upper()
+        if dl_key in self._grab_provenance_cache:
+            return self._grab_provenance_cache[dl_key]
+
+        try:
+            records = await self._get("history", params={"downloadId": dl_key, "eventType": 1})
+            if isinstance(records, dict):
+                records = records.get("records", [])
+            if not records and dl_key != str(download_id).strip():
+                records = await self._get("history", params={"downloadId": str(download_id).strip(), "eventType": 1})
+                if isinstance(records, dict):
+                    records = records.get("records", [])
+
+            if records and isinstance(records, list):
+                grab_record = records[0]
+                data = grab_record.get("data", {})
+                release_source = data.get("releaseSource") or data.get("grabMethod") or grab_record.get("sourceTitle")
+                indexer = data.get("indexer") or grab_record.get("indexer")
+                res = (release_source, indexer)
+                self._grab_provenance_cache[dl_key] = res
+                return res
+        except Exception as e:
+            logger.debug(f"Failed to fetch grab provenance for downloadId {download_id}: {e}")
+
+        self._grab_provenance_cache[dl_key] = (None, None)
+        return (None, None)
 
     async def get_series(self, series_id: int) -> Dict[str, Any]:
         """Fetch detailed series metadata."""
@@ -565,6 +601,18 @@ class SonarrClient:
         mode_tag = "[DRY RUN]" if is_dry_run else "[LIVE]"
         logger.info(f"Processing stuck Sonarr item: '{title}' [{initial_category.value}] {mode_tag}")
 
+        queue_messages_str = "; ".join(all_messages) or item.get("errorMessage") or (f"Status: {status}, State: {tracked_state}" if (status or tracked_state) else "")
+        release_source, indexer = await self.get_grab_provenance(download_id)
+        if not indexer and item.get("indexer"):
+            indexer = item.get("indexer")
+
+        def record_item(**kwargs):
+            kwargs.setdefault("trigger_source", "queue")
+            kwargs.setdefault("queue_messages", queue_messages_str)
+            kwargs.setdefault("release_source", release_source)
+            kwargs.setdefault("indexer", indexer)
+            return metrics.record_processed_item(**kwargs)
+
         # ------------------------------------------------------------------
         # STEP 2 & STEP 3: Stage 1 Triage & Optional Archive Extraction
         # ------------------------------------------------------------------
@@ -625,7 +673,7 @@ class SonarrClient:
                             logger.warning(
                                 f"  🚨 Stage 1 AI confirmed malware/corrupt archive: '{title}' | Model: {model_label} | Confidence: {triage.confidence:.0%}"
                             )
-                            metrics.record_processed_item(
+                            record_item(
                                 app="Sonarr",
                                 title=title,
                                 category=triage.category_tag or "malware_or_corrupt",
@@ -668,7 +716,7 @@ class SonarrClient:
                     logger.warning(
                         f"  🚨 Stage 1 AI confirmed fake/malware release: '{title}' | Model: {model_label} | Confidence: {triage.confidence:.0%}"
                     )
-                    metrics.record_processed_item(
+                    record_item(
                         app="Sonarr",
                         title=title,
                         category=triage.category_tag or "malware_or_corrupt",
@@ -687,7 +735,7 @@ class SonarrClient:
                     )
                 elif triage.action == "reject_delete" and triage.confidence < self.min_confidence:
                     if self.reject_on_low_confidence:
-                        metrics.record_processed_item(
+                        record_item(
                             app="Sonarr",
                             title=title,
                             category="low_confidence",
@@ -707,7 +755,7 @@ class SonarrClient:
                             dry_run=is_dry_run,
                             title=title,
                         )
-                    metrics.record_processed_item(
+                    record_item(
                         app="Sonarr",
                         title=title,
                         category="low_confidence",
@@ -742,29 +790,30 @@ class SonarrClient:
                     logger.info(
                         f"  Sonarr returned 0 remaining importable files for season pack '{title}'. Dismissing queue warning..."
                     )
-                    metrics.record_processed_item(
+                    record_item(
                         app="Sonarr",
                         title=title,
                         category="season_pack",
-                        status="dry_run" if is_dry_run else "imported",
+                        status="dry_run" if is_dry_run else "dismissed",
                         confidence=1.0,
                         model="Sonarr (Season Pack)",
-                        reasoning="All needed episodes accounted for; queue warning dismissed while keeping files in client.",
-                        details="Completed season (all needed episodes accounted for)",
+                        reasoning="All needed episodes already accounted for on disk; dismissed redundant season pack queue warning while keeping files in client.",
+                        details="Completed season (all needed episodes accounted for on disk, queue cleared)",
                         item_keys=item_keys,
                     )
-                    return await self.dismiss_queue_warning(
+                    await self.dismiss_queue_warning(
                         queue_id=queue_id,
                         download_id=download_id,
                         dry_run=is_dry_run,
                         title=title,
                     )
+                    return True
 
                 if not p_local.exists():
                     logger.warning(
                         f"  Sonarr returned 0 files for '{title}' and local path '{p_local}' is not accessible. Leaving in queue."
                     )
-                    metrics.record_processed_item(
+                    record_item(
                         app="Sonarr",
                         title=title,
                         category="path_unreachable",
@@ -785,7 +834,7 @@ class SonarrClient:
                 )
                 model_label = triage.model_name or "AI"
                 if triage.action == "reject_delete" and triage.confidence >= self.min_confidence:
-                    metrics.record_processed_item(
+                    record_item(
                         app="Sonarr",
                         title=title,
                         category=triage.category_tag or "sample_only",
@@ -802,7 +851,7 @@ class SonarrClient:
                         dry_run=is_dry_run,
                         title=title,
                     )
-                metrics.record_processed_item(
+                record_item(
                     app="Sonarr",
                     title=title,
                     category="no_importable_files",
@@ -935,27 +984,55 @@ class SonarrClient:
                     if season_monitored_eps and all(e.get("hasFile", False) for e in season_monitored_eps):
                         is_satisfied_season_pack = True
 
-                if (
-                    initial_category == ErrorCategory.MISSING_EPISODES
-                    or already_imported_count > 0
-                    or is_satisfied_season_pack
-                ):
-                    has_imported = bool(already_imported_count > 0 or is_satisfied_season_pack)
-                    status_label = "dry_run" if is_dry_run else ("imported" if has_imported else "dismissed")
-                    if already_imported_count > 0:
-                        details_str = f"Imported ({already_imported_count} episode(s) imported, {quality_rejected_count} existing file(s) kept on disk)"
-                        reason_msg = f"Season pack delivered {already_imported_count} missing episode(s); remaining {quality_rejected_count} file(s) already on disk at equal/higher quality ({reason_str})"
-                    elif is_satisfied_season_pack:
-                        details_str = f"Completed season ({len(manual_items)} episode(s) satisfied on disk)"
-                        reason_msg = f"Season pack satisfied all monitored episodes on disk; remaining file(s) kept on disk ({reason_str})"
-                    else:
-                        details_str = "Dismissed season pack warning"
-                        reason_msg = f"Remaining season pack files already on disk at equal/higher quality ({reason_str})"
+                status_label = "dry_run" if is_dry_run else "dismissed"
+                if quality_rejected_count == 0 and already_imported_count > 0:
+                    cat_label = "already_imported"
+                    details_str = f"All {already_imported_count} file(s) already in library (0 imported, queue cleared)"
+                    reason_msg = f"Download redundant: all episode(s) were already imported in Sonarr at an earlier time ({reason_str}). Dismissed stuck download from queue."
+                elif is_satisfied_season_pack and already_imported_count == 0:
+                    cat_label = "season_pack"
+                    details_str = f"Completed season ({len(manual_items)} episode(s) satisfied on disk, queue cleared)"
+                    reason_msg = f"All monitored episodes for this season are already on disk; remaining release files are redundant ({reason_str}). Dismissed stuck download from queue."
+                elif already_imported_count > 0 and quality_rejected_count > 0:
+                    cat_label = "already_imported"
+                    details_str = f"All {len(manual_items)} file(s) satisfied in library ({already_imported_count} already imported, {quality_rejected_count} existing kept)"
+                    reason_msg = f"Download redundant: {already_imported_count} file(s) already imported, {quality_rejected_count} file(s) lower quality than files on disk ({reason_str}). Dismissed stuck download from queue."
+                elif initial_category == ErrorCategory.MISSING_EPISODES or is_satisfied_season_pack:
+                    cat_label = "season_pack" if len(manual_items) > 1 else "quality_downgrade"
+                    details_str = "Dismissed season pack warning"
+                    reason_msg = f"Remaining season pack files already on disk at equal/higher quality ({reason_str})"
+                else:
+                    cat_label = "quality_downgrade"
+                    details_str = "Dismissed & blocklisted (kept in client)"
+                    reason_msg = f"Rejected by Sonarr quality rules: {reason_str}"
 
-                    metrics.record_processed_item(
+                if cat_label == "quality_downgrade" and already_imported_count == 0 and not is_satisfied_season_pack and initial_category != ErrorCategory.MISSING_EPISODES:
+                    record_item(
                         app="Sonarr",
                         title=title,
-                        category="season_pack" if len(manual_items) > 1 else "already_imported",
+                        category="quality_downgrade",
+                        status="dry_run" if is_dry_run else "dismissed",
+                        confidence=1.0,
+                        model="Sonarr (Quality Rule)",
+                        reasoning=reason_msg,
+                        details=details_str,
+                        item_keys=item_keys,
+                    )
+                    await self.resolve_queue_item(
+                        queue_id=queue_id,
+                        download_id=download_id,
+                        remove_from_client=False,
+                        blocklist=True,
+                        skip_redownload=False,
+                        dry_run=is_dry_run,
+                        title=title,
+                    )
+                    return False
+                else:
+                    record_item(
+                        app="Sonarr",
+                        title=title,
+                        category=cat_label,
                         status=status_label,
                         confidence=1.0,
                         model="Sonarr (Quality Rule)",
@@ -969,29 +1046,7 @@ class SonarrClient:
                         dry_run=is_dry_run,
                         title=title,
                     )
-                    return True if has_imported else False
-
-                metrics.record_processed_item(
-                    app="Sonarr",
-                    title=title,
-                    category="quality_downgrade",
-                    status="dry_run" if is_dry_run else "dismissed",
-                    confidence=1.0,
-                    model="Sonarr (Quality Rule)",
-                    reasoning=f"Rejected by Sonarr quality rules: {reason_str}",
-                    details="Dismissed & blocklisted (kept in client)",
-                    item_keys=item_keys,
-                )
-                await self.resolve_queue_item(
-                    queue_id=queue_id,
-                    download_id=download_id,
-                    remove_from_client=False,
-                    blocklist=True,
-                    skip_redownload=False,
-                    dry_run=is_dry_run,
-                    title=title,
-                )
-                return False
+                    return True if (already_imported_count > 0 or is_satisfied_season_pack) else False
 
             # FAST-PATH B: Cleanly mapped files with 0 rejections (e.g., extracted archive or partial season pack)
             if not needs_ai_stage2 and fast_path_import_files:
@@ -1009,7 +1064,7 @@ class SonarrClient:
                     fast_path_import_files, dry_run=is_dry_run, category_tag=cat_tag
                 )
                 status_label = "dry_run" if is_dry_run else ("imported" if import_ok else "failed")
-                metrics.record_processed_item(
+                record_item(
                     app="Sonarr",
                     title=title,
                     category=cat_tag,
@@ -1140,7 +1195,7 @@ class SonarrClient:
                     f"  ⚠️ Stage 2 AI confidence ({stage2.confidence:.0%}) is below threshold ({self.min_confidence:.0%}) for '{title}': {stage2.reasoning}"
                 )
                 if self.reject_on_low_confidence:
-                    metrics.record_processed_item(
+                    record_item(
                         app="Sonarr",
                         title=title,
                         category="low_confidence",
@@ -1162,7 +1217,7 @@ class SonarrClient:
                     )
                     return False
 
-                metrics.record_processed_item(
+                record_item(
                     app="Sonarr",
                     title=title,
                     category="low_confidence",
@@ -1230,7 +1285,7 @@ class SonarrClient:
 
             if stage2.decision == "import":
                 if not series_id:
-                    metrics.record_processed_item(
+                    record_item(
                         app="Sonarr",
                         title=title,
                         category="unknown_media",
@@ -1299,7 +1354,7 @@ class SonarrClient:
                         files_to_import, dry_run=is_dry_run, category_tag=cat_tag
                     )
                     status_label = "dry_run" if is_dry_run else ("imported" if import_ok else "failed")
-                    metrics.record_processed_item(
+                    record_item(
                         app="Sonarr",
                         title=title,
                         category=cat_tag,
@@ -1325,7 +1380,7 @@ class SonarrClient:
             # Handle Stage 2 'reject_delete' (virus, sample-only, or corrupt)
             if stage2.decision == "reject_delete":
                 cat_tag = stage2.category_tag or "malware_or_corrupt"
-                metrics.record_processed_item(
+                record_item(
                     app="Sonarr",
                     title=title,
                     category=cat_tag,
@@ -1346,14 +1401,13 @@ class SonarrClient:
 
             # Handle Stage 2 'dismiss_pack' (already satisfied season pack)
             if stage2.decision == "dismiss_pack":
-                has_imported = bool(already_imported_count > 0)
-                status_label = "dry_run" if is_dry_run else ("imported" if has_imported else "dismissed")
+                status_label = "dry_run" if is_dry_run else "dismissed"
                 details_str = (
-                    f"Imported ({already_imported_count} episode(s) imported, remaining satisfied on disk)"
+                    f"Season pack redundant ({already_imported_count} episode(s) already in library, queue cleared)"
                     if already_imported_count > 0
                     else "Dismissed season pack warning (kept in client)"
                 )
-                metrics.record_processed_item(
+                record_item(
                     app="Sonarr",
                     title=title,
                     category="season_pack",
@@ -1370,11 +1424,11 @@ class SonarrClient:
                     dry_run=is_dry_run,
                     title=title,
                 )
-                return True if has_imported else False
+                return True
 
             # Default Stage 2 rejection: 'reject_keep_in_client' (quality downgrade or wrong media)
             cat_tag = stage2.category_tag or "dismissed"
-            metrics.record_processed_item(
+            record_item(
                 app="Sonarr",
                 title=title,
                 category=cat_tag,
@@ -1823,6 +1877,10 @@ class SonarrClient:
                         reasoning=match_reasoning,
                         details=f"{'Would grab' if is_dry_run else 'Grabbed'} season pack: {pack_title} ({missing_cnt} missing ep(s))",
                         item_keys=[backfill_key],
+                        trigger_source="season_backfill",
+                        release_source="AImportarr Backfill",
+                        indexer=winning_pack.get("indexer") if winning_pack else None,
+                        queue_messages=f"Missing {missing_cnt} episode(s)",
                     )
                     if grab_ok:
                         packs_grabbed += 1
@@ -1842,6 +1900,10 @@ class SonarrClient:
                         reasoning=no_pack_reason,
                         details=f"No qualifying season pack found ({missing_cnt} missing ep(s)); falling back inline to individual episode search ({cooldown_days}d cooldown)",
                         item_keys=[backfill_key],
+                        trigger_source="season_backfill",
+                        release_source="AImportarr Backfill",
+                        indexer=None,
+                        queue_messages=f"Missing {missing_cnt} episode(s)",
                     )
 
                     # Immediate inline fallback: match individual missing episodes from the already-fetched season release pool!
@@ -2218,6 +2280,10 @@ class SonarrClient:
                     reasoning=match_reason,
                     details=cov_details,
                     item_keys=[cov_key],
+                    trigger_source="episode_retry",
+                    release_source="AImportarr Retry",
+                    indexer=winning_rel.get("indexer") if winning_rel else None,
+                    queue_messages=f"Missing S{season_num:02d}E{cov_num:02d}",
                 )
 
         # Step 5: Immediate Targeted Episode Fallback (Safety Net for episodes truncated by indexer 100-result limits)
@@ -2367,6 +2433,10 @@ class SonarrClient:
                         reasoning=match_reasoning,
                         details=cov_details,
                         item_keys=[cov_key],
+                        trigger_source="episode_retry",
+                        release_source="AImportarr Retry",
+                        indexer=winning_rel.get("indexer") if winning_rel else None,
+                        queue_messages=f"Missing S{season_num:02d}E{cov_num:02d}",
                     )
             else:
                 self._attempted_episode_retry_keys.add(retry_key)
@@ -2384,6 +2454,10 @@ class SonarrClient:
                     reasoning=no_rel_reason,
                     details=f"No qualifying episode release found ({cooldown_hours}h cooldown)",
                     item_keys=[retry_key],
+                    trigger_source="episode_retry",
+                    release_source="AImportarr Retry",
+                    indexer=None,
+                    queue_messages=f"Missing S{season_num:02d}E{ep_num:02d}",
                 )
 
         return episodes_searched, episodes_grabbed

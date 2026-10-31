@@ -73,12 +73,34 @@ class DatabaseManager:
                     reasoning TEXT,
                     details TEXT,
                     retry_requested INTEGER DEFAULT 0,
-                    timestamp TEXT NOT NULL
+                    timestamp TEXT NOT NULL,
+                    trigger_source TEXT DEFAULT 'queue',
+                    queue_messages TEXT DEFAULT '',
+                    release_source TEXT DEFAULT '',
+                    indexer TEXT DEFAULT '',
+                    extra_data TEXT DEFAULT ''
                 );
                 """)
                 conn.execute("CREATE INDEX IF NOT EXISTS idx_processed_status ON processed_items(status);")
                 conn.execute("CREATE INDEX IF NOT EXISTS idx_processed_timestamp ON processed_items(timestamp);")
                 conn.execute("CREATE INDEX IF NOT EXISTS idx_processed_retry ON processed_items(retry_requested);")
+
+                # Migration: Ensure trigger_source, queue_messages, release_source, indexer, and extra_data exist in existing databases
+                try:
+                    cursor = conn.execute("PRAGMA table_info(processed_items);")
+                    col_names = [row["name"] for row in cursor.fetchall()]
+                    if "trigger_source" not in col_names:
+                        conn.execute("ALTER TABLE processed_items ADD COLUMN trigger_source TEXT DEFAULT 'queue';")
+                    if "queue_messages" not in col_names:
+                        conn.execute("ALTER TABLE processed_items ADD COLUMN queue_messages TEXT DEFAULT '';")
+                    if "release_source" not in col_names:
+                        conn.execute("ALTER TABLE processed_items ADD COLUMN release_source TEXT DEFAULT '';")
+                    if "indexer" not in col_names:
+                        conn.execute("ALTER TABLE processed_items ADD COLUMN indexer TEXT DEFAULT '';")
+                    if "extra_data" not in col_names:
+                        conn.execute("ALTER TABLE processed_items ADD COLUMN extra_data TEXT DEFAULT '';")
+                except Exception as e:
+                    logger.warning(f"Could not check/migrate processed_items table columns: {e}")
 
                 # 2. Processed item keys table (maps downloadId, path, and item keys to processed_items)
                 conn.execute("""
@@ -151,6 +173,16 @@ class DatabaseManager:
                     UPDATE processed_items
                     SET retry_requested = 0
                     WHERE status IN ('imported', 'rejected', 'dismissed') AND retry_requested = 1;
+                """)
+
+                # 6. Normalize legacy redundant already_imported records that were mistakenly logged as imported
+                conn.execute("""
+                    UPDATE processed_items
+                    SET status = 'dismissed',
+                        details = 'All file(s) already in library (0 imported, queue cleared)'
+                    WHERE category = 'already_imported'
+                      AND status = 'imported'
+                      AND (details LIKE '%0 existing file(s) kept on disk%' OR details LIKE '%movie file already imported%');
                 """)
 
             logger.info(f"SQLite database initialized at '{self.db_path}' (Retention: {self.retention_days} days)")
@@ -269,7 +301,8 @@ class DatabaseManager:
             placeholders = ",".join("?" for _ in item_keys)
             query = f"""
             SELECT p.id, p.app, p.title, p.category, p.status, p.confidence, p.model,
-                   p.reasoning, p.details, p.retry_requested, p.timestamp
+                   p.reasoning, p.details, p.retry_requested, p.timestamp,
+                   p.trigger_source, p.queue_messages, p.release_source, p.indexer, p.extra_data
             FROM processed_items p
             JOIN processed_item_keys k ON p.id = k.processed_id
             WHERE k.item_key IN ({placeholders})
@@ -393,6 +426,11 @@ class DatabaseManager:
         reasoning: Optional[str] = None,
         details: Optional[str] = None,
         item_keys: Optional[List[str]] = None,
+        trigger_source: str = "queue",
+        queue_messages: Optional[str] = None,
+        release_source: Optional[str] = None,
+        indexer: Optional[str] = None,
+        extra_data: Optional[str] = None,
     ) -> int:
         """
         Record a processed queue item in SQLite and index its keys.
@@ -413,8 +451,9 @@ class DatabaseManager:
 
                 cursor = conn.execute("""
                     INSERT INTO processed_items (
-                        app, title, category, status, confidence, model, reasoning, details, retry_requested, timestamp
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, ?)
+                        app, title, category, status, confidence, model, reasoning, details, retry_requested, timestamp,
+                        trigger_source, queue_messages, release_source, indexer, extra_data
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?, ?, ?, ?)
                 """, (
                     app,
                     title,
@@ -425,6 +464,11 @@ class DatabaseManager:
                     reasoning or "",
                     details or "",
                     now_str,
+                    trigger_source or "queue",
+                    queue_messages or "",
+                    release_source or "",
+                    indexer or "",
+                    extra_data or "",
                 ))
                 item_id = cursor.lastrowid
 
@@ -538,6 +582,7 @@ class DatabaseManager:
         page: Optional[int] = None,
         search: Optional[str] = None,
         filter_status: Optional[str] = None,
+        filter_trigger: Optional[str] = None,
     ) -> Union[List[Dict[str, Any]], Dict[str, Any]]:
         """Return processed items with optional pagination, filter, and search."""
         with self._lock:
@@ -545,7 +590,7 @@ class DatabaseManager:
             where_clauses = []
             params = []
 
-            # Filter clause
+            # Filter clause (Status)
             if filter_status and filter_status != "all":
                 if filter_status == "in_queue":
                     where_clauses.append("status IN ('skipped', 'failed', 'dry_run')")
@@ -558,17 +603,42 @@ class DatabaseManager:
                     where_clauses.append("status = ?")
                     params.append(filter_status)
 
+            # Filter clause (Trigger Origin)
+            if filter_trigger and filter_trigger != "all":
+                if filter_trigger == "queue":
+                    where_clauses.append("trigger_source = 'queue'")
+                elif filter_trigger == "automated":
+                    where_clauses.append("trigger_source != 'queue'")
+                else:
+                    where_clauses.append("trigger_source = ?")
+                    params.append(filter_trigger)
+
             # Search clause
             if search:
                 pattern = f"%{search.strip().lower()}%"
-                where_clauses.append("(LOWER(title) LIKE ? OR LOWER(category) LIKE ? OR LOWER(reasoning) LIKE ? OR LOWER(model) LIKE ? OR LOWER(details) LIKE ?)")
-                params.extend([pattern, pattern, pattern, pattern, pattern])
+                where_clauses.append("""(
+                    LOWER(title) LIKE ?
+                    OR LOWER(category) LIKE ?
+                    OR LOWER(reasoning) LIKE ?
+                    OR LOWER(model) LIKE ?
+                    OR LOWER(details) LIKE ?
+                    OR LOWER(indexer) LIKE ?
+                    OR LOWER(release_source) LIKE ?
+                    OR LOWER(queue_messages) LIKE ?
+                )""")
+                params.extend([pattern] * 8)
 
             where_sql = (" WHERE " + " AND ".join(where_clauses)) if where_clauses else ""
 
+            select_cols = """
+                id, app, title, category, status, confidence, model, reasoning, details,
+                retry_requested, timestamp, trigger_source, queue_messages, release_source,
+                indexer, extra_data
+            """
+
             if page is None:
                 query = f"""
-                    SELECT id, app, title, category, status, confidence, model, reasoning, details, retry_requested, timestamp
+                    SELECT {select_cols}
                     FROM processed_items
                     {where_sql}
                     ORDER BY id DESC
@@ -588,7 +658,7 @@ class DatabaseManager:
             total_pages = math.ceil(total / limit) if total > 0 else 1
 
             query = f"""
-                SELECT id, app, title, category, status, confidence, model, reasoning, details, retry_requested, timestamp
+                SELECT {select_cols}
                 FROM processed_items
                 {where_sql}
                 ORDER BY id DESC
